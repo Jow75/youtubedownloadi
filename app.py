@@ -33,6 +33,28 @@ st.set_page_config(
 
 
 # --------------------------------------------------------------------------- #
+# Shared yt-dlp options
+# --------------------------------------------------------------------------- #
+# Running from a cloud/datacenter IP (e.g. Streamlit Community Cloud) makes
+# YouTube return "HTTP Error 403: Forbidden" for the default web-player stream
+# URLs. Requesting the iOS / mobile / android player clients yields stream URLs
+# that are far less likely to be blocked. We also add generous retries.
+COMMON_OPTS = {
+    "quiet": True,
+    "no_warnings": True,
+    "noplaylist": True,
+    "retries": 10,
+    "fragment_retries": 10,
+    "geo_bypass": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["ios", "mweb", "android", "web"],
+        }
+    },
+}
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 def sanitize_filename(name: str) -> str:
@@ -66,12 +88,7 @@ def fetch_metadata(url: str) -> dict:
     Cached so re-runs (Streamlit re-executes the script top-to-bottom on every
     interaction) don't re-hit the network for the same link.
     """
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "noplaylist": True,
-    }
+    ydl_opts = {**COMMON_OPTS, "skip_download": True}
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -128,10 +145,8 @@ def download_media(url: str, fmt: str, quality: str, title: str):
     outtmpl = os.path.join(work_dir, f"{safe_title}.%(ext)s")
 
     ydl_opts = {
+        **COMMON_OPTS,
         "outtmpl": outtmpl,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
         "restrictfilenames": False,
         **build_format(fmt, quality),
     }
