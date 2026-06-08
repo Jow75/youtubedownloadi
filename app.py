@@ -2,19 +2,25 @@
 Universal Media Downloader (local edition)
 ==========================================
 A Streamlit app that downloads media from YouTube, X (Twitter), Reddit,
-Instagram, and any other site supported by yt-dlp.
+Instagram, TikTok, and any other site supported by yt-dlp.
 
 Designed to run LOCALLY on your own machine, because:
   * Modern YouTube scrambles stream URLs with a JavaScript challenge, so
     yt-dlp needs a JS runtime (Node.js / Deno) + the yt-dlp-ejs solver scripts.
   * Cloud/datacenter IPs additionally get HTTP 403 blocks.
-A residential IP + Node.js make the difference, just like browser extensions.
 
-KEY DESIGN CHOICE: finished files are saved DIRECTLY to a folder on this PC
-(your Downloads folder by default). There is no browser download, so download
-managers like IDM never get a chance to interfere.
+KEY DESIGN CHOICES:
+  * Finished files are saved DIRECTLY to a local folder (your Downloads folder
+    by default). No browser download happens, so download managers like IDM
+    never interfere.
+  * Optional aria2c "turbo" downloader (multi-connection) for big sites. It is
+    scoped to http/https only, so streaming (HLS/m3u8) sites like X keep using
+    the native downloader and never break.
+  * Optional login cookies (cookies.txt or browser) for private / login-only
+    media.
 
-Requirements: streamlit, yt-dlp, yt-dlp-ejs (pip), plus ffmpeg and Node.js on PATH.
+Requirements: streamlit, yt-dlp, yt-dlp-ejs (pip); ffmpeg + Node.js on PATH;
+aria2c optional (for turbo downloads).
 """
 
 import glob
@@ -22,6 +28,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -43,15 +50,16 @@ DEFAULT_DOWNLOAD_DIR = str(Path.home() / "Downloads")
 # --------------------------------------------------------------------------- #
 # Shared yt-dlp options
 # --------------------------------------------------------------------------- #
-# concurrent_fragment_downloads pulls multiple DASH fragments at once, which
-# speeds up downloads when your internet has spare bandwidth. The real ceiling
-# is still (a) your internet speed and (b) YouTube's per-connection throttling.
+# extractor_retries helps with sites that rate-limit anonymous requests (X in
+# particular). concurrent_fragment_downloads speeds up fragmented (HLS/DASH)
+# downloads. The real speed ceiling is still your internet bandwidth.
 COMMON_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "noplaylist": True,
     "retries": 10,
     "fragment_retries": 10,
+    "extractor_retries": 3,
     "geo_bypass": True,
     "concurrent_fragment_downloads": 4,
 }
@@ -91,7 +99,7 @@ def unique_path(folder, filename):
 
 
 def open_in_explorer(path):
-    """Open a folder (or the parent of a file) in the OS file manager."""
+    """Open a folder (or a file's parent) in the OS file manager."""
     try:
         target = path if os.path.isdir(path) else os.path.dirname(path)
         os.startfile(target)  # Windows
@@ -100,12 +108,40 @@ def open_in_explorer(path):
         return False
 
 
+def aria2c_available():
+    return shutil.which("aria2c") is not None
+
+
+def net_opts(cookiefile="", cookies_browser="None"):
+    """Cookie/auth options. A cookies.txt file takes priority; otherwise read
+    from a (fully closed) browser if one is chosen."""
+    opts = {}
+    cf = (cookiefile or "").strip().strip('"')
+    if cf and os.path.isfile(cf):
+        opts["cookiefile"] = cf
+    elif cookies_browser and cookies_browser != "None":
+        opts["cookiesfrombrowser"] = (cookies_browser.lower(),)
+    return opts
+
+
+def downloader_opts(use_aria2c):
+    """Use aria2c for http/https only. HLS/DASH stay on yt-dlp's native
+    downloader, so streaming sites (X, etc.) never break."""
+    if use_aria2c and aria2c_available():
+        return {
+            "external_downloader": {"http": "aria2c", "https": "aria2c"},
+            "external_downloader_args": {"aria2c": ["-x16", "-s16", "-k1M"]},
+        }
+    return {}
+
+
 @st.cache_data(show_spinner=False, ttl=600)
-def fetch_metadata(url):
+def fetch_metadata(url, cookiefile="", cookies_browser="None"):
     """Probe a URL with yt-dlp WITHOUT downloading. Cached to avoid re-hitting
     the network on Streamlit's frequent re-runs."""
-    ydl_opts = {**COMMON_OPTS, "skip_download": True}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    opts = {**COMMON_OPTS, "skip_download": True,
+            **net_opts(cookiefile, cookies_browser)}
+    with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     if info.get("_type") == "playlist" and info.get("entries"):
         info = info["entries"][0]
@@ -152,13 +188,12 @@ def build_format(fmt, quality, audio_codec):
 
 
 def download_to_folder(url, fmt, quality, audio_codec, dest_dir, title,
+                       use_aria2c=False, cookiefile="", cookies_browser="None",
                        progress_cb=None, status_cb=None):
     """
     Download + process into a temp dir, then MOVE the finished file into
-    `dest_dir`. Returns the final saved path.
-
-    Saving on the server side (this PC) means no browser download happens, so
-    download managers such as IDM never intercept anything.
+    `dest_dir`. Returns the final saved path. Saving on the server side (this
+    PC) means no browser download, so IDM-style managers never intercept.
     """
     work_dir = os.path.join(tempfile.gettempdir(), f"umd_{uuid.uuid4().hex}")
     os.makedirs(work_dir, exist_ok=True)
@@ -194,6 +229,8 @@ def download_to_folder(url, fmt, quality, audio_codec, dest_dir, title,
         "outtmpl": outtmpl,
         "progress_hooks": [_hook],
         **build_format(fmt, quality, audio_codec),
+        **downloader_opts(use_aria2c),
+        **net_opts(cookiefile, cookies_browser),
     }
 
     try:
@@ -218,6 +255,26 @@ def download_to_folder(url, fmt, quality, audio_codec, dest_dir, title,
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def download_with_retry(url, fmt, quality, audio_codec, dest_dir, title,
+                        use_aria2c, cookiefile, cookies_browser,
+                        progress_cb=None, status_cb=None, attempts=2):
+    """Retry a download once after a short backoff — mainly to ride out X's
+    anonymous rate limiting."""
+    last = None
+    for attempt in range(attempts):
+        try:
+            return download_to_folder(
+                url, fmt, quality, audio_codec, dest_dir, title,
+                use_aria2c, cookiefile, cookies_browser, progress_cb, status_cb)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if attempt < attempts - 1:
+                if status_cb:
+                    status_cb(f"⚠️ Hiccup — retrying in 3s… ({exc})")
+                time.sleep(3)
+    raise last
+
+
 # --------------------------------------------------------------------------- #
 # Sidebar: settings
 # --------------------------------------------------------------------------- #
@@ -225,15 +282,39 @@ with st.sidebar:
     st.header("⚙️ Settings")
     dest_dir = st.text_input("Save downloads to folder", value=DEFAULT_DOWNLOAD_DIR)
     st.caption(
-        "Files are written straight to this folder on this PC. There's no "
-        "browser download, so download managers like **IDM won't interfere**."
+        "Files are written straight to this folder on this PC. No browser "
+        "download, so **IDM won't interfere**."
     )
     if st.button("📂 Open this folder", use_container_width=True):
         if not open_in_explorer(dest_dir):
             st.warning("Couldn't open that folder — check the path.")
+
     st.divider()
-    st.caption("💡 Tip: **M4A (original)** audio skips conversion and is much faster "
-               "than MP3. For bigger downloads, a faster internet connection helps most.")
+    with st.expander("⚡ Speed & advanced"):
+        _aria_ok = aria2c_available()
+        use_aria2c = st.checkbox(
+            "Turbo downloads (aria2c, multi-connection)",
+            value=_aria_ok,
+            disabled=not _aria_ok,
+            help="Downloads big files with up to 16 connections. Streaming sites "
+                 "like X automatically use the standard method, so nothing breaks.",
+        )
+        if not _aria_ok:
+            st.caption("⚠️ aria2c not found on PATH. Install it and restart the app.")
+
+        st.markdown("**Login cookies** — only for private / login-required media "
+                    "(some X, Instagram, etc.). Public posts need none.")
+        cookiefile = st.text_input("Path to a cookies.txt file (optional)", value="")
+        cookies_browser = st.selectbox(
+            "…or read cookies from a browser",
+            ["None", "Firefox", "Edge", "Brave", "Chrome"],
+            help="That browser must be FULLY CLOSED — Chrome locks its cookie "
+                 "database while it's open.",
+        )
+
+    st.divider()
+    st.caption("💡 **M4A** audio skips conversion = much faster than MP3. "
+               "A faster internet helps download speed the most.")
 
 
 # --------------------------------------------------------------------------- #
@@ -249,7 +330,7 @@ mode = st.radio("Mode", ["🔗 Single link", "📚 Bulk (many links)"], horizont
 if mode == "🔗 Single link":
     url = st.text_input(
         "Media link",
-        placeholder="https://www.youtube.com/watch?v=...",
+        placeholder="Paste a link from YouTube, X, TikTok, Reddit, Instagram…",
         label_visibility="collapsed",
     )
 
@@ -261,7 +342,7 @@ if mode == "🔗 Single link":
     if url.strip():
         with st.spinner("Fetching media details…"):
             try:
-                metadata = fetch_metadata(url.strip())
+                metadata = fetch_metadata(url.strip(), cookiefile, cookies_browser)
             except Exception as exc:  # noqa: BLE001
                 st.error(
                     "Couldn't read that link. It may be private, unsupported, or "
@@ -308,9 +389,9 @@ if mode == "🔗 Single link":
             status = st.empty()
             status.info("⏳ Starting…")
             try:
-                path = download_to_folder(
+                path = download_with_retry(
                     url.strip(), fmt, quality, audio_codec, dest_dir,
-                    metadata["title"],
+                    metadata["title"], use_aria2c, cookiefile, cookies_browser,
                     progress_cb=lambda f: bar.progress(f),
                     status_cb=lambda t: status.info(t),
                 )
@@ -369,12 +450,12 @@ else:
                 bar = st.progress(0.0)
                 row.info(f"[{i}/{len(jobs)}] 🔎 Fetching… {u}")
                 try:
-                    info = fetch_metadata(u)
+                    info = fetch_metadata(u, cookiefile, cookies_browser)
                     row.info(f"[{i}/{len(jobs)}] ⬇️ {info['title']}")
-                    path = download_to_folder(
+                    path = download_with_retry(
                         u, f, bulk_quality, "mp3", dest_dir, info["title"],
+                        use_aria2c, cookiefile, cookies_browser,
                         progress_cb=lambda x, b=bar: b.progress(x),
-                        status_cb=None,
                     )
                     bar.progress(1.0)
                     row.success(f"[{i}/{len(jobs)}] ✅ {os.path.basename(path)}")
@@ -383,6 +464,7 @@ else:
                     bar.empty()
                     row.error(f"[{i}/{len(jobs)}] ❌ {u}\n\n`{exc}`")
                 overall.progress(i / len(jobs))
+                time.sleep(0.5)  # be polite between requests (helps avoid rate limits)
 
             if ok:
                 st.balloons()
