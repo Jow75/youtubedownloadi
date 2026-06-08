@@ -32,4 +32,6 @@ bin/
 build/
 dist/
 runtime/
+Output/
 *.zip
+*.spec
