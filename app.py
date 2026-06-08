@@ -26,6 +26,11 @@ from pathlib import Path
 import streamlit as st
 
 import downloader as dl
+import licensing
+
+# Flip to enforce licensing in distributed builds: set env UMD_ENFORCE_LICENSE=1.
+# Left OFF here so local/owner use is never blocked during development.
+ENFORCE_LICENSE = os.environ.get("UMD_ENFORCE_LICENSE", "0") == "1"
 
 st.set_page_config(
     page_title="Universal Media Downloader",
@@ -110,8 +115,43 @@ with st.sidebar:
         )
 
     st.divider()
+    with st.expander("🔑 License / Activation"):
+        lm = licensing.LicenseManager()
+        st.write(lm.status())
+        st.caption("Your computer's ID (send this to get a key):")
+        st.code(lm.get_machine_id(), language=None)
+        _key = st.text_input("Paste your license key", value="",
+                             placeholder="UMDL-...")
+        cga, cgb = st.columns(2)
+        if cga.button("Activate", use_container_width=True):
+            ok, msg = lm.activate(_key)
+            (st.success if ok else st.error)(msg)
+        if cgb.button("Remove", use_container_width=True):
+            lm.deactivate()
+            st.info("License removed.")
+
+    st.divider()
     st.caption("💡 **M4A** audio skips conversion = faster. Public posts need no "
                "cookies. A faster internet speeds downloads the most.")
+
+
+# --- License gate (only blocks when ENFORCE_LICENSE is on, e.g. shipped build) #
+if ENFORCE_LICENSE and not licensing.LicenseManager().is_licensed():
+    st.title("🔒 Activate Universal Media Downloader")
+    st.warning("This copy needs a license key to use.")
+    _lm = licensing.LicenseManager()
+    st.write("**1.** Send the seller this computer's ID:")
+    st.code(_lm.get_machine_id(), language=None)
+    st.write("**2.** Paste the license key you receive and click Activate:")
+    _k = st.text_input("License key", placeholder="UMDL-...")
+    if st.button("Activate", type="primary"):
+        ok, msg = _lm.activate(_k)
+        if ok:
+            st.success(msg)
+            st.rerun()
+        else:
+            st.error(msg)
+    st.stop()
 
 
 def resolve_dir(fmt):

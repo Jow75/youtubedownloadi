@@ -19,3 +19,10 @@ Thumbs.db
 *.part
 *.webm
 *.m4a
+
+# Licensing secrets — NEVER commit these (would let anyone forge license keys)
+secret.key
+license_records.csv
+*.dat
+# Private analysis doc (contains another project's secret) — keep out of the repo
+licensing_system_forensic_analysis.md
