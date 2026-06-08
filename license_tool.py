@@ -16,17 +16,16 @@ A record of every key generated is appended to license_records.csv (git-ignored)
 """
 
 import argparse
-import csv
 import secrets
 import sys
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 import licensing as lic
+import records
 
 HERE = Path(__file__).resolve().parent
 SECRET_FILE = HERE / "secret.key"
-RECORDS = HERE / "license_records.csv"
 
 
 def cmd_init():
@@ -51,8 +50,15 @@ def cmd_generate(args):
     if not args.customer or not args.machine_id:
         print("Need --customer and --machine-id.")
         return 1
-    code = lic.generate_license(args.customer, args.machine_id,
-                                days=args.days, plan=args.plan)
+    dur = {k: getattr(args, k) or 0 for k in
+           ("minutes", "hours", "days", "weeks", "months", "years")}
+    if any(dur.values()):
+        expiry = lic.expiry_from_duration(**dur)
+        code = lic.generate_license(args.customer, args.machine_id,
+                                    expiry=expiry, plan=args.plan)
+    else:
+        code = lic.generate_license(args.customer, args.machine_id,
+                                    days=args.days, plan=args.plan)
     ok, payload = lic.verify_license(code)
     print("\nLICENSE KEY (send this to the customer):\n")
     print("  " + code + "\n")
@@ -62,15 +68,13 @@ def cmd_generate(args):
     print(f"  issued   : {payload['i']}")
     print(f"  expires  : {payload['e']}")
 
-    new = not RECORDS.is_file()
-    with RECORDS.open("a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        if new:
-            w.writerow(["timestamp", "customer", "machine_id", "plan",
-                        "issued", "expires", "code"])
-        w.writerow([date.today().isoformat(), payload["c"], payload["mid"],
-                    payload["p"], payload["i"], payload["e"], code])
-    print(f"\n  (recorded in {RECORDS.name})")
+    records.append_record({
+        "timestamp": datetime.now().replace(microsecond=0).isoformat(),
+        "customer": payload["c"], "machine_id": payload["mid"],
+        "plan": payload["p"], "issued": payload["i"], "expires": payload["e"],
+        "code": code,
+    })
+    print(f"\n  (recorded in {records.RECORDS.name})")
     return 0
 
 
@@ -90,6 +94,11 @@ def main():
     p.add_argument("--customer", help="customer name")
     p.add_argument("--machine-id", help="customer's machine ID (UMD-XXXX-XXXX-XXXX)")
     p.add_argument("--days", type=int, default=None, help="validity in days")
+    p.add_argument("--minutes", type=int, default=None, help="validity in minutes")
+    p.add_argument("--hours", type=int, default=None, help="validity in hours")
+    p.add_argument("--weeks", type=int, default=None, help="validity in weeks")
+    p.add_argument("--months", type=int, default=None, help="validity in months")
+    p.add_argument("--years", type=int, default=None, help="validity in years")
     p.add_argument("--plan", default="monthly",
                    choices=list(lic.PLAN_DAYS.keys()), help="plan (sets default days)")
     args = p.parse_args()

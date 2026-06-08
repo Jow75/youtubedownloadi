@@ -28,6 +28,26 @@ def resource_dir():
     return getattr(sys, "_MEIPASS", app_dir())
 
 
+def redirect_output_if_windowed():
+    """A windowed (no-console) frozen build has sys.stdout/err == None.
+    Streamlit writes log lines there, which would crash the app, so send that
+    output to a log file in %LOCALAPPDATA% instead (handy for debugging too)."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or app_dir()
+    log_dir = os.path.join(base, "UniversalMediaDownloader")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        log = open(os.path.join(log_dir, "umd-log.txt"), "a",
+                   encoding="utf-8", buffering=1)
+    except OSError:
+        log = open(os.devnull, "w")
+    if sys.stdout is None:
+        sys.stdout = log
+    if sys.stderr is None:
+        sys.stderr = log
+
+
 def setup_environment():
     # Bundled binaries (ffmpeg, ffprobe, aria2c, node) live next to the exe.
     bin_dir = os.path.join(app_dir(), "bin")
@@ -58,6 +78,7 @@ def open_browser_when_ready(port):
 
 
 def main():
+    redirect_output_if_windowed()
     setup_environment()
     port = free_port()
     app_path = os.path.join(resource_dir(), "app.py")

@@ -31,7 +31,7 @@ if (-not (Test-Path (Join-Path $PSScriptRoot "secret.key"))) {
 # 2) Freeze with PyInstaller.
 Write-Host "Building (this takes a few minutes)..." -ForegroundColor Cyan
 Remove-Item dist, build -Recurse -Force -ErrorAction SilentlyContinue
-python -m PyInstaller desktop.py --name UMD --noconfirm --console `
+python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --collect-all streamlit `
     --collect-all yt_dlp `
     --collect-all yt_dlp_ejs `

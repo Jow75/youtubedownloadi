@@ -133,16 +133,52 @@ def verify_license(code, secret=None):
     return True, payload
 
 
-def generate_license(customer, machine_id, days=None, plan="monthly", secret=None):
-    if days is None:
-        days = PLAN_DAYS.get(plan, 30)
-    today = date.today()
+def expiry_from_duration(minutes=0, hours=0, days=0, weeks=0, months=0,
+                         years=0, start=None):
+    """Compute an expiry datetime from a flexible duration. Months/years are
+    approximated as 30/365 days — fine for licensing."""
+    start = start or datetime.now()
+    total_days = days + weeks * 7 + months * 30 + years * 365
+    return start + timedelta(days=total_days, hours=hours, minutes=minutes)
+
+
+def parse_dt(s):
+    """Parse an issue/expiry string that may be a full datetime OR a bare date."""
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return datetime.strptime(s, "%Y-%m-%d")
+
+
+def human_left(expiry_dt, now=None):
+    """Short 'time remaining', e.g. '45 min', '3 h 10 min', '12 days'."""
+    now = now or datetime.now()
+    secs = int((expiry_dt - now).total_seconds())
+    if secs <= 0:
+        return "expired"
+    if secs < 3600:
+        return f"{secs // 60} min"
+    if secs < 86400:
+        return f"{secs // 3600} h {(secs % 3600) // 60} min"
+    days = secs // 86400
+    return f"{days} day{'s' if days != 1 else ''}"
+
+
+def generate_license(customer, machine_id, days=None, plan="monthly",
+                     expiry=None, secret=None):
+    """Create a signed license. Pass an explicit `expiry` datetime for
+    hour/minute precision, or `days`/`plan` for whole-day durations."""
+    now = datetime.now().replace(microsecond=0)
+    if expiry is None:
+        if days is None:
+            days = PLAN_DAYS.get(plan, 30)
+        expiry = now + timedelta(days=days)
     payload = {
         "c": customer,
         "mid": machine_id or "",
         "p": plan,
-        "i": today.isoformat(),
-        "e": (today + timedelta(days=days)).isoformat(),
+        "i": now.isoformat(),
+        "e": expiry.replace(microsecond=0).isoformat(),
     }
     return sign_payload(payload, secret)
 
@@ -180,13 +216,12 @@ class LicenseManager:
             return False, res
         if res.get("mid") and res["mid"] != self.get_machine_id():
             return False, "This key was issued for a different computer."
-        exp = datetime.strptime(res["e"], "%Y-%m-%d").date()
-        if date.today() > exp:
+        exp = parse_dt(res["e"])
+        if datetime.now() > exp:
             return False, f"This key expired on {res['e']}."
         self.file.write_text(code.strip(), encoding="utf-8")
         self.code, self.payload = code.strip(), res
-        days = (exp - date.today()).days
-        return True, f"Activated! Valid until {res['e']} ({days} days left)."
+        return True, f"Activated! Valid until {res['e']} ({human_left(exp)} left)."
 
     def is_licensed(self):
         if not self.code:
@@ -196,8 +231,7 @@ class LicenseManager:
             return False
         if res.get("mid") and res["mid"] != self.get_machine_id():
             return False
-        exp = datetime.strptime(res["e"], "%Y-%m-%d").date()
-        return date.today() <= exp
+        return datetime.now() <= parse_dt(res["e"])
 
     def status(self):
         if not self.code:
@@ -205,12 +239,11 @@ class LicenseManager:
         ok, res = verify_license(self.code)
         if not ok:
             return "⚠️ Stored license is invalid."
-        exp = datetime.strptime(res["e"], "%Y-%m-%d").date()
-        days = (exp - date.today()).days
-        if days < 0:
+        exp = parse_dt(res["e"])
+        if datetime.now() > exp:
             return f"⛔ Expired on {res['e']}."
         who = res.get("c", "—")
-        return f"✅ Licensed to {who} · expires {res['e']} ({days} days left)."
+        return f"✅ Licensed to {who} · expires {res['e']} ({human_left(exp)} left)."
 
     def deactivate(self):
         try:
