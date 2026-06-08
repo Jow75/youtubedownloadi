@@ -86,10 +86,11 @@ with st.sidebar:
     with st.expander("⚡ Speed & advanced"):
         _aria_ok = dl.aria2c_available()
         use_aria2c = st.checkbox(
-            "Turbo downloads (aria2c, multi-connection)",
+            "Turbo downloads (aria2c) for non-YouTube sites",
             value=_aria_ok, disabled=not _aria_ok,
-            help="Up to 16 connections for big files. Streaming sites (X, etc.) "
-                 "auto-use the standard method, so nothing breaks.",
+            help="Multi-connection turbo for sites that allow it (e.g. X). "
+                 "YouTube THROTTLES multi-connection, so it auto-uses its faster "
+                 "native downloader. Safe to leave on.",
         )
         if not _aria_ok:
             st.caption("⚠️ aria2c not found — install it and restart the app.")
@@ -284,39 +285,114 @@ if mode == "🔗 Single link":
 # BULK MODE
 # =========================================================================== #
 else:
-    st.caption("Paste links **one per line** in the column for the format you "
-               "want, then hit **Download all**.")
-    col_v, col_a = st.columns(2)
-    with col_v:
-        st.markdown("### 🎬 Video → MP4")
-        video_links = st.text_area("video links", height=220,
-                                    label_visibility="collapsed",
-                                    placeholder="https://...\nhttps://...")
-        bulk_quality = st.selectbox("Quality for all videos",
-                                    ["Best Available", "720p", "480p"])
-    with col_a:
-        st.markdown("### 🎵 Audio → MP3")
-        audio_links = st.text_area("audio links", height=220,
-                                   label_visibility="collapsed",
-                                   placeholder="https://...\nhttps://...")
+    bulk_method = st.radio(
+        "Bulk method",
+        ["⚡ Two columns (recommended)", "🎚️ Scan & choose per link"],
+        horizontal=True,
+        help="**Two columns**: fastest — drop links into the MP4 or MP3 box and "
+             "go. **Scan & choose**: paste all links, see their titles, then pick "
+             "the exact format/quality for each one individually.",
+    )
 
     def _parse(text):
         return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
-    if st.button("⬇️ Download all", type="primary", use_container_width=True):
-        jobs = ([{"url": u, "fmt": "video", "quality": bulk_quality}
-                 for u in _parse(video_links)]
-                + [{"url": u, "fmt": "audio", "audio_codec": "mp3"}
-                   for u in _parse(audio_links)])
-        if not jobs:
-            st.warning("Paste at least one link into a column first.")
-        else:
-            st.write(f"### Downloading {len(jobs)} item(s)…")
-            ok, total = run_jobs(jobs)
-            if ok:
-                st.balloons()
-            st.success(f"Done — saved **{ok} of {total}**. "
-                       "Open the folder from the sidebar to see them.")
+    # ----- Option 1: two columns (recommended) ----------------------------- #
+    if bulk_method.startswith("⚡"):
+        st.caption("Paste links **one per line** in the column for the format "
+                   "you want, then hit **Download all**.")
+        col_v, col_a = st.columns(2)
+        with col_v:
+            st.markdown("### 🎬 Video → MP4")
+            video_links = st.text_area("video links", height=220,
+                                       label_visibility="collapsed",
+                                       placeholder="https://...\nhttps://...")
+            bulk_quality = st.selectbox("Quality for all videos",
+                                        ["Best Available", "720p", "480p"])
+        with col_a:
+            st.markdown("### 🎵 Audio → MP3")
+            audio_links = st.text_area("audio links", height=220,
+                                       label_visibility="collapsed",
+                                       placeholder="https://...\nhttps://...")
+
+        if st.button("⬇️ Download all", type="primary", use_container_width=True):
+            jobs = ([{"url": u, "fmt": "video", "quality": bulk_quality}
+                     for u in _parse(video_links)]
+                    + [{"url": u, "fmt": "audio", "audio_codec": "mp3"}
+                       for u in _parse(audio_links)])
+            if not jobs:
+                st.warning("Paste at least one link into a column first.")
+            else:
+                st.write(f"### Downloading {len(jobs)} item(s)…")
+                ok, total = run_jobs(jobs)
+                if ok:
+                    st.balloons()
+                st.success(f"Done — saved **{ok} of {total}**. "
+                           "Open the folder from the sidebar to see them.")
+
+    # ----- Option 2: scan & choose per link (secondary) -------------------- #
+    else:
+        st.caption("Paste all links, **🔎 Scan** to see their titles, then pick "
+                   "the format/quality for each, and **Download selected**.")
+        links_text = st.text_area("All links (one per line)", height=160,
+                                   placeholder="https://...\nhttps://...")
+        if st.button("🔎 Scan links"):
+            urls = _parse(links_text)
+            if not urls:
+                st.warning("Paste at least one link first.")
+            else:
+                items, prog = [], st.progress(0.0)
+                for i, u in enumerate(urls, 1):
+                    try:
+                        m = fetch_metadata(u, cookiefile)
+                        items.append({"url": u, "title": m["title"],
+                                      "duration": m["duration"], "ok": True})
+                    except Exception as exc:  # noqa: BLE001
+                        items.append({"url": u, "title": u, "ok": False,
+                                      "err": str(exc)})
+                    prog.progress(i / len(urls))
+                prog.empty()
+                st.session_state.scan_items = items
+
+        items = st.session_state.get("scan_items", [])
+        if items:
+            good = [it for it in items if it["ok"]]
+            st.write(f"### Found {len(good)} item(s) — choose format for each")
+            FMT_OPTIONS = ["🎵 MP3", "🎵 M4A (fast)", "🎬 MP4 — Best",
+                           "🎬 MP4 — 720p", "🎬 MP4 — 480p"]
+            for idx, it in enumerate(items):
+                if not it["ok"]:
+                    st.error(f"❌ Couldn't read: {it['url']}")
+                    continue
+                cc1, cc2 = st.columns([3, 2])
+                dur = dl.human_duration(it["duration"]) if it.get("duration") else ""
+                cc1.write(f"**{it['title']}**" + (f"  ·  {dur}" if dur else ""))
+                cc2.selectbox("format", FMT_OPTIONS, key=f"scan_fmt_{idx}",
+                              label_visibility="collapsed")
+
+            if st.button("⬇️ Download selected", type="primary",
+                         use_container_width=True):
+                jobs = []
+                for idx, it in enumerate(items):
+                    if not it["ok"]:
+                        continue
+                    choice = st.session_state.get(f"scan_fmt_{idx}", "🎵 MP3")
+                    job = {"url": it["url"], "title": it["title"]}
+                    if choice.startswith("🎬"):
+                        job["fmt"] = "video"
+                        job["quality"] = ("720p" if "720" in choice
+                                          else "480p" if "480" in choice
+                                          else "Best Available")
+                    else:
+                        job["fmt"] = "audio"
+                        job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
+                    jobs.append(job)
+                if jobs:
+                    st.write(f"### Downloading {len(jobs)} item(s)…")
+                    ok, total = run_jobs(jobs)
+                    if ok:
+                        st.balloons()
+                    st.success(f"Done — saved **{ok} of {total}**.")
 
 # =========================================================================== #
 # DOWNLOAD HISTORY

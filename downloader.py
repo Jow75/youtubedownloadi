@@ -85,6 +85,11 @@ def aria2c_available():
     return shutil.which("aria2c") is not None
 
 
+def is_youtube(url):
+    u = (url or "").lower()
+    return "youtube.com" in u or "youtu.be" in u
+
+
 def net_opts(cookiefile=""):
     """Only a cookies.txt FILE is supported (safe: an empty/invalid path simply
     means 'no cookies', so it can never break a public download)."""
@@ -230,7 +235,11 @@ def download_to_folder(url, fmt, quality, audio_codec, dest_dir, title,
         ydl_opts["force_keyframes_at_cuts"] = True
         # Sections require the native/ffmpeg downloader; aria2c can't slice.
     else:
-        ydl_opts.update(downloader_opts(use_aria2c))
+        # YouTube THROTTLES aggressive multi-connection downloads, so aria2c
+        # makes it ~2x slower. Its own native downloader (with the n-signature
+        # solved) is faster there. Only use aria2c for other sites that benefit.
+        effective_aria2c = use_aria2c and not is_youtube(url)
+        ydl_opts.update(downloader_opts(effective_aria2c))
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
