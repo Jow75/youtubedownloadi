@@ -80,7 +80,7 @@ def cmd_generate(args):
 
 def cmd_verify(code):
     ok, res = lic.verify_license(code)
-    print("VALID ✔" if ok else "INVALID �’")
+    print("VALID ✔" if ok else "INVALID ✖")
     print(res)
     return 0 if ok else 1
 

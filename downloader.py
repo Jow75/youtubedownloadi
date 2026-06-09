@@ -20,6 +20,12 @@ import uuid
 import yt_dlp
 from yt_dlp.utils import download_range_func
 
+
+class Canceled(Exception):
+    """Raised (from a progress/status callback) to abort an in-flight download
+    when the user cancels it. Kept distinct so the retry loop re-raises it
+    instead of treating a cancel as a transient error and retrying."""
+
 # extractor_retries rides out anonymous rate limiting (X especially).
 # concurrent_fragment_downloads speeds up fragmented (HLS/DASH) downloads.
 # socket_timeout + file_access_retries make flaky sites (X audio) far steadier.
@@ -397,6 +403,8 @@ def download_with_retry(url, fmt, quality, audio_codec, dest_dir, title,
             return download_to_folder(
                 url, fmt, quality, audio_codec, dest_dir, title,
                 use_aria2c, cookiefile, embed_meta, trim, progress_cb, status_cb)
+        except Canceled:
+            raise  # user canceled — don't retry
         except Exception as exc:  # noqa: BLE001
             last = exc
             if attempt < attempts - 1:

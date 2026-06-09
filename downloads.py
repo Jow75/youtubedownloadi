@@ -23,13 +23,10 @@ from datetime import datetime
 
 import downloader as dl
 import history as hist
+from downloader import Canceled  # re-exported; raised to abort an in-flight job
 
 LANE_NOW = "now"
 LANE_BATCH = "batch"
-
-
-class Canceled(Exception):
-    """Raised inside the progress hook to abort an in-flight download."""
 
 
 class Job:

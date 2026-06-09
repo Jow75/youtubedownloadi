@@ -26,7 +26,7 @@ import hmac
 import json
 import os
 import platform
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 APP_NAME = "UniversalMediaDownloader"

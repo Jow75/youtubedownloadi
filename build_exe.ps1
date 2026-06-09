@@ -31,14 +31,25 @@ if (-not (Test-Path (Join-Path $PSScriptRoot "secret.key"))) {
 # 2) Freeze with PyInstaller.
 Write-Host "Building (this takes a few minutes)..." -ForegroundColor Cyan
 Remove-Item dist, build -Recurse -Force -ErrorAction SilentlyContinue
+# --exclude-module drops a heavy scientific stack (numba/llvmlite/scipy/pyarrow/
+# tensorflow/matplotlib) that Streamlit's data tooling pulls in transitively but
+# this app never uses (no charts/dataframes) — together ~250 MB. If a future
+# feature uses st.dataframe / st.*_chart, remove the matching excludes.
 python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --collect-all streamlit `
     --collect-all yt_dlp `
     --collect-all yt_dlp_ejs `
-    --collect-all altair `
     --copy-metadata streamlit `
+    --exclude-module numba `
+    --exclude-module llvmlite `
+    --exclude-module scipy `
+    --exclude-module pyarrow `
+    --exclude-module tensorflow `
+    --exclude-module matplotlib `
+    --exclude-module altair `
     --add-data "app.py;." `
     --add-data "downloader.py;." `
+    --add-data "downloads.py;." `
     --add-data "licensing.py;." `
     --add-data "history.py;." `
     --add-data "secret.key;."

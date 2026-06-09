@@ -34,21 +34,33 @@ def _host_from_url(url):
     return host
 
 
+# Canonical source names so the same site never shows up twice (e.g. the
+# yt-dlp extractor key 'Youtube' and the domain 'youtube.com' both -> 'YouTube').
+_CANON = {
+    "youtube": "YouTube", "youtubetab": "YouTube", "youtu": "YouTube",
+    "twitter": "X", "x": "X", "tiktok": "TikTok", "reddit": "Reddit",
+    "instagram": "Instagram", "facebook": "Facebook",
+    "soundcloud": "SoundCloud", "vimeo": "Vimeo",
+}
+_HOSTS = {
+    "youtube.com": "YouTube", "youtu.be": "YouTube",
+    "twitter.com": "X", "x.com": "X",
+    "tiktok.com": "TikTok", "reddit.com": "Reddit",
+    "instagram.com": "Instagram", "facebook.com": "Facebook",
+    "soundcloud.com": "SoundCloud", "vimeo.com": "Vimeo",
+}
+
+
 def site_label(url, extractor=""):
-    """A friendly source name: prefer yt-dlp's extractor, else the domain."""
-    ex = (extractor or "").strip()
-    if ex and ex.lower() not in ("generic", "unknown"):
-        # yt-dlp uses keys like 'Youtube', 'TikTok', 'Twitter' (X), 'Reddit'...
-        return "X" if ex.lower() in ("twitter", "x") else ex
+    """A friendly source name, consistent whether we know yt-dlp's extractor or
+    only the URL: prefer the extractor, else the domain — both canonicalized."""
+    ex = (extractor or "").strip().lower()
+    if ex and ex not in ("generic", "unknown"):
+        # Extractor keys can be like 'youtube', 'youtube:tab', 'TwitterTweet'.
+        base = ex.split(":")[0]
+        return _CANON.get(base, (extractor or "").strip())
     host = _host_from_url(url)
-    table = {
-        "youtube.com": "YouTube", "youtu.be": "YouTube",
-        "twitter.com": "X", "x.com": "X",
-        "tiktok.com": "TikTok", "reddit.com": "Reddit",
-        "instagram.com": "Instagram", "facebook.com": "Facebook",
-        "soundcloud.com": "SoundCloud", "vimeo.com": "Vimeo",
-    }
-    for dom, name in table.items():
+    for dom, name in _HOSTS.items():
         if host.endswith(dom):
             return name
     return host or "Other"
