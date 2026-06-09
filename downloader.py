@@ -227,17 +227,43 @@ def normalize_channel_url(url):
     return u
 
 
-def list_media(url, cookiefile="", max_items=None):
-    """Flat-list every video from a channel/profile/playlist URL.
+def _yyyymmdd(s):
+    """'2025-06-09' / '2025/6/9' / '20250609' -> '20250609'. Blank -> None."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    digits = re.sub(r"\D", "", s)
+    return digits[:8] if len(digits) >= 8 else None
+
+
+def list_media(url, cookiefile="", max_items=None, date_after="", date_before=""):
+    """List every video from a channel/profile/playlist URL.
 
     Walks nested results (a channel can come back as tabs-of-playlists),
     de-duplicates, and skips channel-tab pseudo-entries so you get real videos.
-    Returns ``{"title", "uploader", "entries":[{url,title,duration,uploader}]}``.
+    Returns ``{"title", "uploader", "entries":[{url,title,duration,uploader}],
+    "dated": bool}``.
+
+    By default this uses fast *flat* listing (no per-video metadata). If a date
+    range is given it switches to a date-aware pass (slower — it must read each
+    video's upload date) and keeps only videos posted within the range; since
+    channels list newest-first it stops early once it passes the start date.
     """
     target = normalize_channel_url(url)
-    opts = {**COMMON_OPTS, "skip_download": True,
-            "extract_flat": "in_playlist", "noplaylist": False,
-            **net_opts(cookiefile)}
+    da, db = _yyyymmdd(date_after), _yyyymmdd(date_before)
+    dated = bool(da or db)
+
+    if dated:
+        from yt_dlp.utils import DateRange
+        opts = {**COMMON_OPTS, "skip_download": True, "noplaylist": False,
+                "daterange": DateRange(da, db), "break_on_reject": True,
+                "lazy_playlist": True, **net_opts(cookiefile)}
+    else:
+        opts = {**COMMON_OPTS, "skip_download": True,
+                "extract_flat": "in_playlist", "noplaylist": False,
+                **net_opts(cookiefile)}
+    if max_items:
+        opts["playlistend"] = int(max_items)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(target, download=False)
 
@@ -275,6 +301,7 @@ def list_media(url, cookiefile="", max_items=None):
         "title": info.get("title") or info.get("channel") or "channel",
         "uploader": info.get("uploader") or info.get("channel") or "",
         "entries": entries,
+        "dated": dated,
     }
 
 

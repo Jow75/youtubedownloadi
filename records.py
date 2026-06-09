@@ -6,9 +6,29 @@ updates itself every time you issue a key.
 """
 
 import csv
+import sys
 from pathlib import Path
 
-RECORDS = Path(__file__).resolve().parent / "license_records.csv"
+
+def _data_dir():
+    """Where the ledger lives. As a normal script: next to this file (the repo,
+    so the dev's existing CSV keeps working). Frozen into the License Console
+    exe: next to the exe (portable, opens straight in Excel), falling back to
+    %APPDATA% if the exe folder isn't writable."""
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        try:
+            probe = exe_dir / ".umd_write_test"
+            probe.write_text("x", encoding="utf-8")
+            probe.unlink()
+            return exe_dir
+        except OSError:
+            import licensing
+            return licensing.config_dir()
+    return Path(__file__).resolve().parent
+
+
+RECORDS = _data_dir() / "license_records.csv"
 FIELDNAMES = ["timestamp", "customer", "phone", "email", "machine_id",
               "plan", "issued", "expires", "amount", "payment", "notes", "code"]
 

@@ -20,13 +20,13 @@ aria2c optional (turbo downloads).
 """
 
 import os
-import time
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
 
 import downloader as dl
+import downloads
 import history as hist
 import licensing
 
@@ -91,12 +91,8 @@ def fetch_playlist(url, cookiefile=""):
     return dl.list_playlist(url, cookiefile)
 
 
-def add_history(path, title, fmt, url="", extractor=""):
-    """Persist a finished download to disk so it survives refresh/restart."""
-    try:
-        hist.add_entry(path, title, fmt, url=url, extractor=extractor)
-    except Exception:  # noqa: BLE001 — history must never break a download
-        pass
+# History persistence now happens inside the background worker (downloads.py)
+# the moment each file finishes — so it works even while you browse other tabs.
 
 
 # --------------------------------------------------------------------------- #
@@ -191,42 +187,90 @@ def resolve_dir(fmt):
     return video_dir if fmt == "video" else audio_dir
 
 
-def run_jobs(jobs):
-    """Download a list of jobs sequentially with live progress. Each job is a
-    dict: url, fmt, quality, audio_codec, title (optional)."""
-    overall = st.progress(0.0)
-    ok = 0
-    total = len(jobs)
-    for i, job in enumerate(jobs, 1):
-        row = st.empty()
-        bar = st.progress(0.0)
-        url = job["url"]
-        row.info(f"[{i}/{total}] 🔎 {job.get('title') or url}")
-        try:
-            title = job.get("title") or fetch_metadata(url, cookiefile)["title"]
-            row.info(f"[{i}/{total}] ⬇️ {title}")
-            path = dl.download_with_retry(
-                url, job["fmt"], job.get("quality"),
-                job.get("audio_codec", "mp3"), resolve_dir(job["fmt"]), title,
-                use_aria2c, cookiefile, embed_meta, None,
-                progress_cb=lambda x, b=bar: b.progress(x),
-            )
-            bar.progress(1.0)
-            row.success(f"[{i}/{total}] ✅ {os.path.basename(path)}")
-            add_history(path, title, job["fmt"], url=url)
-            ok += 1
-        except Exception as exc:  # noqa: BLE001
-            bar.empty()
-            row.error(f"[{i}/{total}] ❌ {url}\n\n`{exc}`")
-        overall.progress(i / total)
-        time.sleep(0.4)  # be polite between requests (helps avoid rate limits)
-    return ok, total
+def enqueue(jobs, lane=downloads.LANE_NOW):
+    """Hand a list of jobs to the background queue and return immediately, so
+    the UI never blocks. Each job: url, fmt, quality?, audio_codec?, title?,
+    trim?. Current sidebar settings are captured per-job at enqueue time."""
+    opts = {"use_aria2c": use_aria2c, "cookiefile": cookiefile,
+            "embed_meta": embed_meta}
+    specs = []
+    for j in jobs:
+        fmt = j["fmt"]
+        specs.append({
+            "url": j["url"], "fmt": fmt, "quality": j.get("quality"),
+            "audio_codec": j.get("audio_codec", "mp3"),
+            "dest_dir": resolve_dir(fmt), "title": j.get("title", ""),
+            "opts": {**opts, "trim": j.get("trim")},
+        })
+    downloads.get_manager().add_jobs(specs, lane)
+    return len(specs)
+
+
+@st.fragment(run_every="2s")
+def downloads_panel():
+    """Always-visible, self-refreshing queue. Lives in its own fragment so it
+    updates progress every 2s WITHOUT rerunning (or disturbing) the rest of the
+    page — switch tabs freely while this keeps ticking."""
+    mgr = downloads.get_manager()
+    jobs = mgr.snapshot()
+    c = mgr.counts()
+    active = [j for j in jobs if j.status in ("downloading", "queued")]
+    finished = [j for j in jobs if j.status in ("done", "error", "canceled")]
+
+    with st.container(border=True):
+        h1, h2, h3 = st.columns([5, 1.1, 1.1])
+        bits = []
+        if c["active"]:
+            bits.append(f"⬇️ {c['active']} downloading")
+        if c["queued"]:
+            bits.append(f"🕒 {c['queued']} queued")
+        if c["done"]:
+            bits.append(f"✅ {c['done']} done")
+        if c["error"]:
+            bits.append(f"❌ {c['error']} failed")
+        h1.markdown("**Downloads** — " + (" · ".join(bits) if bits
+                    else "idle — queue anything; it keeps going while you browse"))
+        if active and h2.button("Cancel all", key="dl_cancel_all",
+                                use_container_width=True):
+            mgr.cancel_all()
+            st.rerun(scope="fragment")
+        if finished and h3.button("Clear done", key="dl_clear",
+                                  use_container_width=True):
+            mgr.clear_finished()
+            st.rerun(scope="fragment")
+
+        for j in active[:60]:
+            lane = "📦" if j.lane == downloads.LANE_BATCH else "⚡"
+            r1, r2 = st.columns([7, 1])
+            r1.markdown(
+                f"{lane} **{j.label}**  \n"
+                f"<span style='color:#888;font-size:.8em'>{j.detail}</span>",
+                unsafe_allow_html=True)
+            if r2.button("✕", key=f"dlc_{j.id}", help="Cancel this download"):
+                mgr.cancel(j.id)
+                st.rerun(scope="fragment")
+            r1.progress(j.progress if j.status == "downloading" else 0.0)
+
+        for j in finished[:25]:
+            icon = ("✅" if j.status == "done"
+                    else "⛔" if j.status == "canceled" else "❌")
+            sub = (j.error if j.status == "error"
+                   else os.path.basename(j.result) if j.result else j.detail)
+            r1, r2 = st.columns([7, 1])
+            r1.markdown(
+                f"{icon} **{j.label}**  \n"
+                f"<span style='color:#888;font-size:.8em'>{sub}</span>",
+                unsafe_allow_html=True)
+            if j.status == "done" and j.result:
+                if r2.button("📂", key=f"dlo_{j.id}", help="Open containing folder"):
+                    open_in_explorer(j.result)
 
 
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
 st.title("⬇️ Universal Media Downloader")
+downloads_panel()
 
 mode = st.radio("Mode",
                 ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"],
@@ -242,9 +286,7 @@ if mode == "🔗 Single link":
         label_visibility="collapsed",
     )
 
-    if url != st.session_state.get("last_url"):
-        st.session_state.last_url = url
-        st.session_state.pop("saved_path", None)
+    st.session_state.last_url = url
 
     metadata = None
     if url.strip():
@@ -303,8 +345,6 @@ if mode == "🔗 Single link":
                        "(Trimming turns off turbo for accuracy.)")
 
         if st.button("⬇️ Download", type="primary", use_container_width=True):
-            st.session_state.pop("saved_path", None)
-
             if whole_playlist:
                 with st.spinner("Reading playlist…"):
                     try:
@@ -313,49 +353,26 @@ if mode == "🔗 Single link":
                         pl = None
                         st.error(f"Couldn't read the playlist: `{exc}`")
                 if pl and pl["entries"]:
-                    st.write(f"### Playlist: {pl['title']} — {len(pl['entries'])} item(s)")
                     jobs = [{"url": e["url"], "fmt": fmt, "quality": quality,
                              "audio_codec": audio_codec, "title": e["title"]}
                             for e in pl["entries"]]
-                    ok, total = run_jobs(jobs)
-                    if ok:
-                        st.balloons()
-                    st.success(f"Done — saved **{ok} of {total}**.")
+                    n = enqueue(jobs, downloads.LANE_BATCH)
+                    st.success(f"📦 Queued **{n}** item(s) from *{pl['title']}* — "
+                               "track them in **Downloads** above.")
                 elif pl:
                     st.warning("No items found in that playlist.")
             else:
+                trim = None
                 s = dl.parse_time(start_txt)
                 e = dl.parse_time(end_txt)
                 if s is not None or e is not None:
                     end_val = e if e is not None else (metadata["duration"] or 10 ** 9)
                     trim = (s or 0.0, end_val)
-
-                bar = st.progress(0.0)
-                status = st.empty()
-                status.info("⏳ Starting…")
-                try:
-                    path = dl.download_with_retry(
-                        url.strip(), fmt, quality, audio_codec,
-                        resolve_dir(fmt), metadata["title"], use_aria2c,
-                        cookiefile, embed_meta, trim,
-                        progress_cb=lambda f: bar.progress(f),
-                        status_cb=lambda t: status.info(t),
-                    )
-                    bar.progress(1.0)
-                    status.empty()
-                    st.session_state.saved_path = path
-                    add_history(path, metadata["title"], fmt, url=url.strip(),
-                                extractor=metadata.get("extractor", ""))
-                except Exception as exc:  # noqa: BLE001
-                    bar.empty()
-                    status.error(f"Failed: `{exc}`")
-
-        if st.session_state.get("saved_path"):
-            saved = st.session_state.saved_path
-            st.balloons()
-            st.success(f"🎉 Saved to:\n\n`{saved}`")
-            if st.button("📂 Open folder", use_container_width=True):
-                open_in_explorer(saved)
+                enqueue([{"url": url.strip(), "fmt": fmt, "quality": quality,
+                          "audio_codec": audio_codec, "title": metadata["title"],
+                          "trim": trim}], downloads.LANE_NOW)
+                st.success("⚡ Queued — it's downloading now in **Downloads** "
+                           "above. You can paste another link or switch tabs.")
 
 # =========================================================================== #
 # CHANNEL / PROFILE MODE
@@ -372,14 +389,31 @@ elif mode == "📺 Channel / Profile":
     sc1, sc2 = st.columns([3, 1])
     max_items = sc2.number_input("Max videos (0 = all)", min_value=0, value=0, step=10,
                                  help="Cap how many to list — handy for huge channels.")
+    with st.expander("📅 Only a date range (optional)"):
+        st.caption("Grab just the videos posted in a window — e.g. **2025-01-01 → "
+                   "2026-12-31**. Leave blank for everything. *Note: filtering by "
+                   "date reads each video's upload date, so scanning is slower; "
+                   "pairing it with a Max-videos cap keeps it quick.*")
+        dcol1, dcol2 = st.columns(2)
+        date_after = dcol1.text_input("From (YYYY-MM-DD)", value="",
+                                      placeholder="2025-01-01")
+        date_before = dcol2.text_input("To (YYYY-MM-DD)", value="",
+                                       placeholder="2026-12-31")
+
     if sc1.button("🔎 Scan channel / profile", type="primary", use_container_width=True):
         if not ch_url.strip():
             st.warning("Paste a channel or profile link first.")
         else:
-            with st.spinner("Reading every video… big channels take a moment."):
+            dated = bool(date_after.strip() or date_before.strip())
+            msg = ("Reading dates for each video… this is slower."
+                   if dated else "Reading every video… big channels take a moment.")
+            with st.spinner(msg):
                 try:
-                    res = dl.list_media(ch_url.strip(), cookiefile, max_items or None)
+                    res = dl.list_media(ch_url.strip(), cookiefile, max_items or None,
+                                        date_after=date_after, date_before=date_before)
                     st.session_state.channel_res = res
+                    st.session_state.ch_page = 1
+                    st.session_state.pop("ch_search", None)
                 except Exception as exc:  # noqa: BLE001
                     st.session_state.pop("channel_res", None)
                     st.error("Couldn't read that channel/profile. It may be private, "
@@ -389,63 +423,95 @@ elif mode == "📺 Channel / Profile":
     res = st.session_state.get("channel_res")
     if res and res.get("entries"):
         entries = res["entries"]
-        st.success(f"**{res['title']}** — found **{len(entries)}** video(s)"
+        rng = " in your date range" if res.get("dated") else ""
+        st.success(f"**{res['title']}** — found **{len(entries)}** video(s){rng}"
                    + (f"  ·  by {res['uploader']}" if res.get("uploader") else ""))
 
+        # -- Grab everything ------------------------------------------------ #
         st.markdown("#### ⚡ Grab everything")
         gq = st.selectbox("Video quality (for MP4)", ["Best Available", "720p", "480p"])
         ga, gb = st.columns(2)
-        grab_mp3 = ga.button("🎵 Download ALL as MP3", use_container_width=True)
-        grab_mp4 = gb.button("🎬 Download ALL as MP4", use_container_width=True)
-        if grab_mp3 or grab_mp4:
-            is_aud = bool(grab_mp3)
-            jobs = [{"url": e["url"], "title": e["title"],
-                     "fmt": "audio" if is_aud else "video",
-                     "quality": None if is_aud else gq, "audio_codec": "mp3"}
-                    for e in entries]
-            st.write(f"### Downloading {len(jobs)} item(s) as "
-                     f"{'MP3' if is_aud else 'MP4'}…")
-            ok, total = run_jobs(jobs)
-            if ok:
-                st.balloons()
-            st.success(f"Done — saved **{ok} of {total}**.")
+        if ga.button("🎵 Download ALL as MP3", use_container_width=True):
+            n = enqueue([{"url": e["url"], "title": e["title"], "fmt": "audio",
+                          "audio_codec": "mp3"} for e in entries],
+                        downloads.LANE_BATCH)
+            st.success(f"📦 Queued **{n}** as MP3 — see **Downloads** above.")
+        if gb.button("🎬 Download ALL as MP4", use_container_width=True):
+            n = enqueue([{"url": e["url"], "title": e["title"], "fmt": "video",
+                          "quality": gq} for e in entries], downloads.LANE_BATCH)
+            st.success(f"📦 Queued **{n}** as MP4 — see **Downloads** above.")
 
+        # -- Search + per-video chooser (paginated) ------------------------- #
         FMT_OPTIONS = ["🎵 MP3", "🎵 M4A (fast)", "🎬 MP4 — Best",
                        "🎬 MP4 — 720p", "🎬 MP4 — 480p", "⛔ Skip"]
-        with st.expander(f"🎚️ Or choose per video ({len(entries)})", expanded=False):
-            st.caption("Pick a format for each (or **Skip**), then download the chosen ones.")
-            for idx, e in enumerate(entries):
-                pc1, pc2 = st.columns([3, 2])
-                dur = dl.human_duration(e["duration"]) if e.get("duration") else ""
-                pc1.write(f"**{e['title']}**" + (f"  ·  {dur}" if dur else ""))
-                pc2.selectbox("format", FMT_OPTIONS, key=f"ch_fmt_{idx}",
-                              label_visibility="collapsed")
-            if st.button("⬇️ Download chosen videos", type="primary",
-                         use_container_width=True):
-                jobs = []
-                for idx, e in enumerate(entries):
-                    choice = st.session_state.get(f"ch_fmt_{idx}", "🎵 MP3")
-                    if choice.startswith("⛔"):
-                        continue
-                    job = {"url": e["url"], "title": e["title"]}
-                    if choice.startswith("🎬"):
-                        job["fmt"] = "video"
-                        job["quality"] = ("720p" if "720" in choice
-                                          else "480p" if "480" in choice
-                                          else "Best Available")
-                    else:
-                        job["fmt"] = "audio"
-                        job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
-                    jobs.append(job)
-                if not jobs:
-                    st.warning("Every video is set to Skip — pick a format for at "
-                               "least one.")
+        PER_PAGE = 50
+        st.markdown("#### 🎚️ Or pick per video")
+
+        srch = st.text_input("🔎 Search these videos by name",
+                             key="ch_search", placeholder="Type part of a title…")
+        # keep (global index, entry) so per-video choices stay stable across pages
+        indexed = list(enumerate(entries))
+        if srch.strip():
+            q = srch.strip().lower()
+            indexed = [(gi, e) for gi, e in indexed if q in e["title"].lower()]
+
+        total_pages = max(1, (len(indexed) + PER_PAGE - 1) // PER_PAGE)
+        page = min(st.session_state.get("ch_page", 1), total_pages)
+        nav1, nav2, nav3 = st.columns([1, 2, 1])
+        if nav1.button("← Prev", disabled=page <= 1, use_container_width=True):
+            st.session_state.ch_page = page - 1
+            st.rerun()
+        page = min(st.session_state.get("ch_page", 1), total_pages)
+        start = (page - 1) * PER_PAGE
+        shown = indexed[start:start + PER_PAGE]
+        nav2.markdown(f"<div style='text-align:center;padding-top:6px'>Page "
+                      f"**{page}** of **{total_pages}** · showing "
+                      f"{len(shown)} of {len(indexed)}"
+                      f"{' matching' if srch.strip() else ''}</div>",
+                      unsafe_allow_html=True)
+        if nav3.button("Next →", disabled=page >= total_pages,
+                       use_container_width=True):
+            st.session_state.ch_page = page + 1
+            st.rerun()
+
+        if not shown:
+            st.info("No videos match that search.")
+        for gi, e in shown:
+            pc1, pc2 = st.columns([3, 2])
+            dur = dl.human_duration(e["duration"]) if e.get("duration") else ""
+            pc1.write(f"**{e['title']}**" + (f"  ·  {dur}" if dur else ""))
+            pc2.selectbox("format", FMT_OPTIONS, key=f"ch_fmt_{gi}",
+                          label_visibility="collapsed")
+
+        bc1, bc2 = st.columns(2)
+        if bc1.button("⬇️ Download chosen (all pages)", type="primary",
+                      use_container_width=True):
+            jobs = []
+            for gi, e in enumerate(entries):
+                choice = st.session_state.get(f"ch_fmt_{gi}", "🎵 MP3")
+                if choice.startswith("⛔"):
+                    continue
+                job = {"url": e["url"], "title": e["title"]}
+                if choice.startswith("🎬"):
+                    job["fmt"] = "video"
+                    job["quality"] = ("720p" if "720" in choice
+                                      else "480p" if "480" in choice
+                                      else "Best Available")
                 else:
-                    st.write(f"### Downloading {len(jobs)} item(s)…")
-                    ok, total = run_jobs(jobs)
-                    if ok:
-                        st.balloons()
-                    st.success(f"Done — saved **{ok} of {total}**.")
+                    job["fmt"] = "audio"
+                    job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
+                jobs.append(job)
+            if not jobs:
+                st.warning("Every video is set to Skip — pick a format for at "
+                           "least one (your picks are remembered across pages).")
+            else:
+                n = enqueue(jobs, downloads.LANE_BATCH)
+                st.success(f"📦 Queued **{n}** chosen video(s) — see **Downloads** "
+                           "above.")
+        if bc2.button("↺ Reset all picks to Skip", use_container_width=True):
+            for gi in range(len(entries)):
+                st.session_state[f"ch_fmt_{gi}"] = "⛔ Skip"
+            st.rerun()
     elif res is not None:
         st.warning("No videos found there. Private content (e.g. TikTok **liked** "
                    "videos) needs a cookies.txt and a public 'Liked' list — set the "
@@ -493,12 +559,9 @@ else:
             if not jobs:
                 st.warning("Paste at least one link into a column first.")
             else:
-                st.write(f"### Downloading {len(jobs)} item(s)…")
-                ok, total = run_jobs(jobs)
-                if ok:
-                    st.balloons()
-                st.success(f"Done — saved **{ok} of {total}**. "
-                           "Open the folder from the sidebar to see them.")
+                n = enqueue(jobs, downloads.LANE_NOW)
+                st.success(f"⚡ Queued **{n}** item(s) — they're downloading in "
+                           "**Downloads** above while you keep working.")
 
     # ----- Option 2: scan & choose per link (secondary) -------------------- #
     else:
@@ -558,11 +621,9 @@ else:
                         job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
                     jobs.append(job)
                 if jobs:
-                    st.write(f"### Downloading {len(jobs)} item(s)…")
-                    ok, total = run_jobs(jobs)
-                    if ok:
-                        st.balloons()
-                    st.success(f"Done — saved **{ok} of {total}**.")
+                    n = enqueue(jobs, downloads.LANE_NOW)
+                    st.success(f"⚡ Queued **{n}** item(s) — see **Downloads** "
+                               "above.")
 
 # =========================================================================== #
 # DOWNLOAD HISTORY  (persistent — survives refresh & restart)
