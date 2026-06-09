@@ -671,31 +671,58 @@ else:
 
     filtered = [h for h in all_hist if _match(h)]
     total_size = sum(h.get("size", 0) for h in filtered)
-    sc1, sc2 = st.columns([4, 1])
-    sc1.caption(f"Showing **{len(filtered)}** of {len(all_hist)} downloads  ·  "
+    pc1, pc2, pc3 = st.columns([2.5, 1.3, 1.2])
+    pc1.caption(f"Showing **{len(filtered)}** of {len(all_hist)} downloads  ·  "
                 f"{fmt_size(total_size)} total")
-    if sc2.button("🗑️ Clear all", use_container_width=True,
+    per_sel = pc2.selectbox("Per page",
+                            ["10 per page", "20 per page", "30 per page",
+                             "50 per page", "Show all"], index=1,
+                            key="hist_per_page", label_visibility="collapsed")
+    if pc3.button("🗑️ Clear all", use_container_width=True,
                   help="Permanently remove every entry from your history"):
         hist.clear_history()
         st.rerun()
 
     if not filtered:
         st.info("No downloads match those filters.")
-    for h in filtered[:300]:
-        icon = "🎬" if h.get("fmt") == "video" else "🎵"
-        hc1, hc2, hc3 = st.columns([7, 1, 1])
-        hc1.markdown(
-            f"{icon} **{h.get('title') or h.get('filename')}**  \n"
-            f"<span style='color:#888;font-size:0.82em'>"
-            f"{h.get('site', '')} · {when_label(h.get('ts'))} · "
-            f"{fmt_size(h.get('size', 0))}</span>",
-            unsafe_allow_html=True)
-        if hc2.button("📂", key=f"hopen_{h['id']}", help="Open containing folder"):
-            if not open_in_explorer(h["path"]):
-                st.warning("That file/folder may have been moved or deleted.")
-        if hc3.button("✕", key=f"hdel_{h['id']}", help="Remove from history"):
-            hist.delete_entry(h["id"])
-            st.rerun()
+    else:
+        # Page the (already filtered) list into chunks, or show the full list.
+        if per_sel.startswith("Show"):
+            page_items = filtered
+        else:
+            per = int(per_sel.split()[0])
+            total_pages = max(1, (len(filtered) + per - 1) // per)
+            cur_page = min(st.session_state.get("hist_page", 1), total_pages)
+            n1, n2, n3 = st.columns([1, 2, 1])
+            if n1.button("← Prev", key="hist_prev", disabled=cur_page <= 1,
+                         use_container_width=True):
+                st.session_state.hist_page = cur_page - 1
+                st.rerun()
+            n2.markdown(f"<div style='text-align:center;padding-top:6px'>Page "
+                        f"**{cur_page}** of **{total_pages}**</div>",
+                        unsafe_allow_html=True)
+            if n3.button("Next →", key="hist_next", disabled=cur_page >= total_pages,
+                         use_container_width=True):
+                st.session_state.hist_page = cur_page + 1
+                st.rerun()
+            start = (cur_page - 1) * per
+            page_items = filtered[start:start + per]
+
+        for h in page_items:
+            icon = "🎬" if h.get("fmt") == "video" else "🎵"
+            hc1, hc2, hc3 = st.columns([7, 1, 1])
+            hc1.markdown(
+                f"{icon} **{h.get('title') or h.get('filename')}**  \n"
+                f"<span style='color:#888;font-size:0.82em'>"
+                f"{h.get('site', '')} · {when_label(h.get('ts'))} · "
+                f"{fmt_size(h.get('size', 0))}</span>",
+                unsafe_allow_html=True)
+            if hc2.button("📂", key=f"hopen_{h['id']}", help="Open containing folder"):
+                if not open_in_explorer(h["path"]):
+                    st.warning("That file/folder may have been moved or deleted.")
+            if hc3.button("✕", key=f"hdel_{h['id']}", help="Remove from history"):
+                hist.delete_entry(h["id"])
+                st.rerun()
 
 # --------------------------------------------------------------------------- #
 # Footer
