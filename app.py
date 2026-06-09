@@ -206,7 +206,7 @@ def enqueue(jobs, lane=downloads.LANE_NOW):
     return len(specs)
 
 
-@st.fragment(run_every="2s")
+@st.fragment(run_every=2.0)  # numeric seconds — avoids Streamlit importing pandas
 def downloads_panel():
     """Always-visible, self-refreshing queue. Lives in its own fragment so it
     updates progress every 2s WITHOUT rerunning (or disturbing) the rest of the
