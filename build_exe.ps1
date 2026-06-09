@@ -14,14 +14,17 @@ $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";"
             [System.Environment]::GetEnvironmentVariable("Path","User")
 
 # 1) Make sure the bundled binaries exist (ffmpeg/ffprobe/aria2c/node).
+#    A binary already pinned in bin\ is KEPT as-is (so a smaller "essentials"
+#    ffmpeg you've dropped in there isn't overwritten by a bigger system build);
+#    only missing ones are pulled from PATH.
 $bin = Join-Path $PSScriptRoot "bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 foreach ($exe in @("ffmpeg","ffprobe","aria2c","node")) {
+    $dst = Join-Path $bin "$exe.exe"
+    if (Test-Path $dst) { continue }
     $src = (Get-Command $exe -ErrorAction SilentlyContinue).Source
-    if ($src) { Copy-Item $src $bin -Force }
-    elseif (-not (Test-Path (Join-Path $bin "$exe.exe"))) {
-        throw "Missing required binary: $exe (install it, then re-run)."
-    }
+    if ($src) { Copy-Item $src $dst -Force }
+    else { throw "Missing required binary: $exe (install it, then re-run)." }
 }
 
 if (-not (Test-Path (Join-Path $PSScriptRoot "secret.key"))) {
