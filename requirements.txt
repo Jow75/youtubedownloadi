@@ -1,3 +1,4 @@
 streamlit>=1.33
 yt-dlp
 yt-dlp-ejs
+pywebview>=5

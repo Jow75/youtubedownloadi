@@ -40,11 +40,21 @@ Remove-Item dist, build -Recurse -Force -ErrorAction SilentlyContinue
 # IMPORTANT: do NOT exclude pyarrow/pandas/numpy/altair — Streamlit imports
 # pandas (which imports pyarrow) on startup, and a half-removed pyarrow makes it
 # crash with "module 'pyarrow' has no attribute '__version__'". Those stay.
+# pywebview (native window) + pythonnet/clr (its Windows WebView2 backend) must
+# be fully collected, or the frozen app can't open the window and falls back to
+# a browser. The WebView2 runtime itself ships with Windows 10/11.
 python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --collect-all streamlit `
     --collect-all yt_dlp `
     --collect-all yt_dlp_ejs `
     --collect-all altair `
+    --collect-all webview `
+    --collect-all clr_loader `
+    --copy-metadata pywebview `
+    --copy-metadata pythonnet `
+    --hidden-import clr `
+    --hidden-import webview.platforms.edgechromium `
+    --hidden-import webview.platforms.winforms `
     --copy-metadata streamlit `
     --exclude-module numba `
     --exclude-module llvmlite `
