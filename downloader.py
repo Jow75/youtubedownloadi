@@ -22,13 +22,16 @@ from yt_dlp.utils import download_range_func
 
 # extractor_retries rides out anonymous rate limiting (X especially).
 # concurrent_fragment_downloads speeds up fragmented (HLS/DASH) downloads.
+# socket_timeout + file_access_retries make flaky sites (X audio) far steadier.
 COMMON_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "noplaylist": True,
     "retries": 10,
-    "fragment_retries": 10,
-    "extractor_retries": 3,
+    "fragment_retries": 15,
+    "extractor_retries": 5,
+    "file_access_retries": 5,
+    "socket_timeout": 30,
     "geo_bypass": True,
     "concurrent_fragment_downloads": 4,
 }
@@ -88,6 +91,13 @@ def aria2c_available():
 def is_youtube(url):
     u = (url or "").lower()
     return "youtube.com" in u or "youtu.be" in u
+
+
+def is_x(url):
+    """X / Twitter — serves HLS and rate-limits aggressively; aria2c's many
+    parallel connections make its audio extraction flaky, so we keep it native."""
+    u = (url or "").lower()
+    return "twitter.com" in u or "//x.com" in u or ".x.com" in u or u.startswith("x.com")
 
 
 def net_opts(cookiefile=""):
@@ -188,6 +198,87 @@ def list_playlist(url, cookiefile=""):
 
 
 # --------------------------------------------------------------------------- #
+# Channel / profile listing (Phase D)
+# --------------------------------------------------------------------------- #
+_YT_TABS = ("/videos", "/shorts", "/streams", "/playlists", "/featured",
+            "/community", "/about")
+
+
+def normalize_channel_url(url):
+    """Point a channel/profile link at its full video list.
+
+    A bare YouTube channel root (``/@handle``, ``/channel/UC…``, ``/c/…``,
+    ``/user/…``) is rewritten to its ``/videos`` tab so yt-dlp returns every
+    upload. URLs that already target a tab, a playlist, a watch page, or a
+    non-YouTube site are returned unchanged (TikTok/X profiles list fine as-is).
+    """
+    u = (url or "").strip()
+    if not u:
+        return u
+    low = u.lower()
+    if "youtube.com" not in low:
+        return u
+    base = u.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+    if any(base.lower().endswith(t) for t in _YT_TABS):
+        return base
+    if re.search(r"youtube\.com/(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)$",
+                 base, re.I):
+        return base + "/videos"
+    return u
+
+
+def list_media(url, cookiefile="", max_items=None):
+    """Flat-list every video from a channel/profile/playlist URL.
+
+    Walks nested results (a channel can come back as tabs-of-playlists),
+    de-duplicates, and skips channel-tab pseudo-entries so you get real videos.
+    Returns ``{"title", "uploader", "entries":[{url,title,duration,uploader}]}``.
+    """
+    target = normalize_channel_url(url)
+    opts = {**COMMON_OPTS, "skip_download": True,
+            "extract_flat": "in_playlist", "noplaylist": False,
+            **net_opts(cookiefile)}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(target, download=False)
+
+    entries, seen = [], set()
+
+    def walk(node, depth=0):
+        if not node or depth > 4:
+            return
+        subs = node.get("entries")
+        if subs:
+            for child in subs:
+                walk(child, depth + 1)
+            return
+        # A leaf. Skip channel-tab links (they aren't watchable videos).
+        if (node.get("ie_key") or node.get("_type")) == "YoutubeTab":
+            return
+        eurl = node.get("url") or node.get("webpage_url") or node.get("id")
+        if not eurl:
+            return
+        key = node.get("id") or eurl
+        if key in seen:
+            return
+        seen.add(key)
+        entries.append({
+            "url": eurl,
+            "title": node.get("title") or "media",
+            "duration": node.get("duration"),
+            "uploader": node.get("uploader") or node.get("channel") or "",
+        })
+
+    walk(info)
+    if max_items:
+        entries = entries[: int(max_items)]
+    return {
+        "title": info.get("title") or info.get("channel") or "channel",
+        "uploader": info.get("uploader") or info.get("channel") or "",
+        "entries": entries,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Download
 # --------------------------------------------------------------------------- #
 def download_to_folder(url, fmt, quality, audio_codec, dest_dir, title,
@@ -235,10 +326,11 @@ def download_to_folder(url, fmt, quality, audio_codec, dest_dir, title,
         ydl_opts["force_keyframes_at_cuts"] = True
         # Sections require the native/ffmpeg downloader; aria2c can't slice.
     else:
-        # YouTube THROTTLES aggressive multi-connection downloads, so aria2c
-        # makes it ~2x slower. Its own native downloader (with the n-signature
-        # solved) is faster there. Only use aria2c for other sites that benefit.
-        effective_aria2c = use_aria2c and not is_youtube(url)
+        # YouTube THROTTLES aggressive multi-connection downloads (aria2c makes
+        # it ~2x slower). X rate-limits hard and aria2c's parallel connections
+        # make its audio extraction flaky. Both are faster/steadier on yt-dlp's
+        # native downloader — only hand other sites to aria2c.
+        effective_aria2c = use_aria2c and not is_youtube(url) and not is_x(url)
         ydl_opts.update(downloader_opts(effective_aria2c))
 
     try:
@@ -267,8 +359,11 @@ def download_to_folder(url, fmt, quality, audio_codec, dest_dir, title,
 
 def download_with_retry(url, fmt, quality, audio_codec, dest_dir, title,
                         use_aria2c=False, cookiefile="", embed_meta=True,
-                        trim=None, progress_cb=None, status_cb=None, attempts=2):
-    """Retry once after a short backoff — mainly to ride out X rate limiting."""
+                        trim=None, progress_cb=None, status_cb=None, attempts=None):
+    """Retry with progressive backoff — mainly to ride out X rate limiting.
+    Flaky sites (X) get an extra attempt automatically."""
+    if attempts is None:
+        attempts = 4 if is_x(url) else 2
     last = None
     for attempt in range(attempts):
         try:
@@ -278,7 +373,9 @@ def download_with_retry(url, fmt, quality, audio_codec, dest_dir, title,
         except Exception as exc:  # noqa: BLE001
             last = exc
             if attempt < attempts - 1:
+                wait = 3 * (attempt + 1)  # 3s, 6s, 9s…
                 if status_cb:
-                    status_cb(f"⚠️ Hiccup — retrying in 3s…")
-                time.sleep(3)
+                    status_cb(f"⚠️ Hiccup — retrying in {wait}s "
+                              f"({attempt + 2}/{attempts})…")
+                time.sleep(wait)
     raise last

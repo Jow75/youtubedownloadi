@@ -21,12 +21,42 @@ aria2c optional (turbo downloads).
 
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
 
 import downloader as dl
+import history as hist
 import licensing
+
+
+def fmt_size(n):
+    """Bytes -> compact human size (e.g. '4 MB', '1.2 GB')."""
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit in ("B", "KB") else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def when_label(ts):
+    """ISO timestamp -> friendly relative time (e.g. '3 h ago', 'Jun 09, 2026')."""
+    try:
+        d = datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return ""
+    s = (datetime.now() - d).total_seconds()
+    if s < 60:
+        return "just now"
+    if s < 3600:
+        return f"{int(s // 60)} min ago"
+    if s < 86400:
+        return f"{int(s // 3600)} h ago"
+    if s < 7 * 86400:
+        return f"{int(s // 86400)} d ago"
+    return d.strftime("%b %d, %Y")
 
 # Flip to enforce licensing in distributed builds: set env UMD_ENFORCE_LICENSE=1.
 # Left OFF here so local/owner use is never blocked during development.
@@ -61,9 +91,12 @@ def fetch_playlist(url, cookiefile=""):
     return dl.list_playlist(url, cookiefile)
 
 
-def add_history(path, title, fmt):
-    st.session_state.setdefault("history", [])
-    st.session_state.history.insert(0, {"path": path, "title": title, "fmt": fmt})
+def add_history(path, title, fmt, url="", extractor=""):
+    """Persist a finished download to disk so it survives refresh/restart."""
+    try:
+        hist.add_entry(path, title, fmt, url=url, extractor=extractor)
+    except Exception:  # noqa: BLE001 — history must never break a download
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -180,7 +213,7 @@ def run_jobs(jobs):
             )
             bar.progress(1.0)
             row.success(f"[{i}/{total}] ✅ {os.path.basename(path)}")
-            add_history(path, title, job["fmt"])
+            add_history(path, title, job["fmt"], url=url)
             ok += 1
         except Exception as exc:  # noqa: BLE001
             bar.empty()
@@ -195,7 +228,9 @@ def run_jobs(jobs):
 # --------------------------------------------------------------------------- #
 st.title("⬇️ Universal Media Downloader")
 
-mode = st.radio("Mode", ["🔗 Single link", "📚 Bulk (many links)"], horizontal=True)
+mode = st.radio("Mode",
+                ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"],
+                horizontal=True)
 
 # =========================================================================== #
 # SINGLE MODE
@@ -309,7 +344,8 @@ if mode == "🔗 Single link":
                     bar.progress(1.0)
                     status.empty()
                     st.session_state.saved_path = path
-                    add_history(path, metadata["title"], fmt)
+                    add_history(path, metadata["title"], fmt, url=url.strip(),
+                                extractor=metadata.get("extractor", ""))
                 except Exception as exc:  # noqa: BLE001
                     bar.empty()
                     status.error(f"Failed: `{exc}`")
@@ -320,6 +356,100 @@ if mode == "🔗 Single link":
             st.success(f"🎉 Saved to:\n\n`{saved}`")
             if st.button("📂 Open folder", use_container_width=True):
                 open_in_explorer(saved)
+
+# =========================================================================== #
+# CHANNEL / PROFILE MODE
+# =========================================================================== #
+elif mode == "📺 Channel / Profile":
+    st.caption("Paste an artist's **YouTube channel**, a **TikTok profile**, or "
+               "any playlist link. Scan it to list every video, then grab them "
+               "**all as MP3 or MP4** — or pick per-video.")
+    ch_url = st.text_input(
+        "Channel / profile / playlist link",
+        placeholder="https://www.youtube.com/@artist   ·   https://www.tiktok.com/@user",
+        label_visibility="collapsed",
+    )
+    sc1, sc2 = st.columns([3, 1])
+    max_items = sc2.number_input("Max videos (0 = all)", min_value=0, value=0, step=10,
+                                 help="Cap how many to list — handy for huge channels.")
+    if sc1.button("🔎 Scan channel / profile", type="primary", use_container_width=True):
+        if not ch_url.strip():
+            st.warning("Paste a channel or profile link first.")
+        else:
+            with st.spinner("Reading every video… big channels take a moment."):
+                try:
+                    res = dl.list_media(ch_url.strip(), cookiefile, max_items or None)
+                    st.session_state.channel_res = res
+                except Exception as exc:  # noqa: BLE001
+                    st.session_state.pop("channel_res", None)
+                    st.error("Couldn't read that channel/profile. It may be private, "
+                             "unsupported, or need login cookies (sidebar → Speed & "
+                             f"advanced).\n\nDetails: `{exc}`")
+
+    res = st.session_state.get("channel_res")
+    if res and res.get("entries"):
+        entries = res["entries"]
+        st.success(f"**{res['title']}** — found **{len(entries)}** video(s)"
+                   + (f"  ·  by {res['uploader']}" if res.get("uploader") else ""))
+
+        st.markdown("#### ⚡ Grab everything")
+        gq = st.selectbox("Video quality (for MP4)", ["Best Available", "720p", "480p"])
+        ga, gb = st.columns(2)
+        grab_mp3 = ga.button("🎵 Download ALL as MP3", use_container_width=True)
+        grab_mp4 = gb.button("🎬 Download ALL as MP4", use_container_width=True)
+        if grab_mp3 or grab_mp4:
+            is_aud = bool(grab_mp3)
+            jobs = [{"url": e["url"], "title": e["title"],
+                     "fmt": "audio" if is_aud else "video",
+                     "quality": None if is_aud else gq, "audio_codec": "mp3"}
+                    for e in entries]
+            st.write(f"### Downloading {len(jobs)} item(s) as "
+                     f"{'MP3' if is_aud else 'MP4'}…")
+            ok, total = run_jobs(jobs)
+            if ok:
+                st.balloons()
+            st.success(f"Done — saved **{ok} of {total}**.")
+
+        FMT_OPTIONS = ["🎵 MP3", "🎵 M4A (fast)", "🎬 MP4 — Best",
+                       "🎬 MP4 — 720p", "🎬 MP4 — 480p", "⛔ Skip"]
+        with st.expander(f"🎚️ Or choose per video ({len(entries)})", expanded=False):
+            st.caption("Pick a format for each (or **Skip**), then download the chosen ones.")
+            for idx, e in enumerate(entries):
+                pc1, pc2 = st.columns([3, 2])
+                dur = dl.human_duration(e["duration"]) if e.get("duration") else ""
+                pc1.write(f"**{e['title']}**" + (f"  ·  {dur}" if dur else ""))
+                pc2.selectbox("format", FMT_OPTIONS, key=f"ch_fmt_{idx}",
+                              label_visibility="collapsed")
+            if st.button("⬇️ Download chosen videos", type="primary",
+                         use_container_width=True):
+                jobs = []
+                for idx, e in enumerate(entries):
+                    choice = st.session_state.get(f"ch_fmt_{idx}", "🎵 MP3")
+                    if choice.startswith("⛔"):
+                        continue
+                    job = {"url": e["url"], "title": e["title"]}
+                    if choice.startswith("🎬"):
+                        job["fmt"] = "video"
+                        job["quality"] = ("720p" if "720" in choice
+                                          else "480p" if "480" in choice
+                                          else "Best Available")
+                    else:
+                        job["fmt"] = "audio"
+                        job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
+                    jobs.append(job)
+                if not jobs:
+                    st.warning("Every video is set to Skip — pick a format for at "
+                               "least one.")
+                else:
+                    st.write(f"### Downloading {len(jobs)} item(s)…")
+                    ok, total = run_jobs(jobs)
+                    if ok:
+                        st.balloons()
+                    st.success(f"Done — saved **{ok} of {total}**.")
+    elif res is not None:
+        st.warning("No videos found there. Private content (e.g. TikTok **liked** "
+                   "videos) needs a cookies.txt and a public 'Liked' list — set the "
+                   "cookies path in the sidebar → Speed & advanced.")
 
 # =========================================================================== #
 # BULK MODE
@@ -435,17 +565,76 @@ else:
                     st.success(f"Done — saved **{ok} of {total}**.")
 
 # =========================================================================== #
-# DOWNLOAD HISTORY
+# DOWNLOAD HISTORY  (persistent — survives refresh & restart)
 # =========================================================================== #
-history = st.session_state.get("history", [])
-if history:
-    with st.expander(f"🕘 Download history ({len(history)})", expanded=False):
-        for idx, h in enumerate(history[:50]):
-            icon = "🎬" if h["fmt"] == "video" else "🎵"
-            hc1, hc2 = st.columns([5, 1])
-            hc1.write(f"{icon} {os.path.basename(h['path'])}")
-            if hc2.button("📂", key=f"hist_{idx}", help="Open containing folder"):
-                open_in_explorer(h["path"])
+st.divider()
+all_hist = hist.load_history()
+st.subheader(f"🕘 Download history ({len(all_hist)})")
+
+if not all_hist:
+    st.caption("Your downloads will appear here and stay saved between sessions.")
+else:
+    f1, f2, f3, f4 = st.columns([2.4, 1.3, 1.3, 1.2])
+    hq = f1.text_input("Search history", placeholder="Search title or filename…",
+                       label_visibility="collapsed")
+    site_sel = f2.selectbox("Site", ["All sites"] + hist.all_sites(all_hist),
+                            label_visibility="collapsed")
+    type_sel = f3.selectbox("Type", ["All types", "🎬 Video", "🎵 Audio"],
+                            label_visibility="collapsed")
+    date_sel = f4.selectbox("When", ["All time", "Today", "Last 7 days",
+                                     "Last 30 days"], label_visibility="collapsed")
+
+    def _match(h):
+        if hq and hq.lower() not in (
+                (h.get("title", "") + " " + h.get("filename", "")).lower()):
+            return False
+        if site_sel != "All sites" and h.get("site") != site_sel:
+            return False
+        if type_sel.endswith("Video") and h.get("fmt") != "video":
+            return False
+        if type_sel.endswith("Audio") and h.get("fmt") != "audio":
+            return False
+        if date_sel != "All time":
+            try:
+                ts = datetime.fromisoformat(h.get("ts", ""))
+            except (ValueError, TypeError):
+                return False
+            if date_sel == "Today":
+                if ts.date() != datetime.now().date():
+                    return False
+            else:
+                days = 7 if "7" in date_sel else 30
+                if (datetime.now() - ts).days >= days:
+                    return False
+        return True
+
+    filtered = [h for h in all_hist if _match(h)]
+    total_size = sum(h.get("size", 0) for h in filtered)
+    sc1, sc2 = st.columns([4, 1])
+    sc1.caption(f"Showing **{len(filtered)}** of {len(all_hist)} downloads  ·  "
+                f"{fmt_size(total_size)} total")
+    if sc2.button("🗑️ Clear all", use_container_width=True,
+                  help="Permanently remove every entry from your history"):
+        hist.clear_history()
+        st.rerun()
+
+    if not filtered:
+        st.info("No downloads match those filters.")
+    for h in filtered[:300]:
+        icon = "🎬" if h.get("fmt") == "video" else "🎵"
+        hc1, hc2, hc3 = st.columns([7, 1, 1])
+        hc1.markdown(
+            f"{icon} **{h.get('title') or h.get('filename')}**  \n"
+            f"<span style='color:#888;font-size:0.82em'>"
+            f"{h.get('site', '')} · {when_label(h.get('ts'))} · "
+            f"{fmt_size(h.get('size', 0))}</span>",
+            unsafe_allow_html=True)
+        if hc2.button("📂", key=f"hopen_{h['id']}", help="Open containing folder"):
+            if not open_in_explorer(h["path"]):
+                st.warning("That file/folder may have been moved or deleted.")
+        if hc3.button("✕", key=f"hdel_{h['id']}", help="Remove from history"):
+            hist.delete_entry(h["id"])
+            st.rerun()
 
 # --------------------------------------------------------------------------- #
 # Footer

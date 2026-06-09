@@ -1,5 +1,5 @@
 # ============================================================================
-#  build_exe.ps1  —  Freeze Universal Media Downloader into a Windows app.
+#  build_exe.ps1  -  Freeze Universal Media Downloader into a Windows app.
 #
 #  Output:  dist\UMD\UMD.exe   (a folder you can zip or wrap with Inno Setup)
 #
@@ -40,6 +40,7 @@ python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --add-data "app.py;." `
     --add-data "downloader.py;." `
     --add-data "licensing.py;." `
+    --add-data "history.py;." `
     --add-data "secret.key;."
 
 # 3) Drop the media binaries next to the exe (loaded onto PATH at runtime).
@@ -48,5 +49,5 @@ if (Test-Path "dist\UMD\UMD.exe") {
     Write-Host "`nBUILD OK -> dist\UMD\UMD.exe" -ForegroundColor Green
     Write-Host "Next: compile installer.iss with Inno Setup, or zip dist\UMD."
 } else {
-    throw "Build failed — UMD.exe was not produced."
+    throw "Build failed - UMD.exe was not produced."
 }

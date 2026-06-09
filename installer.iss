@@ -10,7 +10,7 @@
 
 [Setup]
 AppName=Universal Media Downloader
-AppVersion=1.0
+AppVersion=1.1
 AppPublisher=Moses
 DefaultDirName={autopf}\UniversalMediaDownloader
 DefaultGroupName=Universal Media Downloader
