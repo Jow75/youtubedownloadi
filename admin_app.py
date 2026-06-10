@@ -1,9 +1,10 @@
 """
 One-click launcher for the License Console (seller-only).
 =========================================================
-This is the packaging entry point that turns admin_server.py into a clean
-double-click application: NO console / CMD window, it just opens the premium
-License Console in your browser. Build it with build_admin_exe.ps1.
+Turns admin_server.py into a clean double-click application that opens the
+premium License Console in its OWN native window (Windows WebView2) — no console
+and no browser tab. Falls back to the browser if no WebView2 is available.
+Build it with build_admin_exe.ps1.
 
 SECURITY: the frozen exe embeds secret.key (the signing key) because it has to
 sign licenses. Keep LicenseConsole.exe PRIVATE — never share or upload it.
@@ -11,6 +12,10 @@ sign licenses. Keep LicenseConsole.exe PRIVATE — never share or upload it.
 
 import os
 import sys
+import threading
+import time
+
+WINDOW_TITLE = "License Console — Universal Media Downloader"
 
 
 def _redirect_if_windowed():
@@ -54,7 +59,27 @@ def main():
     if getattr(sys, "frozen", False):
         base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
         admin_server.UI_FILE = os.path.join(base, "admin_ui.html")
-    admin_server.main()
+
+    server, port = admin_server.make_server()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{port}/"
+
+    try:
+        import webview
+        webview.create_window(WINDOW_TITLE, url, width=1320, height=880,
+                              min_size=(1000, 640))
+        webview.start()           # blocks until the window is closed
+    except Exception as exc:       # noqa: BLE001 — no WebView2 etc.
+        print(f"Native window unavailable ({exc!r}); opening in browser.")
+        import webbrowser
+        webbrowser.open(url)
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            pass
+        return
+    os._exit(0)
 
 
 if __name__ == "__main__":

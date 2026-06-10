@@ -10,12 +10,19 @@
 
 [Setup]
 AppName=Universal Media Downloader
-AppVersion=1.1
-AppPublisher=Moses
+AppVersion=1.2
+AppPublisher=George (Jowgei)
+AppPublisherURL=https://baziqhue.co.ke/
+AppSupportURL=https://baziqhue.co.ke/
+AppContact=phantomtyper.review@gmail.com
+AppComments=Publisher: George (Jowgei), Kenya. Email phantomtyper.review@gmail.com / WhatsApp +254799553292
+AppCopyright=Copyright (c) 2026 George (Jowgei)
 DefaultDirName={autopf}\UniversalMediaDownloader
 DefaultGroupName=Universal Media Downloader
 DisableProgramGroupPage=yes
 OutputBaseFilename=UniversalMediaDownloader-Setup
+SetupIconFile=assets\umd.ico
+UninstallDisplayIcon={app}\UMD.exe
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible

@@ -44,6 +44,8 @@ Remove-Item dist, build -Recurse -Force -ErrorAction SilentlyContinue
 # be fully collected, or the frozen app can't open the window and falls back to
 # a browser. The WebView2 runtime itself ships with Windows 10/11.
 python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
+    --icon "assets\umd.ico" `
+    --version-file "version_umd.txt" `
     --collect-all streamlit `
     --collect-all yt_dlp `
     --collect-all yt_dlp_ejs `
@@ -62,6 +64,7 @@ python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --exclude-module tensorflow `
     --exclude-module matplotlib `
     --add-data "app.py;." `
+    --add-data "branding.py;." `
     --add-data "downloader.py;." `
     --add-data "downloads.py;." `
     --add-data "licensing.py;." `

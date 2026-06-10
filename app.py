@@ -25,6 +25,7 @@ from pathlib import Path
 
 import streamlit as st
 
+import branding
 import downloader as dl
 import downloads
 import history as hist
@@ -159,6 +160,11 @@ with st.sidebar:
             lm.deactivate()
             st.info("License removed.")
 
+    with st.expander("ℹ️ About / Contact publisher"):
+        st.markdown(branding.contact_md())
+        st.caption(f"{branding.APP_NAME} v{branding.VERSION}  ·  "
+                   f"{branding.COPYRIGHT}")
+
     st.divider()
     st.caption("💡 **M4A** audio skips conversion = faster. Public posts need no "
                "cookies. A faster internet speeds downloads the most.")
@@ -167,9 +173,10 @@ with st.sidebar:
 # --- License gate (only blocks when ENFORCE_LICENSE is on, e.g. shipped build) #
 if ENFORCE_LICENSE and not licensing.LicenseManager().is_licensed():
     st.title("🔒 Activate Universal Media Downloader")
-    st.warning("This copy needs a license key to use.")
+    st.warning("This copy needs a license key to use. If it was shared with you, "
+               "it won't work until you get your own key for **this** computer.")
     _lm = licensing.LicenseManager()
-    st.write("**1.** Send the seller this computer's ID:")
+    st.write("**1.** Send the publisher this computer's ID:")
     st.code(_lm.get_machine_id(), language=None)
     st.write("**2.** Paste the license key you receive and click Activate:")
     _k = st.text_input("License key", placeholder="UMDL-...")
@@ -180,6 +187,11 @@ if ENFORCE_LICENSE and not licensing.LicenseManager().is_licensed():
             st.rerun()
         else:
             st.error(msg)
+    st.divider()
+    st.subheader("📨 Get a license / upgrade")
+    st.write("Contact the publisher to buy or renew a key:")
+    st.markdown(branding.contact_md())
+    st.caption(f"{branding.APP_NAME} v{branding.VERSION} · {branding.COPYRIGHT}")
     st.stop()
 
 
@@ -728,5 +740,13 @@ else:
 # Footer
 # --------------------------------------------------------------------------- #
 st.divider()
-st.caption("Built with Streamlit + yt-dlp + ffmpeg, running locally. "
-           "Only download content you have the rights to.")
+fcol1, fcol2 = st.columns([3, 2])
+fcol1.caption("Built with Streamlit + yt-dlp + ffmpeg, running locally. "
+              "Only download content you have the rights to.")
+fcol2.markdown(
+    f"<div style='text-align:right;font-size:0.82em;color:#888'>"
+    f"{branding.APP_NAME} v{branding.VERSION} · Published by "
+    f"<b>{branding.PUBLISHER}</b>, {branding.COUNTRY}<br>"
+    f"<a href='mailto:{branding.EMAIL}'>{branding.EMAIL}</a> · "
+    f"<a href='{branding.WEBSITE}'>{branding.WEBSITE}</a></div>",
+    unsafe_allow_html=True)

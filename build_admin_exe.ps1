@@ -22,8 +22,17 @@ Remove-Item dist\LicenseConsole, build\LicenseConsole -Recurse -Force -ErrorActi
 Remove-Item dist\LicenseConsole.exe -Force -ErrorAction SilentlyContinue
 
 # admin_server / licensing / records are followed as imports automatically.
-# Only the HTML and the secret need to be added as data.
+# pywebview + pythonnet/clr give it a native window (Windows WebView2).
 python -m PyInstaller admin_app.py --name LicenseConsole --noconfirm --windowed --onefile `
+    --icon "assets\umd.ico" `
+    --version-file "version_admin.txt" `
+    --collect-all webview `
+    --collect-all clr_loader `
+    --copy-metadata pywebview `
+    --copy-metadata pythonnet `
+    --hidden-import clr `
+    --hidden-import webview.platforms.edgechromium `
+    --hidden-import webview.platforms.winforms `
     --add-data "admin_ui.html;." `
     --add-data "secret.key;."
 

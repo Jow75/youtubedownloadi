@@ -260,9 +260,17 @@ def _free_port():
     return port
 
 
-def main():
+def make_server():
+    """Create the bound server + its port (already listening). The caller runs
+    serve_forever() — in a window app that's a background thread."""
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    return server, port
+
+
+def main():
+    """Standalone/browser mode (no native window) — used as a fallback."""
+    server, port = make_server()
     url = f"http://localhost:{port}/"
     threading.Thread(target=lambda: (time.sleep(0.6), webbrowser.open(url)),
                      daemon=True).start()
