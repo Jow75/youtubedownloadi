@@ -146,19 +146,67 @@ with st.sidebar:
         )
 
     st.divider()
-    with st.expander("🤖 AI Smart Library (beta)"):
+    with st.expander("🤖 AI Settings"):
+        prov = ai.current_provider()
+        pinfo = ai.PROVIDERS[prov]
+
         if ai.is_available():
+            st.success("AI is ready ✓")
+            mk = ai.masked_key()
+            st.caption((f"Key `{mk}`" if mk else "Using a developer key")
+                       + f"  ·  {pinfo['label']}  ·  model `{ai.current_model()}`")
             st.session_state.ai_on = st.checkbox(
                 "Enable AI features", value=st.session_state.get("ai_on", False),
-                help="Let an AI clean up titles and tag your library by artist "
-                     "and category.")
-            st.caption("Only **titles** are sent to the AI — never your media "
-                       "files. Off by default. Open **Download history** below "
-                       "to analyze & tag.")
+                help="Turn on Smart Library and other AI tools. Only titles are "
+                     "sent online — never your media files.")
         else:
             st.session_state.ai_on = False
-            st.caption("AI is off — no key found. Drop a `nvidia.key` file in the "
-                       "app folder to turn on Smart Library.")
+            st.info("AI is off. Add an API key to unlock AI features. Your license "
+                    "and your AI key are separate.")
+
+        prov_keys = list(ai.PROVIDERS.keys())
+        sel = st.selectbox("Provider", prov_keys,
+                           index=prov_keys.index(prov),
+                           format_func=lambda k: ai.PROVIDERS[k]["label"])
+        if sel != prov:
+            ai.save_settings(provider=sel)
+            st.rerun()
+        st.caption(f"Get a key: {pinfo['get_key_url']}")
+
+        new_key = st.text_input("API key", type="password", value="",
+                                placeholder=f"{pinfo['key_prefix']}…  paste, then Save")
+        kc1, kc2 = st.columns(2)
+        if kc1.button("💾 Save key", use_container_width=True):
+            k = new_key.strip()
+            if not k:
+                st.warning("Paste a key first.")
+            else:
+                with st.spinner("Checking the key…"):
+                    ok, res = ai.validate_key(sel, k)
+                if ok:
+                    ai.save_settings(provider=sel, key=k)
+                    st.success(f"Saved ✓ — {len(res)} models available.")
+                    st.rerun()
+                elif "rejected" in str(res).lower():
+                    st.error(res)
+                else:
+                    ai.save_settings(provider=sel, key=k)
+                    st.warning(f"Saved, but couldn't verify right now ({res}). "
+                               "It'll be used once you're online.")
+                    st.rerun()
+        if kc2.button("🗑️ Remove key", use_container_width=True):
+            ai.clear_key()
+            st.session_state.ai_on = False
+            st.rerun()
+
+        if ai.is_available():
+            m = st.text_input("Model (advanced)", value=ai.current_model(),
+                              help="Which model to use for AI features.")
+            if m.strip() and m.strip() != ai.current_model():
+                ai.save_settings(model=m.strip())
+                st.rerun()
+        st.caption("🔒 Your key is encrypted on this PC (masked, never shown in "
+                   "full) and is never sent anywhere except your chosen provider.")
 
     st.divider()
     with st.expander("🔑 License / Activation"):
