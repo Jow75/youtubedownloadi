@@ -25,6 +25,7 @@ from pathlib import Path
 
 import streamlit as st
 
+import ai
 import branding
 import downloader as dl
 import downloads
@@ -143,6 +144,21 @@ with st.sidebar:
                  "Instagram, protected X). Export it with a 'Get cookies.txt' "
                  "browser extension. Leave blank for normal public downloads.",
         )
+
+    st.divider()
+    with st.expander("🤖 AI Smart Library (beta)"):
+        if ai.is_available():
+            st.session_state.ai_on = st.checkbox(
+                "Enable AI features", value=st.session_state.get("ai_on", False),
+                help="Let an AI clean up titles and tag your library by artist "
+                     "and category.")
+            st.caption("Only **titles** are sent to the AI — never your media "
+                       "files. Off by default. Open **Download history** below "
+                       "to analyze & tag.")
+        else:
+            st.session_state.ai_on = False
+            st.caption("AI is off — no key found. Drop a `nvidia.key` file in the "
+                       "app folder to turn on Smart Library.")
 
     st.divider()
     with st.expander("🔑 License / Activation"):
@@ -644,6 +660,57 @@ st.divider()
 all_hist = hist.load_history()
 st.subheader(f"🕘 Download history ({len(all_hist)})")
 
+ai_on = bool(st.session_state.get("ai_on"))
+ai_cache = ai.cached_analysis() if ai_on else {}
+
+if ai_on and all_hist:
+    titles_all = [h.get("title") or h.get("filename") for h in all_hist]
+    analyzed = [t for t in titles_all if t in ai_cache]
+    with st.expander(f"🤖 Smart Library — organize with AI "
+                     f"({len(analyzed)}/{len(titles_all)} analyzed)", expanded=False):
+        st.caption("AI cleans each title and tags it by **artist** and "
+                   "**category**, so your downloads become a real library. "
+                   "Only titles are sent online.")
+        ac1, ac2 = st.columns(2)
+        if ac1.button("✨ Analyze with AI", use_container_width=True,
+                      help="Analyzes any titles not done yet (cached, so it's "
+                           "one-time). Large histories take a little while."):
+            bar = st.progress(0.0)
+            note = st.empty()
+
+            def _prog(done, total, _b=bar, _n=note):
+                _b.progress(done / max(total, 1))
+                _n.caption(f"Analyzing… {done}/{total}")
+
+            with st.spinner("Asking the AI to clean up your titles…"):
+                ai.analyze_titles(titles_all, progress=_prog)
+            st.rerun()
+        if ac2.button("🏷️ Write tags to files", use_container_width=True,
+                      help="Writes artist/title/genre into the actual files "
+                           "(only where the file still exists)."):
+            done = 0
+            for _h in all_hist:
+                _t = _h.get("title") or _h.get("filename")
+                _m = ai_cache.get(_t)
+                if _m and os.path.isfile(_h.get("path", "")):
+                    if ai.write_tags(_h["path"], artist=_m.get("artist"),
+                                     title=_m.get("clean_title"),
+                                     genre=_m.get("category")):
+                        done += 1
+            st.success(f"Tagged {done} file(s).")
+        if analyzed:
+            from collections import Counter
+            cats = Counter(ai_cache[t]["category"] for t in analyzed)
+            arts = Counter(ai_cache[t]["artist"] for t in analyzed
+                           if ai_cache[t].get("artist"))
+            g1, g2 = st.columns(2)
+            g1.markdown("**By category**")
+            for c, n in cats.most_common():
+                g1.write(f"- {c}: **{n}**")
+            g2.markdown("**Top artists**")
+            for a, n in arts.most_common(8):
+                g2.write(f"- {a}: **{n}**")
+
 if not all_hist:
     st.caption("Your downloads will appear here and stay saved between sessions.")
 else:
@@ -723,11 +790,16 @@ else:
         for h in page_items:
             icon = "🎬" if h.get("fmt") == "video" else "🎵"
             hc1, hc2, hc3 = st.columns([7, 1, 1])
+            _m = ai_cache.get(h.get("title") or h.get("filename")) if ai_on else None
+            ai_badge = ""
+            if _m:
+                ai_badge = (f" · 🏷️ {_m.get('category', '')}"
+                            + (f" · {_m['artist']}" if _m.get("artist") else ""))
             hc1.markdown(
                 f"{icon} **{h.get('title') or h.get('filename')}**  \n"
                 f"<span style='color:#888;font-size:0.82em'>"
                 f"{h.get('site', '')} · {when_label(h.get('ts'))} · "
-                f"{fmt_size(h.get('size', 0))}</span>",
+                f"{fmt_size(h.get('size', 0))}{ai_badge}</span>",
                 unsafe_allow_html=True)
             if hc2.button("📂", key=f"hopen_{h['id']}", help="Open containing folder"):
                 if not open_in_explorer(h["path"]):
