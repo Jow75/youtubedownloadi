@@ -24,6 +24,12 @@ Thumbs.db
 secret.key
 license_records.csv
 *.dat
+
+# AI / API credentials — NEVER commit (NVIDIA key, etc.)
+nvidia.key
+*.key
+*api*key*.txt
+*API*KEY*.txt
 # Private analysis doc (contains another project's secret) — keep out of the repo
 licensing_system_forensic_analysis.md
 
