@@ -30,6 +30,11 @@ nvidia.key
 *.key
 *api*key*.txt
 *API*KEY*.txt
+# Environment / secret files
+*.env
+.env
+.env.*
+*.secret
 # Private analysis doc (contains another project's secret) — keep out of the repo
 licensing_system_forensic_analysis.md
 
