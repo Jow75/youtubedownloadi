@@ -57,6 +57,12 @@ python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --hidden-import clr `
     --hidden-import webview.platforms.edgechromium `
     --hidden-import webview.platforms.winforms `
+    --collect-all mutagen `
+    --hidden-import win32crypt `
+    --hidden-import win32timezone `
+    --hidden-import win32com.shell `
+    --hidden-import win32com.shell.shell `
+    --hidden-import win32com.shell.shellcon `
     --copy-metadata streamlit `
     --exclude-module numba `
     --exclude-module llvmlite `
