@@ -64,11 +64,13 @@ python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --exclude-module tensorflow `
     --exclude-module matplotlib `
     --add-data "app.py;." `
+    --add-data "ai.py;." `
     --add-data "branding.py;." `
     --add-data "downloader.py;." `
     --add-data "downloads.py;." `
-    --add-data "licensing.py;." `
     --add-data "history.py;." `
+    --add-data "library.py;." `
+    --add-data "licensing.py;." `
     --add-data "secret.key;."
 
 # 3) Drop the media binaries next to the exe (loaded onto PATH at runtime).

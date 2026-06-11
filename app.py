@@ -30,6 +30,7 @@ import branding
 import downloader as dl
 import downloads
 import history as hist
+import library
 import licensing
 
 
@@ -117,6 +118,25 @@ with st.sidebar:
     if st.button("📂 Open main folder", use_container_width=True):
         if not open_in_explorer(main_dir):
             st.warning("Couldn't open that folder — check the path.")
+
+    with st.expander("🗂️ Managed Library"):
+        lib_root = st.text_input("Library location", value=library.get_root(),
+                                 help="A tidy workspace the app organizes for you.")
+        if lib_root.strip() and lib_root.strip() != library.get_root():
+            library.save(root=lib_root.strip())
+        lib_on = st.checkbox(
+            "Auto-organize downloads into this library",
+            value=library.is_enabled(),
+            help="MP3 → Music/MP3, M4A → Music/M4A, MP4 → Videos/MP4. "
+                 "When on, this overrides the folder above.")
+        if lib_on != library.is_enabled():
+            library.save(enabled=lib_on)
+            st.rerun()
+        if st.button("🏗️ Create / repair folders", use_container_width=True):
+            n = len(library.ensure_structure())
+            st.success(f"Library ready ({n} folders) at {library.get_root()}")
+        st.caption("Music/MP3 · Music/M4A · Videos/MP4 · Images · Downloads · "
+                   "AI Library · Metadata · Logs · Temp")
 
     st.divider()
     with st.expander("⚡ Speed & advanced"):
@@ -272,10 +292,13 @@ def enqueue(jobs, lane=downloads.LANE_NOW):
     specs = []
     for j in jobs:
         fmt = j["fmt"]
+        codec = j.get("audio_codec", "mp3")
+        dest = (library.route(fmt, codec) if library.is_enabled()
+                else resolve_dir(fmt))
         specs.append({
             "url": j["url"], "fmt": fmt, "quality": j.get("quality"),
-            "audio_codec": j.get("audio_codec", "mp3"),
-            "dest_dir": resolve_dir(fmt), "title": j.get("title", ""),
+            "audio_codec": codec,
+            "dest_dir": dest, "title": j.get("title", ""),
             "opts": {**opts, "trim": j.get("trim")},
         })
     downloads.get_manager().add_jobs(specs, lane)
@@ -944,6 +967,67 @@ else:
             if hc3.button("✕", key=f"hdel_{h['id']}", help="Remove from history"):
                 hist.delete_entry(h["id"])
                 st.rerun()
+
+# =========================================================================== #
+# LIBRARY & CLEANUP  (exact-duplicate finder — safe, confirm before delete)
+# =========================================================================== #
+st.divider()
+st.subheader("🗂️ Library & Cleanup")
+scan_folders = []
+if library.is_enabled():
+    scan_folders.append(library.get_root())
+scan_folders.append(main_dir)
+scan_folders = [p for p in dict.fromkeys(scan_folders) if p and os.path.isdir(p)]
+
+st.caption("Finds **exact** duplicate files (identical content, by hash) in: "
+           + (" · ".join(f"`{p}`" for p in scan_folders) or "no valid folder"))
+if st.button("🔍 Scan for duplicate files", disabled=not scan_folders):
+    bar = st.progress(0.0)
+    note = st.empty()
+
+    def _dp(d, n, _b=bar, _n=note):
+        _b.progress(d / max(n, 1))
+        _n.caption(f"Hashing… {d}/{n}")
+
+    with st.spinner("Scanning your folders for exact duplicates…"):
+        st.session_state.dup_groups = library.scan_duplicates(scan_folders,
+                                                              progress=_dp)
+    note.empty()
+    st.rerun()
+
+dup_groups = st.session_state.get("dup_groups")
+if dup_groups is not None:
+    if not dup_groups:
+        st.success("No exact duplicates found — your library is clean. 🎉")
+    else:
+        total_recover = sum(g["recover"] for g in dup_groups)
+        total_files = sum(len(g["dups"]) for g in dup_groups)
+        st.warning(f"**Duplicate files detected.** {total_files} duplicate(s) in "
+                   f"{len(dup_groups)} group(s) · **{fmt_size(total_recover)}** "
+                   "can be recovered.")
+        for g in dup_groups[:60]:
+            with st.container(border=True):
+                st.markdown(f"✅ **Keep:** `{g['keeper']}`")
+                for d in g["dups"]:
+                    st.markdown(f"🗑️ **Duplicate:** `{d}`")
+                st.caption(f"{g['reason']} · {fmt_size(g['size'])} each · "
+                           f"recovers {fmt_size(g['recover'])}")
+        st.markdown("**Would you like to remove them?**  Deleted files go to the "
+                    "**Recycle Bin** (recoverable) — never permanently wiped.")
+        d1, d2, d3 = st.columns(3)
+        if d1.button("🗑️ Delete duplicates", type="primary",
+                     use_container_width=True):
+            to_delete = [d for g in dup_groups for d in g["dups"]]
+            cnt, to_bin = library.recycle(to_delete)
+            where = "the Recycle Bin" if to_bin else "permanently removed"
+            st.success(f"Removed **{cnt}** duplicate(s) to {where} · recovered "
+                       f"**{fmt_size(total_recover)}**.")
+            st.session_state.pop("dup_groups", None)
+        if d2.button("Keep all files", use_container_width=True):
+            st.session_state.pop("dup_groups", None)
+            st.rerun()
+        d3.caption("Review manually: the full paths above are shown so you can "
+                   "inspect each file before deciding.")
 
 # --------------------------------------------------------------------------- #
 # Footer
