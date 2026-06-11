@@ -73,15 +73,14 @@ Built in waves so AI keeps growing into a core feature.
   embeddings (nv-embedqa / llama-3.2-nv-embedqa) for similarity.
 
 ### Wave C — Assistant & agent
-- **Natural-language control / AI agent** — "download all of Diamond's songs as
-  MP3" → it finds the channel, picks format, and queues the right items. Actions
-  inside the app, not just chat.
-- **AI support & troubleshooting** — reads a failed download's error and
-  explains/fixes it in plain language (cookies needed? rate-limited? try M4A?).
-- **Context-aware semantic search** — search your library by meaning ("that live
-  performance from Rock City"), powered by embeddings.
-- **Download quality recommendations** — suggest best format/quality per source
-  and intent (music → MP3/M4A; archive → best MP4).
+- ✅ **Natural-language assistant / agent** — type a request; AI plans it
+  (download / search / channel / help) and the app acts on confirm (URL →
+  queue, name → ytsearch + pick, channel → bulk-grab).
+- ✅ **AI support & troubleshooting** — failed downloads get a 🤖 button that
+  explains the error and the fix in plain language.
+- **Next:** context-aware **semantic search** of the library (embeddings);
+  download **quality recommendations** per source/intent; richer multi-step
+  agent actions (e.g. "grab his latest 5 and tag them").
 
 ### Wave D — Intelligence & automation
 - **Learn preferences over time** — default formats/folders from your habits.
