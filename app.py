@@ -517,6 +517,61 @@ elif mode == "📺 Channel / Profile":
                           "quality": gq} for e in entries], downloads.LANE_BATCH)
             st.success(f"📦 Queued **{n}** as MP4 — see **Downloads** above.")
 
+        # -- AI Triage: let AI classify + pre-pick what to grab ------------- #
+        if st.session_state.get("ai_on"):
+            with st.expander("🤖 AI Triage — let AI pick what to grab", expanded=False):
+                st.caption("AI reads every title and sorts them, so you can grab "
+                           "just what you want (e.g. **official music only**, skip "
+                           "shorts / vlogs / interviews). Only titles are sent.")
+                ch_titles = [e["title"] for e in entries]
+                cache = ai.cached_analysis()
+                done = [e for e in entries if e["title"] in cache]
+                if st.button(f"✨ Analyze these {len(entries)} videos with AI",
+                             key="triage_run"):
+                    bar = st.progress(0.0)
+                    note = st.empty()
+
+                    def _tp(d, n, _b=bar, _n=note):
+                        _b.progress(d / max(n, 1))
+                        _n.caption(f"Classifying… {d}/{n}")
+
+                    with st.spinner("AI is sorting the channel… (big ones take a bit)"):
+                        ai.analyze_titles(ch_titles, progress=_tp)
+                    st.rerun()
+
+                if done:
+                    from collections import Counter
+                    cats = Counter(cache[e["title"]]["category"] for e in done)
+                    st.caption(f"Classified **{len(done)}/{len(entries)}**.  "
+                               + " · ".join(f"{c}: {n}" for c, n in cats.most_common()))
+                    cat_opts = [c for c, _ in cats.most_common()]
+                    default = [c for c in cat_opts if c == "Music"] or cat_opts[:1]
+                    pick = st.multiselect("Categories to include", cat_opts,
+                                          default=default, key="triage_cats")
+                    official = st.checkbox("Official releases only", value=True,
+                                           key="triage_official")
+                    chosen = [e for e in done
+                              if cache[e["title"]]["category"] in pick
+                              and (not official or cache[e["title"]].get("is_official"))]
+                    tf1, tf2 = st.columns(2)
+                    tfmt = tf1.radio("Format", ["🎵 MP3", "🎬 MP4"], horizontal=True,
+                                     key="triage_fmt")
+                    tq = tf2.selectbox("Quality", ["Best Available", "720p", "480p"],
+                                       key="triage_q",
+                                       disabled=tfmt.startswith("🎵"))
+                    st.write(f"**{len(chosen)}** video(s) match your picks.")
+                    if st.button(f"📦 Queue {len(chosen)} AI-picked video(s)",
+                                 type="primary", key="triage_go",
+                                 disabled=not chosen, use_container_width=True):
+                        is_aud = tfmt.startswith("🎵")
+                        jobs = [{"url": e["url"], "title": e["title"],
+                                 "fmt": "audio" if is_aud else "video",
+                                 "quality": None if is_aud else tq,
+                                 "audio_codec": "mp3"} for e in chosen]
+                        n = enqueue(jobs, downloads.LANE_BATCH)
+                        st.success(f"📦 Queued **{n}** AI-picked video(s) — see "
+                                   "**Downloads** above.")
+
         # -- Search + per-video chooser (paginated) ------------------------- #
         FMT_OPTIONS = ["🎵 MP3", "🎵 M4A (fast)", "🎬 MP4 — Best",
                        "🎬 MP4 — 720p", "🎬 MP4 — 480p", "⛔ Skip"]
@@ -758,6 +813,40 @@ if ai_on and all_hist:
             g2.markdown("**Top artists**")
             for a, n in arts.most_common(8):
                 g2.write(f"- {a}: **{n}**")
+
+            # AI duplicate detection — same artist+work, beyond filename match
+            groups = {}
+            for _h in all_hist:
+                _m = ai_cache.get(_h.get("title") or _h.get("filename"))
+                if _m and _m.get("artist") and _m.get("clean_title"):
+                    k = (_m["artist"].strip().lower(),
+                         _m["clean_title"].strip().lower())
+                    groups.setdefault(k, []).append(_h)
+            dupes = {k: v for k, v in groups.items() if len(v) > 1}
+            if dupes:
+                st.markdown("---")
+                tot = sum(len(v) for v in dupes.values())
+                st.markdown(f"**🔁 Possible duplicates** — {tot} files in "
+                            f"{len(dupes)} group(s) (matched by AI artist + title, "
+                            "not just filename)")
+                for (artist, _t), grp in list(dupes.items())[:12]:
+                    nice = (ai_cache.get(grp[0].get('title')
+                            or grp[0].get('filename'), {}).get('clean_title')
+                            or grp[0].get('title'))
+                    st.caption(f"**{artist.title()} — {nice}** · {len(grp)} copies")
+                    for it in grp:
+                        d1, d2, d3 = st.columns([7, 1, 1])
+                        d1.write(f"   • {it.get('filename')}  "
+                                 f"<span style='color:#888;font-size:.8em'>"
+                                 f"({it.get('fmt')}, {fmt_size(it.get('size', 0))})"
+                                 f"</span>", unsafe_allow_html=True)
+                        if d2.button("📂", key=f"dup_o_{it['id']}",
+                                     help="Open folder"):
+                            open_in_explorer(it["path"])
+                        if d3.button("✕", key=f"dup_d_{it['id']}",
+                                     help="Remove from history"):
+                            hist.delete_entry(it["id"])
+                            st.rerun()
 
 if not all_hist:
     st.caption("Your downloads will appear here and stay saved between sessions.")
