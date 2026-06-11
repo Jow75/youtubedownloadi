@@ -242,6 +242,25 @@ def _yyyymmdd(s):
     return digits[:8] if len(digits) >= 8 else None
 
 
+def search(query, n=5, cookiefile=""):
+    """Find videos by name via YouTube search (yt-dlp ytsearch). Returns
+    [{url, title, uploader, duration}] — used by the AI assistant."""
+    opts = {**COMMON_OPTS, "skip_download": True, "extract_flat": True,
+            "noplaylist": False, **net_opts(cookiefile)}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"ytsearch{int(n)}:{query}", download=False)
+    out = []
+    for e in (info.get("entries") or []):
+        if not e:
+            continue
+        url = e.get("url") or e.get("webpage_url") or e.get("id")
+        if url:
+            out.append({"url": url, "title": e.get("title") or "media",
+                        "uploader": e.get("uploader") or e.get("channel") or "",
+                        "duration": e.get("duration")})
+    return out
+
+
 def list_media(url, cookiefile="", max_items=None, date_after="", date_before=""):
     """List every video from a channel/profile/playlist URL.
 

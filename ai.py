@@ -287,6 +287,60 @@ def cached_analysis():
 
 
 # --------------------------------------------------------------------------- #
+# Wave C: natural-language assistant + troubleshooting
+# --------------------------------------------------------------------------- #
+def agent_plan(instruction):
+    """Turn a plain-language request into a structured action plan the app can
+    run. Returns a dict (or None). Fields:
+      action: 'download' | 'search' | 'channel' | 'help'
+      url: a URL if the user gave one, else null
+      query: search text (for search / channel-by-name), else null
+      fmt: 'mp3' | 'mp4'
+      quality: 'Best Available' | '720p' | '480p'
+      count: how many results to fetch for a search (1-10)
+      answer: a helpful reply if action is 'help', else null
+    """
+    prompt = (
+        "You are the built-in assistant of a media downloader app (YouTube, X, "
+        "TikTok, etc.). Convert the user's request into a JSON action plan. "
+        "Fields: action ('download' if they gave a specific media URL; 'channel' "
+        "if they gave a channel/profile URL or want a whole channel/artist; "
+        "'search' to find something by name; 'help' to answer a question about "
+        "using the app); url (string or null); query (search/artist text or "
+        "null); fmt ('mp3' for songs/audio — the default — or 'mp4' for video); "
+        "quality ('Best Available' default, or '720p'/'480p'); count (1-10, how "
+        "many search results, default 1); answer (a short helpful reply when "
+        "action is 'help', else null). Return ONLY the JSON object.\n\n"
+        f"User: {instruction}")
+    try:
+        data = _extract_json(_chat(prompt, max_tokens=500))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    data.setdefault("action", "help")
+    data.setdefault("fmt", "mp3")
+    data.setdefault("quality", "Best Available")
+    data.setdefault("count", 1)
+    return data
+
+
+def explain_error(title, error):
+    """Plain-language 'why did this fail + how to fix' for a failed download."""
+    prompt = (
+        "A media download failed in a yt-dlp-based app. In 2-4 short sentences, "
+        "explain the most likely REASON in plain language and the best practical "
+        "FIX. Consider: private/removed/region-locked video, login cookies "
+        "needed, rate-limiting (try again later), try M4A instead of MP3, "
+        "geo-block, age-restriction, or a bad link. Be specific.\n\n"
+        f"Title: {title}\nError: {error}")
+    try:
+        return _chat(prompt, max_tokens=300)
+    except Exception as e:  # noqa: BLE001
+        return f"(Couldn't reach the AI: {e})"
+
+
+# --------------------------------------------------------------------------- #
 # Write tags to a downloaded file (mutagen)
 # --------------------------------------------------------------------------- #
 def write_tags(path, artist=None, title=None, genre=None):

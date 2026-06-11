@@ -46,12 +46,14 @@ def load():
         return {}
 
 
-def save(root=None, enabled=None):
+def save(root=None, enabled=None, configured=None):
     d = load()
     if root is not None:
         d["root"] = root
     if enabled is not None:
         d["enabled"] = bool(enabled)
+    if configured is not None:
+        d["configured"] = bool(configured)
     try:
         _settings_file().write_text(json.dumps(d), encoding="utf-8")
     except OSError:
@@ -59,7 +61,7 @@ def save(root=None, enabled=None):
 
 
 def default_root():
-    return str(Path.home() / APP_FOLDER)
+    return str(Path.home() / "Downloads" / APP_FOLDER)
 
 
 def get_root():
@@ -68,6 +70,11 @@ def get_root():
 
 def is_enabled():
     return bool(load().get("enabled"))
+
+
+def is_configured():
+    """Has the user been through first-run setup?"""
+    return bool(load().get("configured"))
 
 
 # --------------------------------------------------------------------------- #

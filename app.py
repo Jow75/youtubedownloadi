@@ -279,6 +279,30 @@ if ENFORCE_LICENSE and not licensing.LicenseManager().is_licensed():
     st.stop()
 
 
+# --- First-run setup: choose where the media library lives -------------------#
+if not library.is_configured():
+    st.title("👋 Welcome to Universal Media Downloader")
+    st.write("Let's set up your **media library** — one tidy place for everything "
+             "you download, organized automatically by type.")
+    loc = st.text_input("Where should your library live?",
+                        value=library.default_root())
+    st.caption("The app creates `Music/MP3`, `Videos/MP4`, etc. inside this "
+               "folder, and files each download into the right place.")
+    w1, w2 = st.columns(2)
+    if w1.button("✅ Set up my library here", type="primary",
+                 use_container_width=True):
+        library.save(root=(loc.strip() or library.default_root()),
+                     enabled=True, configured=True)
+        library.ensure_structure()
+        st.success("Library ready! Loading the app…")
+        st.rerun()
+    if w2.button("Not now — use my Downloads folder", use_container_width=True):
+        library.save(configured=True, enabled=False)
+        st.rerun()
+    st.caption("You can change this anytime in the sidebar → **Managed Library**.")
+    st.stop()
+
+
 def resolve_dir(fmt):
     return video_dir if fmt == "video" else audio_dir
 
@@ -363,6 +387,14 @@ def downloads_panel():
             if j.status == "done" and j.result:
                 if r2.button("📂", key=f"dlo_{j.id}", help="Open containing folder"):
                     open_in_explorer(j.result)
+            elif j.status == "error" and st.session_state.get("ai_on"):
+                if r2.button("🤖", key=f"dlx_{j.id}", help="Ask AI why this failed"):
+                    with st.spinner("Asking the AI…"):
+                        st.session_state.setdefault("err_help", {})[j.id] = \
+                            ai.explain_error(j.label, j.error or "")
+            exp = st.session_state.get("err_help", {}).get(j.id)
+            if exp:
+                r1.info("🤖 " + exp)
 
 
 # --------------------------------------------------------------------------- #
@@ -371,9 +403,10 @@ def downloads_panel():
 st.title("⬇️ Universal Media Downloader")
 downloads_panel()
 
-mode = st.radio("Mode",
-                ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"],
-                horizontal=True)
+_mode_opts = ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"]
+if st.session_state.get("ai_on"):
+    _mode_opts.append("🤖 Assistant")
+mode = st.radio("Mode", _mode_opts, horizontal=True)
 
 # =========================================================================== #
 # SINGLE MODE
@@ -670,6 +703,76 @@ elif mode == "📺 Channel / Profile":
         st.warning("No videos found there. Private content (e.g. TikTok **liked** "
                    "videos) needs a cookies.txt and a public 'Liked' list — set the "
                    "cookies path in the sidebar → Speed & advanced.")
+
+# =========================================================================== #
+# ASSISTANT MODE (natural language → actions)
+# =========================================================================== #
+elif mode == "🤖 Assistant":
+    st.caption("Tell me what you want in plain language — I'll work out the rest.")
+    st.markdown("*Try:* `download Diamond Platnumz Fine as mp3` · "
+                "`grab https://youtu.be/… in 720p` · "
+                "`how do I download a whole TikTok profile?`")
+    instruction = st.text_input("What would you like to do?", key="agent_input",
+                                placeholder="download Diamond Platnumz Fine as mp3")
+    if st.button("✨ Ask the assistant", type="primary"):
+        if not instruction.strip():
+            st.warning("Type a request first.")
+        else:
+            with st.spinner("Thinking…"):
+                st.session_state.agent_plan = ai.agent_plan(instruction.strip())
+            st.session_state.pop("agent_results", None)
+
+    plan = st.session_state.get("agent_plan")
+    if plan:
+        action = plan.get("action")
+        is_aud = str(plan.get("fmt", "mp3")).lower() != "mp4"
+        flabel = "MP3" if is_aud else f"MP4 ({plan.get('quality', 'Best Available')})"
+
+        def _job(url, title=""):
+            return {"url": url, "title": title, "fmt": "audio" if is_aud else "video",
+                    "quality": None if is_aud else plan.get("quality", "Best Available"),
+                    "audio_codec": "mp3"}
+
+        if action == "help":
+            st.info(plan.get("answer")
+                    or "I'm here to help — ask me to download something, or how a "
+                       "feature works.")
+        elif action == "download" and plan.get("url"):
+            st.success(f"**Plan:** download `{plan['url']}` as **{flabel}**")
+            if st.button("⬇️ Do it", type="primary", key="agent_dl"):
+                enqueue([_job(plan["url"])], downloads.LANE_NOW)
+                st.success("⚡ Queued — see **Downloads** above.")
+                st.session_state.pop("agent_plan", None)
+        elif action == "channel" and plan.get("url"):
+            st.success(f"**Plan:** grab the whole channel `{plan['url']}` as **{flabel}**")
+            if st.button("📦 Grab channel", type="primary", key="agent_ch"):
+                with st.spinner("Reading the channel…"):
+                    res = dl.list_media(plan["url"], cookiefile)
+                n = enqueue([_job(e["url"], e["title"]) for e in res["entries"]],
+                            downloads.LANE_BATCH)
+                st.success(f"📦 Queued **{n}** from *{res['title']}* — see **Downloads** above.")
+                st.session_state.pop("agent_plan", None)
+        else:  # search (also handles channel-by-name)
+            q = plan.get("query") or instruction
+            st.success(f"**Plan:** search for **{q}**, then you pick what to grab "
+                       f"as **{flabel}**.")
+            if st.button(f"🔎 Search “{q}”", type="primary", key="agent_sr"):
+                with st.spinner("Searching YouTube…"):
+                    st.session_state.agent_results = dl.search(
+                        q, max(5, int(plan.get("count") or 1)), cookiefile)
+            results = st.session_state.get("agent_results")
+            if results:
+                st.write(f"**Top {len(results)} result(s)** — tap ⬇️ to grab:")
+                for i, r in enumerate(results):
+                    rc1, rc2 = st.columns([6, 1])
+                    dur = dl.human_duration(r["duration"]) if r.get("duration") else ""
+                    rc1.markdown(
+                        f"**{r['title']}**{(' · ' + dur) if dur else ''}  \n"
+                        f"<span style='color:#888;font-size:.82em'>"
+                        f"{r.get('uploader', '')}</span>", unsafe_allow_html=True)
+                    if rc2.button("⬇️", key=f"agent_pick_{i}", help=f"Grab as {flabel}"):
+                        enqueue([_job(r["url"], r["title"])], downloads.LANE_NOW)
+                        st.success(f"⚡ Queued **{r['title']}** — see **Downloads** above.")
 
 # =========================================================================== #
 # BULK MODE
