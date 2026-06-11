@@ -54,16 +54,21 @@ Built in waves so AI keeps growing into a core feature.
   official; write real tags (mutagen); group history by category & top artists;
   per-row badge. Disk-cached.
 
-### Wave B — Understanding & organization (next)
-- **Smart channel triage** — classify a scanned channel's videos and
-  **pre-select** what to grab ("official music only; skip shorts/vlogs"). Turns
-  a 990-video channel into one confident click.
-- **Duplicate detection beyond filenames** — embeddings over titles to catch the
-  same song across slightly different uploads/qualities. Flag/merge.
-- **Auto file naming & metadata enrichment** — rename to a clean
-  `Artist - Title` scheme; fill album/year/cover where derivable.
-- **Auto collections / playlists / library** — build folders and playlists by
-  artist, album, era, or theme; "make me a playlist of X".
+### Wave B — Understanding & organization
+- ✅ **Smart channel triage** — AI classifies a scanned channel and
+  **pre-selects** what to grab ("official music only; skip shorts/vlogs").
+- ✅ **AI duplicate detection (fuzzy)** — same song across different uploads,
+  matched by AI artist + clean title (history view).
+- ✅ **Managed library + auto-routing** — user-chosen workspace
+  (Music/MP3, Videos/MP4, …); downloads auto-file by type.
+- ✅ **Exact duplicate cleanup (deterministic)** — size + SHA-256 content match;
+  confirm dialog (Delete / Keep / Review); deletes to the Recycle Bin.
+- **Next:** auto file-naming (`Artist - Title`) + metadata enrichment (album/
+  year/cover); auto collections/playlists; embeddings-based similarity.
+- **File-management librarian (upcoming):** folder health monitoring, missing-
+  metadata detection, broken/corrupted media detection, storage optimization,
+  large-file + unused-file recommendations, archive management, smart
+  restructuring — all confirm-before-acting, scoped to user-approved folders.
 - **Models:** instruct (llama-3.3-70b / nemotron) for classification;
   embeddings (nv-embedqa / llama-3.2-nv-embedqa) for similarity.
 
