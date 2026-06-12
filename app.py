@@ -1050,41 +1050,66 @@ else:
             start = (cur_page - 1) * per
             page_items = filtered[start:start + per]
 
+        # Re-download recovery: rebuild a job from a history record.
+        def _hist_job(h):
+            ext = os.path.splitext(h.get("filename", ""))[1].lower()
+            if h.get("fmt") == "audio":
+                return {"url": h.get("url"), "title": h.get("title", ""),
+                        "fmt": "audio",
+                        "audio_codec": "m4a" if ext == ".m4a" else "mp3"}
+            return {"url": h.get("url"), "title": h.get("title", ""),
+                    "fmt": "video", "quality": "Best Available"}
+
+        redl = [h for h in page_items if h.get("url")]
+        if redl and st.button(f"⤓ Re-download this page ({len(redl)})",
+                              help="Re-fetch these from their original links — "
+                                   "handy if files were moved or deleted"):
+            n = enqueue([_hist_job(h) for h in redl], downloads.LANE_NOW)
+            st.success(f"⚡ Queued **{n}** re-download(s) — see **Downloads** above.")
+
         for h in page_items:
             icon = "🎬" if h.get("fmt") == "video" else "🎵"
-            hc1, hc2, hc3 = st.columns([7, 1, 1])
+            hc1, hc2, hc3, hc4 = st.columns([7, 1, 1, 1])
             _m = ai_cache.get(h.get("title") or h.get("filename")) if ai_on else None
             ai_badge = ""
             if _m:
                 ai_badge = (f" · 🏷️ {_m.get('category', '')}"
                             + (f" · {_m['artist']}" if _m.get("artist") else ""))
+            on_disk = bool(h.get("path") and os.path.isfile(h["path"]))
+            miss = "" if on_disk else " · ⚠️ file missing"
             hc1.markdown(
                 f"{icon} **{h.get('title') or h.get('filename')}**  \n"
                 f"<span style='color:#888;font-size:0.82em'>"
                 f"{h.get('site', '')} · {when_label(h.get('ts'))} · "
-                f"{fmt_size(h.get('size', 0))}{ai_badge}</span>",
+                f"{fmt_size(h.get('size', 0))}{ai_badge}{miss}</span>",
                 unsafe_allow_html=True)
-            if hc2.button("📂", key=f"hopen_{h['id']}", help="Open containing folder"):
+            if hc2.button("⤓", key=f"hredl_{h['id']}", help="Re-download",
+                          disabled=not h.get("url")):
+                enqueue([_hist_job(h)], downloads.LANE_NOW)
+                st.success(f"⚡ Re-downloading **{h.get('title') or 'item'}**.")
+            if hc3.button("📂", key=f"hopen_{h['id']}", help="Open containing folder"):
                 if not open_in_explorer(h["path"]):
                     st.warning("That file/folder may have been moved or deleted.")
-            if hc3.button("✕", key=f"hdel_{h['id']}", help="Remove from history"):
+            if hc4.button("✕", key=f"hdel_{h['id']}",
+                          help="Remove from history (keeps the file)"):
                 hist.delete_entry(h["id"])
                 st.rerun()
 
 # =========================================================================== #
-# LIBRARY & CLEANUP  (exact-duplicate finder — safe, confirm before delete)
+# LIBRARY & CLEANUP  (exact-dup finder — content hash only, quarantine first)
 # =========================================================================== #
 st.divider()
 st.subheader("🗂️ Library & Cleanup")
-scan_folders = []
-if library.is_enabled():
-    scan_folders.append(library.get_root())
-scan_folders.append(main_dir)
-scan_folders = [p for p in dict.fromkeys(scan_folders) if p and os.path.isdir(p)]
+_scan_base = library.get_root() if library.is_enabled() else main_dir
+scan_folders = library.collapse_folders([_scan_base])
 
-st.caption("Finds **exact** duplicate files (identical content, by hash) in: "
-           + (" · ".join(f"`{p}`" for p in scan_folders) or "no valid folder"))
-if st.button("🔍 Scan for duplicate files", disabled=not scan_folders):
+st.caption("Finds **only exact** duplicate files — identical **content** "
+           "(same size **and** same SHA-256 hash). Never by filename. "
+           "Scanning: " + (" · ".join(f"`{p}`" for p in scan_folders)
+                           or "no valid folder"))
+sc1, sc2 = st.columns([2, 1])
+if sc1.button("🔍 Scan for duplicates", disabled=not scan_folders,
+              use_container_width=True):
     bar = st.progress(0.0)
     note = st.empty()
 
@@ -1092,7 +1117,7 @@ if st.button("🔍 Scan for duplicate files", disabled=not scan_folders):
         _b.progress(d / max(n, 1))
         _n.caption(f"Hashing… {d}/{n}")
 
-    with st.spinner("Scanning your folders for exact duplicates…"):
+    with st.spinner("Hashing file contents…"):
         st.session_state.dup_groups = library.scan_duplicates(scan_folders,
                                                               progress=_dp)
     note.empty()
@@ -1101,36 +1126,65 @@ if st.button("🔍 Scan for duplicate files", disabled=not scan_folders):
 dup_groups = st.session_state.get("dup_groups")
 if dup_groups is not None:
     if not dup_groups:
-        st.success("No exact duplicates found — your library is clean. 🎉")
+        st.success("No exact duplicates found — nothing to clean. 🎉")
     else:
         total_recover = sum(g["recover"] for g in dup_groups)
         total_files = sum(len(g["dups"]) for g in dup_groups)
-        st.warning(f"**Duplicate files detected.** {total_files} duplicate(s) in "
+        st.warning(f"Found **{total_files}** exact duplicate(s) in "
                    f"{len(dup_groups)} group(s) · **{fmt_size(total_recover)}** "
-                   "can be recovered.")
-        for g in dup_groups[:60]:
+                   "reclaimable. Review the evidence, then move them to "
+                   "**Quarantine** (you can restore anytime).")
+        for g in dup_groups[:80]:
             with st.container(border=True):
                 st.markdown(f"✅ **Keep:** `{g['keeper']}`")
                 for d in g["dups"]:
-                    st.markdown(f"🗑️ **Duplicate:** `{d}`")
+                    st.markdown(f"🟠 **Duplicate:** `{d}`")
                 st.caption(f"{g['reason']} · {fmt_size(g['size'])} each · "
-                           f"recovers {fmt_size(g['recover'])}")
-        st.markdown("**Would you like to remove them?**  Deleted files go to the "
-                    "**Recycle Bin** (recoverable) — never permanently wiped.")
-        d1, d2, d3 = st.columns(3)
-        if d1.button("🗑️ Delete duplicates", type="primary",
-                     use_container_width=True):
-            to_delete = [d for g in dup_groups for d in g["dups"]]
-            cnt, to_bin = library.recycle(to_delete)
-            where = "the Recycle Bin" if to_bin else "permanently removed"
-            st.success(f"Removed **{cnt}** duplicate(s) to {where} · recovered "
-                       f"**{fmt_size(total_recover)}**.")
+                           f"SHA-256 `{g['hash_short']}…` · "
+                           f"reclaims {fmt_size(g['recover'])}")
+        q1, q2 = st.columns([2, 1])
+        if q1.button("🛡️ Move duplicates to Quarantine", type="primary",
+                     use_container_width=True,
+                     help="Moves (not deletes) the duplicates into "
+                          "Quarantine/Duplicates — fully restorable"):
+            to_move = [d for g in dup_groups for d in g["dups"]]
+            batch, moved = library.quarantine(to_move, root=_scan_base)
+            st.success(f"Moved **{moved}** duplicate(s) to Quarantine "
+                       f"(`{batch}`). Restore anytime below.")
             st.session_state.pop("dup_groups", None)
-        if d2.button("Keep all files", use_container_width=True):
+        if q2.button("Keep all", use_container_width=True):
             st.session_state.pop("dup_groups", None)
             st.rerun()
-        d3.caption("Review manually: the full paths above are shown so you can "
-                   "inspect each file before deciding.")
+
+# -- Quarantine management (restore / permanent delete) --------------------- #
+_batches = library.list_quarantine(root=_scan_base)
+if _batches:
+    qtot = sum(b["bytes"] for b in _batches)
+    with st.expander(f"🛡️ Quarantine — {sum(len(b['items']) for b in _batches)} "
+                     f"file(s), {fmt_size(qtot)} (restorable)"):
+        st.caption("Quarantined duplicates are still on disk. Restore them, or "
+                   "permanently delete (to the Recycle Bin) once you're sure.")
+        for b in _batches:
+            with st.container(border=True):
+                bc1, bc2, bc3 = st.columns([3, 1, 1])
+                bc1.markdown(f"**{b['name']}** · {len(b['items'])} file(s) · "
+                             f"{fmt_size(b['bytes'])}")
+                if bc2.button("♻️ Restore", key=f"qr_{b['name']}",
+                              use_container_width=True):
+                    n = library.restore_batch(b["batch"])
+                    st.success(f"Restored **{n}** file(s) to their original "
+                               "locations.")
+                    st.rerun()
+                if bc3.button("🗑️ Delete", key=f"qp_{b['name']}",
+                              use_container_width=True,
+                              help="Permanently remove this batch (to Recycle Bin)"):
+                    n = library.purge_batch(b["batch"])
+                    st.success(f"Permanently removed **{n}** file(s) "
+                               "(to the Recycle Bin).")
+                    st.rerun()
+                for it in b["items"][:8]:
+                    bc1.caption(f"• {os.path.basename(it['quarantined'])} "
+                                f"← {it['original']}")
 
 # --------------------------------------------------------------------------- #
 # Footer
