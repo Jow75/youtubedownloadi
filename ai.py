@@ -418,6 +418,15 @@ def _cosine(a, b):
     return s / (na * nb + 1e-9)
 
 
+def summarize_habits(facts):
+    """A short, friendly read of the user's download habits + a tip or two."""
+    prompt = ("Here are a user's media-download stats. In 2-3 short, friendly "
+              "sentences, summarize their habits and give one practical tip "
+              "(e.g. a default setting or a folder idea). Be specific, no "
+              "preamble.\n\n" + facts)
+    return _chat(prompt, max_tokens=220)
+
+
 def semantic_search(query, titles, top_k=25):
     """Rank `titles` by meaning-similarity to `query`. Returns [(title, score)]
     for titles that have a cached embedding."""

@@ -441,9 +441,10 @@ all_hist = hist.load_history()
 ai_on = bool(st.session_state.get("ai_on"))
 ai_cache = ai.cached_analysis() if ai_on else {}
 
-_t_dl, _t_hist, _t_arch, _t_clean = st.tabs([
+_t_dl, _t_hist, _t_insights, _t_arch, _t_clean = st.tabs([
     "⬇️  Download",
     f"🕓  History ({len(all_hist)})",
+    "📊  Insights",
     "🗄️  Archive",
     "🗂️  Library & Cleanup",
 ])
@@ -1507,6 +1508,147 @@ with _t_clean:
                     for it in b["items"][:8]:
                         bc1.caption(f"• {os.path.basename(it['quarantined'])} "
                                     f"← {it['original']}")
+
+
+# =========================================================================== #
+# INSIGHTS + SMART COLLECTIONS (Wave D — preference learning)
+# =========================================================================== #
+def _ai_meta(h):
+    return ai_cache.get(h.get("title") or h.get("filename")) or {}
+
+
+with _t_insights:
+    st.subheader("📊 Library Insights")
+    if not all_hist:
+        st.caption("Download a few things and your insights appear here.")
+    else:
+        from collections import Counter
+
+        n = len(all_hist)
+        total_sz = sum(h.get("size", 0) for h in all_hist)
+        aud = sum(1 for h in all_hist if h.get("fmt") == "audio")
+        vid = n - aud
+        sites = Counter(h.get("site") or "Other" for h in all_hist)
+        arts = Counter(_ai_meta(h).get("artist") for h in all_hist
+                       if _ai_meta(h).get("artist"))
+        cats = Counter(_ai_meta(h).get("category") for h in all_hist
+                       if _ai_meta(h).get("category"))
+        hours, wdays = Counter(), Counter()
+        for h in all_hist:
+            try:
+                ts = datetime.fromisoformat(h.get("ts", ""))
+            except (ValueError, TypeError):
+                continue
+            hours[ts.hour] += 1
+            wdays[ts.weekday()] += 1
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Downloads", n)
+        k2.metric("Library size", fmt_size(total_sz))
+        k3.metric("Artists", len(arts) if arts else 0)
+        k4.metric("Sources", len(sites))
+
+        st.markdown(f"**Format mix** — 🎵 Audio **{aud}** "
+                    f"({aud * 100 // max(n, 1)}%) · 🎬 Video **{vid}** "
+                    f"({vid * 100 // max(n, 1)}%)")
+        if hours:
+            st.markdown("**When you download (by hour of day)**")
+            st.bar_chart({"downloads": [hours.get(hh, 0) for hh in range(24)]})
+
+        ic1, ic2, ic3 = st.columns(3)
+        ic1.markdown("**Top artists**")
+        if arts:
+            for a, x in arts.most_common(8):
+                ic1.write(f"- {a}: **{x}**")
+        else:
+            ic1.caption("Run **Smart Library → Analyze with AI** to unlock.")
+        ic2.markdown("**Top categories**")
+        if cats:
+            for c, x in cats.most_common(8):
+                ic2.write(f"- {c}: **{x}**")
+        else:
+            ic2.caption("Analyze with AI to unlock.")
+        ic3.markdown("**Top sources**")
+        for s, x in sites.most_common(8):
+            ic3.write(f"- {s}: **{x}**")
+
+        st.markdown("**💡 Recommendations from your habits**")
+        recs = []
+        if aud >= vid:
+            recs.append(f"You grab **audio** {aud * 100 // max(n, 1)}% of the time "
+                        "— Single mode already defaults to Audio for you.")
+        else:
+            recs.append(f"You grab **video** {vid * 100 // max(n, 1)}% of the time "
+                        "— consider keeping a separate Videos folder.")
+        if sites:
+            recs.append(f"Your main source is **{sites.most_common(1)[0][0]}**.")
+        if hours:
+            pk = hours.most_common(1)[0][0]
+            recs.append(f"You're most active around **{pk:02d}:00**.")
+        if arts:
+            recs.append(f"Your most-downloaded artist is **{arts.most_common(1)[0][0]}**.")
+        for r in recs:
+            st.markdown(f"- {r}")
+
+        if ai_on and st.button("✨ AI summary of my habits", key="ins_ai"):
+            facts = (f"{n} downloads, {aud} audio / {vid} video, top sources "
+                     f"{dict(sites.most_common(3))}, top artists "
+                     f"{dict(arts.most_common(5))}, top categories "
+                     f"{dict(cats.most_common(5))}, busiest hour "
+                     f"{hours.most_common(1)[0][0] if hours else 'n/a'}.")
+            with st.spinner("Thinking…"):
+                try:
+                    st.info("✨ " + ai.summarize_habits(facts))
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"AI summary failed: {exc}")
+
+        # ---- Smart Collections -------------------------------------------- #
+        st.divider()
+        st.subheader("🎶 Smart Collections")
+        st.caption("Auto-made from your AI tags — tap a collection to open it.")
+        if not (arts or cats):
+            st.caption("Run **Smart Library → Analyze with AI** to build collections.")
+        else:
+            colls = ([("🎤 " + a, "artist", a, x) for a, x in arts.most_common(12)]
+                     + [("🏷️ " + c, "category", c, x) for c, x in cats.most_common()])
+            cc = st.columns(3)
+            for i, (label, kind, val, cnt) in enumerate(colls):
+                if cc[i % 3].button(f"{label} · {cnt}", key=f"coll_{kind}_{val}",
+                                    use_container_width=True):
+                    st.session_state.coll_pick = (kind, val)
+
+            cp = st.session_state.get("coll_pick")
+            if cp:
+                ckind, cval = cp
+                citems = [h for h in all_hist if _ai_meta(h).get(ckind) == cval]
+                t1, t2 = st.columns([4, 1])
+                t1.markdown(f"#### {cval} — {len(citems)} item(s)")
+                if t2.button("Close", key="coll_close"):
+                    st.session_state.pop("coll_pick", None)
+                    st.rerun()
+                credl = [h for h in citems if h.get("url")]
+                if credl and st.button(
+                        f"⤓ Re-download whole collection ({len(credl)})",
+                        key="coll_redl"):
+                    nn = enqueue([media_job(h) for h in credl], downloads.LANE_BATCH)
+                    st.success(f"⚡ Queued **{nn}** — see **Downloads** above.")
+                for it in citems[:150]:
+                    on_disk = bool(it.get("path") and os.path.isfile(it["path"]))
+                    r1, r2, r3 = st.columns([7, 1, 1])
+                    r1.markdown(
+                        f"{'🎬' if it.get('fmt') == 'video' else '🎵'} "
+                        f"**{it.get('title') or it.get('filename')}**  \n"
+                        f"<span style='color:#888;font-size:.8em'>"
+                        f"{it.get('site', '')} · {fmt_size(it.get('size', 0))}"
+                        f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
+                        unsafe_allow_html=True)
+                    if r2.button("📂", key=f"coll_o_{it['id']}", disabled=not on_disk,
+                                 help="Open & highlight"):
+                        open_and_select(it["path"])
+                    if r3.button("⤓", key=f"coll_r_{it['id']}",
+                                 disabled=not it.get("url"), help="Re-download"):
+                        enqueue([media_job(it)], downloads.LANE_NOW)
+                        st.success(f"⚡ Re-downloading **{it.get('title') or 'item'}**.")
 
 
 # --------------------------------------------------------------------------- #
