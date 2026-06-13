@@ -85,6 +85,28 @@ def open_in_explorer(path):
         return False
 
 
+def open_and_select(path):
+    """Open Explorer with the file highlighted (so you land right on it)."""
+    import subprocess
+    try:
+        if path and os.path.isfile(path):
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return open_in_explorer(path)
+
+
+def media_job(h):
+    """Build a re-download job from a history/record dict."""
+    ext = os.path.splitext(h.get("filename", "") or "")[1].lower()
+    if h.get("fmt") == "audio":
+        return {"url": h.get("url"), "title": h.get("title", ""), "fmt": "audio",
+                "audio_codec": "m4a" if ext == ".m4a" else "mp3"}
+    return {"url": h.get("url"), "title": h.get("title", ""), "fmt": "video",
+            "quality": "Best Available"}
+
+
 @st.cache_data(show_spinner=False, ttl=600)
 def fetch_metadata(url, cookiefile=""):
     return dl.extract_meta(url, cookiefile)
@@ -940,50 +962,95 @@ if ai_on and all_hist:
             st.success(f"Tagged {done} file(s).")
         if analyzed:
             from collections import Counter
+
+            def _ai_of(h):
+                return ai_cache.get(h.get("title") or h.get("filename")) or {}
+
             cats = Counter(ai_cache[t]["category"] for t in analyzed)
             arts = Counter(ai_cache[t]["artist"] for t in analyzed
                            if ai_cache[t].get("artist"))
+            st.caption("👇 Click any category or artist to see those exact files — "
+                       "then open each in its folder (highlighted) or re-download it.")
             g1, g2 = st.columns(2)
             g1.markdown("**By category**")
             for c, n in cats.most_common():
-                g1.write(f"- {c}: **{n}**")
+                if g1.button(f"{c} · {n}", key=f"smcat_{c}",
+                             use_container_width=True):
+                    st.session_state.smart_pick = ("category", c)
             g2.markdown("**Top artists**")
-            for a, n in arts.most_common(8):
-                g2.write(f"- {a}: **{n}**")
+            for a, n in arts.most_common(12):
+                if g2.button(f"{a} · {n}", key=f"smart_{a}",
+                             use_container_width=True):
+                    st.session_state.smart_pick = ("artist", a)
 
-            # AI duplicate detection — same artist+work, beyond filename match
+            pick = st.session_state.get("smart_pick")
+            if pick:
+                kind, val = pick
+                items = [h for h in all_hist
+                         if _ai_of(h).get(kind) == val] if kind == "category" \
+                    else [h for h in all_hist if _ai_of(h).get("artist") == val]
+                pk1, pk2 = st.columns([4, 1])
+                pk1.markdown(f"#### {val} — {len(items)} file(s)")
+                if pk2.button("Close", key="smart_close"):
+                    st.session_state.pop("smart_pick", None)
+                    st.rerun()
+                for it in items[:150]:
+                    on_disk = bool(it.get("path") and os.path.isfile(it["path"]))
+                    e1, e2, e3 = st.columns([7, 1, 1])
+                    e1.markdown(
+                        f"{'🎬' if it.get('fmt') == 'video' else '🎵'} "
+                        f"**{it.get('title') or it.get('filename')}**  \n"
+                        f"<span style='color:#888;font-size:.8em'>"
+                        f"{it.get('site', '')} · {fmt_size(it.get('size', 0))}"
+                        f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
+                        unsafe_allow_html=True)
+                    if e2.button("📂", key=f"smp_o_{it['id']}", disabled=not on_disk,
+                                 help="Open the folder & highlight this file"):
+                        open_and_select(it["path"])
+                    if e3.button("⤓", key=f"smp_r_{it['id']}",
+                                 disabled=not it.get("url"), help="Re-download"):
+                        enqueue([media_job(it)], downloads.LANE_NOW)
+                        st.success(f"⚡ Re-downloading **{it.get('title') or 'item'}**.")
+
+            # Same song/artist grouping (AI artist+title) — VERSIONS, not byte dups.
             groups = {}
             for _h in all_hist:
-                _m = ai_cache.get(_h.get("title") or _h.get("filename"))
-                if _m and _m.get("artist") and _m.get("clean_title"):
+                _m = _ai_of(_h)
+                if _m.get("artist") and _m.get("clean_title"):
                     k = (_m["artist"].strip().lower(),
                          _m["clean_title"].strip().lower())
                     groups.setdefault(k, []).append(_h)
-            dupes = {k: v for k, v in groups.items() if len(v) > 1}
-            if dupes:
+            multi = {k: v for k, v in groups.items() if len(v) > 1}
+            if multi:
                 st.markdown("---")
-                tot = sum(len(v) for v in dupes.values())
-                st.markdown(f"**🔁 Possible duplicates** — {tot} files in "
-                            f"{len(dupes)} group(s) (matched by AI artist + title, "
-                            "not just filename)")
-                for (artist, _t), grp in list(dupes.items())[:12]:
-                    nice = (ai_cache.get(grp[0].get('title')
-                            or grp[0].get('filename'), {}).get('clean_title')
-                            or grp[0].get('title'))
-                    st.caption(f"**{artist.title()} — {nice}** · {len(grp)} copies")
-                    for it in grp:
-                        d1, d2, d3 = st.columns([7, 1, 1])
-                        d1.write(f"   • {it.get('filename')}  "
-                                 f"<span style='color:#888;font-size:.8em'>"
-                                 f"({it.get('fmt')}, {fmt_size(it.get('size', 0))})"
-                                 f"</span>", unsafe_allow_html=True)
-                        if d2.button("📂", key=f"dup_o_{it['id']}",
-                                     help="Open folder"):
-                            open_in_explorer(it["path"])
-                        if d3.button("✕", key=f"dup_d_{it['id']}",
-                                     help="Remove from history"):
-                            hist.delete_entry(it["id"])
-                            st.rerun()
+                tot = sum(len(v) for v in multi.values())
+                st.markdown(f"**🎭 Same song / artist — multiple files** · {tot} "
+                            f"files in {len(multi)} group(s)")
+                st.caption("Grouped by AI **artist + title**, so these are often "
+                           "different **versions** (official video, visualizer, "
+                           "live, teaser) — **not** necessarily identical files. "
+                           "Same-size items are flagged *likely identical*; to "
+                           "remove only true byte-for-byte copies **safely**, use "
+                           "**Library & Cleanup** below (it verifies by hash and "
+                           "quarantines, never deletes blindly).")
+                for (artist, _tt), grp in list(multi.items())[:15]:
+                    nice = _ai_of(grp[0]).get("clean_title") or grp[0].get("title")
+                    szc = Counter(round((it.get("size", 0) or 0) / 1024)
+                                  for it in grp)
+                    with st.container(border=True):
+                        st.caption(f"**{artist.title()} — {nice}** · {len(grp)} files")
+                        for it in grp:
+                            likely = szc[round((it.get("size", 0) or 0) / 1024)] > 1
+                            d1, d2 = st.columns([8, 1])
+                            d1.markdown(
+                                f"• {it.get('filename')} "
+                                f"<span style='color:#888;font-size:.8em'>"
+                                f"({fmt_size(it.get('size', 0))}"
+                                f"{' · 🟠 likely identical' if likely else ' · unique size'})"
+                                f"</span>", unsafe_allow_html=True)
+                            if d2.button("📂", key=f"sg_o_{it['id']}",
+                                         help="Open & highlight"):
+                                open_and_select(it["path"])
 
 if not all_hist:
     st.caption("Your downloads will appear here and stay saved between sessions.")
@@ -1248,8 +1315,21 @@ with st.expander(f"🗄️ Archive Recovery Center — {len(arch_all)} record(s)
 # =========================================================================== #
 st.divider()
 st.subheader("🗂️ Library & Cleanup")
-_scan_base = library.get_root() if library.is_enabled() else main_dir
-scan_folders = library.collapse_folders([_scan_base])
+# Scan wherever the media ACTUALLY lives — the managed library, the real
+# Downloads folder, AND every folder your tracked files sit in (e.g. files
+# downloaded before you turned the library on). collapse_folders keeps it
+# overlap-safe so nothing is ever counted twice.
+_quarantine_root = library.get_root() if library.is_enabled() else main_dir
+_scan_roots = {DEFAULT_DOWNLOAD_DIR, main_dir}
+if library.is_enabled():
+    _scan_roots.add(library.get_root())
+for _h in all_hist:
+    _p = _h.get("path")
+    if _p:
+        _d = os.path.dirname(_p)
+        if _d and len(_d) > 3:        # skip blanks / drive roots like "C:\"
+            _scan_roots.add(_d)
+scan_folders = library.collapse_folders(_scan_roots)
 
 with st.expander("🔧 Rebuild library index"):
     st.caption("Scans your folders and **reconstructs missing history records** "
@@ -1317,7 +1397,7 @@ if dup_groups is not None:
                      help="Moves (not deletes) the duplicates into "
                           "Quarantine/Duplicates — fully restorable"):
             to_move = [d for g in dup_groups for d in g["dups"]]
-            batch, moved = library.quarantine(to_move, root=_scan_base)
+            batch, moved = library.quarantine(to_move, root=_quarantine_root)
             st.success(f"Moved **{moved}** duplicate(s) to Quarantine "
                        f"(`{batch}`). Restore anytime below.")
             st.session_state.pop("dup_groups", None)
@@ -1326,7 +1406,7 @@ if dup_groups is not None:
             st.rerun()
 
 # -- Quarantine management (restore / permanent delete) --------------------- #
-_batches = library.list_quarantine(root=_scan_base)
+_batches = library.list_quarantine(root=_quarantine_root)
 if _batches:
     qtot = sum(b["bytes"] for b in _batches)
     with st.expander(f"🛡️ Quarantine — {sum(len(b['items']) for b in _batches)} "
