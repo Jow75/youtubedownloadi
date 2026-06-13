@@ -478,7 +478,7 @@ if mode == "🔗 Single link":
 
         st.divider()
 
-        fmt_label = st.radio("Format", ["🎬 Video (MP4)", "🎵 Audio Only"],
+        fmt_label = st.radio("Format", ["🎵 Audio Only", "🎬 Video (MP4)"],
                              horizontal=True)
         is_video = fmt_label.startswith("🎬")
         fmt = "video" if is_video else "audio"
@@ -797,7 +797,11 @@ elif mode == "🤖 Assistant":
             if results:
                 st.write(f"**Top {len(results)} result(s)** — tap ⬇️ to grab:")
                 for i, r in enumerate(results):
-                    rc1, rc2 = st.columns([6, 1])
+                    rc0, rc1, rc2 = st.columns([1.4, 5, 1])
+                    if r.get("thumbnail"):
+                        rc0.image(r["thumbnail"], use_container_width=True)
+                    else:
+                        rc0.markdown("🎬" if False else "🎵")
                     dur = dl.human_duration(r["duration"]) if r.get("duration") else ""
                     rc1.markdown(
                         f"**{r['title']}**{(' · ' + dur) if dur else ''}  \n"

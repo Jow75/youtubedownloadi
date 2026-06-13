@@ -254,10 +254,13 @@ def search(query, n=5, cookiefile=""):
         if not e:
             continue
         url = e.get("url") or e.get("webpage_url") or e.get("id")
+        thumb = e.get("thumbnail")
+        if not thumb and e.get("thumbnails"):
+            thumb = (e["thumbnails"][-1] or {}).get("url")
         if url:
             out.append({"url": url, "title": e.get("title") or "media",
                         "uploader": e.get("uploader") or e.get("channel") or "",
-                        "duration": e.get("duration")})
+                        "duration": e.get("duration"), "thumbnail": thumb})
     return out
 
 
