@@ -362,3 +362,73 @@ def purge_batch(batch):
     cnt, _to_bin = recycle(files)
     shutil.rmtree(batch, ignore_errors=True)
     return cnt
+
+
+# --------------------------------------------------------------------------- #
+# Library Rebuild — re-index files on disk, reconstruct missing history records
+# --------------------------------------------------------------------------- #
+_AUDIO_EXTS = {".mp3", ".m4a", ".flac", ".wav", ".opus", ".aac", ".ogg"}
+_VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+MEDIA_EXTS = _AUDIO_EXTS | _VIDEO_EXTS
+
+
+def media_files(folders):
+    """Every media file on disk under the folders (overlap-safe). Skips the
+    Quarantine area. Returns [{path, size, ext, fmt, mtime}]."""
+    out = []
+    for folder in collapse_folders(folders):
+        for dirpath, dirs, names in os.walk(folder):
+            if "Quarantine" in dirpath.split(os.sep):
+                continue
+            for n in names:
+                ext = os.path.splitext(n)[1].lower()
+                if ext not in MEDIA_EXTS:
+                    continue
+                p = os.path.join(dirpath, n)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                out.append({
+                    "path": p, "size": st.st_size, "ext": ext,
+                    "fmt": "audio" if ext in _AUDIO_EXTS else "video",
+                    "mtime": st.st_mtime,
+                })
+    return out
+
+
+def rebuild(folders, progress=None):
+    """Re-index files on disk and reconstruct any MISSING history records,
+    recovering the original download URL from the permanent archive by title
+    when possible. Adds records only for files not already tracked; never
+    deletes or moves anything. Returns a summary dict."""
+    import history as hist
+    import archive
+    from datetime import datetime
+
+    disk = media_files(folders)
+    tracked = {_real(h.get("path", "")) for h in hist.load_history()
+               if h.get("path")}
+    by_title = {}
+    for r in archive.load():
+        t = (r.get("title") or "").strip().lower()
+        if t and t not in by_title:
+            by_title[t] = r
+
+    added, matched = 0, 0
+    total = len(disk)
+    for i, f in enumerate(disk, 1):
+        if progress:
+            progress(i, total)
+        if _real(f["path"]) in tracked:
+            continue
+        title = os.path.splitext(os.path.basename(f["path"]))[0]
+        rec = by_title.get(title.strip().lower())
+        url = (rec or {}).get("url", "")
+        if url:
+            matched += 1
+        ts = datetime.fromtimestamp(f["mtime"]).replace(microsecond=0).isoformat()
+        hist.add_entry(f["path"], title, f["fmt"], url=url, size=f["size"], ts=ts)
+        added += 1
+    return {"scanned": total, "added": added, "recovered_links": matched,
+            "already_tracked": total - added}

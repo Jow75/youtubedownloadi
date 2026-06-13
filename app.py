@@ -20,7 +20,7 @@ aria2c optional (turbo downloads).
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -988,15 +988,67 @@ if ai_on and all_hist:
 if not all_hist:
     st.caption("Your downloads will appear here and stay saved between sessions.")
 else:
-    f1, f2, f3, f4 = st.columns([2.4, 1.3, 1.3, 1.2])
+    def _hist_job(h):
+        ext = os.path.splitext(h.get("filename", ""))[1].lower()
+        if h.get("fmt") == "audio":
+            return {"url": h.get("url"), "title": h.get("title", ""),
+                    "fmt": "audio",
+                    "audio_codec": "m4a" if ext == ".m4a" else "mp3"}
+        return {"url": h.get("url"), "title": h.get("title", ""),
+                "fmt": "video", "quality": "Best Available"}
+
+    def _hist_csv(rows):
+        import csv as _csv
+        import io as _io
+        cols = ["ts", "title", "site", "fmt", "size", "url", "filename", "path"]
+        buf = _io.StringIO()
+        w = _csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c, "") for c in cols})
+        return buf.getvalue()
+
+    f1, f2, f3, f4, f5 = st.columns([2, 1.2, 1.1, 1.3, 1.4])
     hq = f1.text_input("Search history", placeholder="Search title or filename…",
                        label_visibility="collapsed")
     site_sel = f2.selectbox("Site", ["All sites"] + hist.all_sites(all_hist),
                             label_visibility="collapsed")
     type_sel = f3.selectbox("Type", ["All types", "🎬 Video", "🎵 Audio"],
                             label_visibility="collapsed")
-    date_sel = f4.selectbox("When", ["All time", "Today", "Last 7 days",
-                                     "Last 30 days"], label_visibility="collapsed")
+    date_sel = f4.selectbox("When", ["All time", "Today", "Yesterday",
+                                     "This week", "This month", "This year",
+                                     "Custom range…"], label_visibility="collapsed")
+    sort_opts = ["Newest", "Oldest", "Title A–Z", "Largest", "Smallest", "Source"]
+    if ai_on:
+        sort_opts.append("Artist")
+    sort_sel = f5.selectbox("Sort", sort_opts, label_visibility="collapsed")
+
+    cust_from = cust_to = None
+    if date_sel == "Custom range…":
+        dca, dcb = st.columns(2)
+        cust_from = dca.date_input("From", value=None, key="hist_from")
+        cust_to = dcb.date_input("To", value=None, key="hist_to")
+
+    def _in_when(ts):
+        now = datetime.now()
+        d = ts.date()
+        if date_sel == "Today":
+            return d == now.date()
+        if date_sel == "Yesterday":
+            return (now.date() - d).days == 1
+        if date_sel == "This week":
+            return d >= (now.date() - timedelta(days=now.weekday()))
+        if date_sel == "This month":
+            return d.year == now.year and d.month == now.month
+        if date_sel == "This year":
+            return d.year == now.year
+        if date_sel == "Custom range…":
+            if cust_from and d < cust_from:
+                return False
+            if cust_to and d > cust_to:
+                return False
+            return True
+        return True
 
     def _match(h):
         if hq and hq.lower() not in (
@@ -1013,28 +1065,48 @@ else:
                 ts = datetime.fromisoformat(h.get("ts", ""))
             except (ValueError, TypeError):
                 return False
-            if date_sel == "Today":
-                if ts.date() != datetime.now().date():
-                    return False
-            else:
-                days = 7 if "7" in date_sel else 30
-                if (datetime.now() - ts).days >= days:
-                    return False
+            if not _in_when(ts):
+                return False
         return True
 
+    def _artist(h):
+        m = ai_cache.get(h.get("title") or h.get("filename")) if ai_on else None
+        return (m or {}).get("artist") or ""
+
     filtered = [h for h in all_hist if _match(h)]
+    _sorters = {
+        "Newest": (lambda h: h.get("ts", ""), True),
+        "Oldest": (lambda h: h.get("ts", ""), False),
+        "Title A–Z": (lambda h: (h.get("title") or "").lower(), False),
+        "Largest": (lambda h: h.get("size", 0), True),
+        "Smallest": (lambda h: h.get("size", 0), False),
+        "Source": (lambda h: (h.get("site") or "").lower(), False),
+        "Artist": (lambda h: _artist(h).lower(), False),
+    }
+    _key, _rev = _sorters.get(sort_sel, _sorters["Newest"])
+    filtered = sorted(filtered, key=_key, reverse=_rev)
+
     total_size = sum(h.get("size", 0) for h in filtered)
-    pc1, pc2, pc3 = st.columns([2.5, 1.3, 1.2])
+    pc1, pc2, pc3, pc4 = st.columns([2.2, 1.3, 1.3, 1.2])
     pc1.caption(f"Showing **{len(filtered)}** of {len(all_hist)} downloads  ·  "
                 f"{fmt_size(total_size)} total")
     per_sel = pc2.selectbox("Per page",
                             ["10 per page", "20 per page", "30 per page",
                              "50 per page", "Show all"], index=1,
                             key="hist_per_page", label_visibility="collapsed")
-    if pc3.button("🗑️ Clear all", use_container_width=True,
-                  help="Permanently remove every entry from your history"):
+    pc3.download_button("⬇️ Export", _hist_csv(filtered),
+                        file_name="umd_history.csv", mime="text/csv",
+                        use_container_width=True, disabled=not filtered)
+    if pc4.button("🗑️ Clear all", use_container_width=True,
+                  help="Permanently remove every VISIBLE history entry "
+                       "(your permanent archive is kept)"):
         hist.clear_history()
         st.rerun()
+    _redl_all = [h for h in filtered if h.get("url")]
+    if _redl_all and st.button(f"⤓ Re-download all filtered ({len(_redl_all)})",
+                               key="hist_redl_filtered"):
+        n = enqueue([_hist_job(h) for h in _redl_all], downloads.LANE_BATCH)
+        st.success(f"⚡ Queued **{n}** re-download(s) — see **Downloads** above.")
 
     if not filtered:
         st.info("No downloads match those filters.")
@@ -1060,16 +1132,6 @@ else:
                 st.rerun()
             start = (cur_page - 1) * per
             page_items = filtered[start:start + per]
-
-        # Re-download recovery: rebuild a job from a history record.
-        def _hist_job(h):
-            ext = os.path.splitext(h.get("filename", ""))[1].lower()
-            if h.get("fmt") == "audio":
-                return {"url": h.get("url"), "title": h.get("title", ""),
-                        "fmt": "audio",
-                        "audio_codec": "m4a" if ext == ".m4a" else "mp3"}
-            return {"url": h.get("url"), "title": h.get("title", ""),
-                    "fmt": "video", "quality": "Best Available"}
 
         redl = [h for h in page_items if h.get("url")]
         if redl and st.button(f"⤓ Re-download this page ({len(redl)})",
@@ -1188,6 +1250,27 @@ st.divider()
 st.subheader("🗂️ Library & Cleanup")
 _scan_base = library.get_root() if library.is_enabled() else main_dir
 scan_folders = library.collapse_folders([_scan_base])
+
+with st.expander("🔧 Rebuild library index"):
+    st.caption("Scans your folders and **reconstructs missing history records** "
+               "for media already on disk — recovering the original download "
+               "link from the permanent archive where possible. It only **adds** "
+               "records; it never moves or deletes files.")
+    if st.button("🔧 Rebuild now", disabled=not scan_folders):
+        bar = st.progress(0.0)
+        note = st.empty()
+
+        def _rp(d, n, _b=bar, _n=note):
+            _b.progress(d / max(n, 1))
+            _n.caption(f"Indexing… {d}/{n}")
+
+        with st.spinner("Re-indexing your library…"):
+            res = library.rebuild(scan_folders, progress=_rp)
+        note.empty()
+        st.success(f"Scanned **{res['scanned']}** file(s) · added "
+                   f"**{res['added']}** new record(s) · recovered "
+                   f"**{res['recovered_links']}** download link(s) from the "
+                   f"archive · {res['already_tracked']} already tracked.")
 
 st.caption("Finds **only exact** duplicate files — identical **content** "
            "(same size **and** same SHA-256 hash). Never by filename. "

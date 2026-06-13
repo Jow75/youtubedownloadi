@@ -91,9 +91,10 @@ def _save(entries):
         pass
 
 
-def add_entry(path, title, fmt, url="", extractor="", size=None):
+def add_entry(path, title, fmt, url="", extractor="", size=None, ts=None):
     """Record one finished download (prepended; capped at MAX_ENTRIES).
-    Returns the stored entry dict."""
+    Returns the stored entry dict. `ts` overrides the timestamp (used by
+    Library Rebuild to preserve real file dates)."""
     if size is None:
         try:
             size = os.path.getsize(path)
@@ -101,7 +102,7 @@ def add_entry(path, title, fmt, url="", extractor="", size=None):
             size = 0
     entry = {
         "id": f"{int(time.time() * 1000)}-{os.path.basename(path)}",
-        "ts": datetime.now().replace(microsecond=0).isoformat(),
+        "ts": ts or datetime.now().replace(microsecond=0).isoformat(),
         "title": title or os.path.basename(path),
         "path": path,
         "filename": os.path.basename(path),
