@@ -341,6 +341,97 @@ def explain_error(title, error):
 
 
 # --------------------------------------------------------------------------- #
+# Wave D: semantic search (embeddings) — find by meaning, not exact words
+# --------------------------------------------------------------------------- #
+EMBED_MODELS = {"nvidia": "nvidia/nv-embedqa-e5-v5",
+                "openai": "text-embedding-3-small"}
+
+
+def _embeds_file():
+    return licensing.config_dir() / "ai_embeds.json"
+
+
+def _load_embeds():
+    try:
+        p = _embeds_file()
+        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_embeds(d):
+    try:
+        _embeds_file().write_text(json.dumps(d), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def embeds_count():
+    return len(_load_embeds())
+
+
+def embed(texts, input_type="passage"):
+    """Return an embedding vector per input text (OpenAI-compatible endpoint)."""
+    key = _key()
+    if not key:
+        raise RuntimeError("No AI API key configured.")
+    prov = current_provider()
+    url = PROVIDERS[prov]["base_url"] + "/embeddings"
+    payload = {"model": EMBED_MODELS.get(prov, "nvidia/nv-embedqa-e5-v5"),
+               "input": list(texts), "encoding_format": "float"}
+    if prov == "nvidia":
+        payload["input_type"] = input_type      # NeMo retriever needs this
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"})
+    resp = json.loads(urllib.request.urlopen(req, timeout=60).read())
+    return [d["embedding"] for d in resp["data"]]
+
+
+def build_embeddings(titles, progress=None, batch=32):
+    """Embed any titles not already indexed (cached on disk). Returns the cache."""
+    titles = [t for t in dict.fromkeys(titles) if t]
+    with _LOCK:
+        cache = _load_embeds()
+    todo = [t for t in titles if t not in cache]
+    for i in range(0, len(todo), batch):
+        chunk = todo[i:i + batch]
+        try:
+            vecs = embed(chunk, "passage")
+        except Exception:  # noqa: BLE001 — skip a bad batch, keep going
+            vecs = []
+        for t, v in zip(chunk, vecs):
+            cache[t] = v
+        with _LOCK:
+            _save_embeds(cache)
+        if progress:
+            progress(min(i + batch, len(todo)), len(todo))
+    return cache
+
+
+def _cosine(a, b):
+    import math
+    s = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return s / (na * nb + 1e-9)
+
+
+def semantic_search(query, titles, top_k=25):
+    """Rank `titles` by meaning-similarity to `query`. Returns [(title, score)]
+    for titles that have a cached embedding."""
+    cache = _load_embeds()
+    cand = [(t, cache[t]) for t in dict.fromkeys(titles) if t in cache]
+    if not cand:
+        return []
+    qv = embed([query], "query")[0]
+    scored = [(t, _cosine(qv, v)) for t, v in cand]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:top_k]
+
+
+# --------------------------------------------------------------------------- #
 # Write tags to a downloaded file (mutagen)
 # --------------------------------------------------------------------------- #
 def write_tags(path, artist=None, title=None, genre=None):

@@ -1052,6 +1052,66 @@ if ai_on and all_hist:
                                          help="Open & highlight"):
                                 open_and_select(it["path"])
 
+# --- Wave D: semantic search across the library ---------------------------- #
+if ai_on and all_hist:
+    with st.expander("🔮 Smart Search — find by meaning"):
+        st.caption("Search by what things *are*, not exact words — e.g. "
+                   "*live concert on stage*, *sad love song*, *behind the "
+                   "scenes*. Build the index once (it's cached); then search.")
+        _titles = [h.get("title") or h.get("filename") for h in all_hist]
+        ix1, ix2 = st.columns([3, 1])
+        ix1.caption(f"Indexed **{ai.embeds_count()}** item(s) · "
+                    f"{len(_titles)} in your library.")
+        if ix2.button("⚙️ Build / update index", use_container_width=True):
+            bar = st.progress(0.0)
+            note = st.empty()
+
+            def _ep(d, n, _b=bar, _n=note):
+                _b.progress(d / max(n, 1))
+                _n.caption(f"Embedding… {d}/{n}")
+
+            with st.spinner("Indexing your library by meaning… (one-time, cached)"):
+                ai.build_embeddings(_titles, progress=_ep)
+            note.empty()
+            st.rerun()
+
+        sq = st.text_input("Search by meaning", key="sem_q",
+                           placeholder="e.g. live performance on stage")
+        if sq.strip():
+            with st.spinner("Searching by meaning…"):
+                try:
+                    results = ai.semantic_search(sq.strip(), _titles, top_k=25)
+                except Exception as exc:  # noqa: BLE001
+                    results = []
+                    st.error(f"Search failed: {exc}")
+            if not results:
+                st.info("Nothing indexed yet — click **Build / update index** "
+                        "first.")
+            else:
+                _by_title = {}
+                for h in all_hist:
+                    _by_title.setdefault(h.get("title") or h.get("filename"), h)
+                for t, score in results:
+                    h = _by_title.get(t)
+                    if not h:
+                        continue
+                    on_disk = bool(h.get("path") and os.path.isfile(h["path"]))
+                    r1, r2, r3 = st.columns([7, 1, 1])
+                    r1.markdown(
+                        f"{'🎬' if h.get('fmt') == 'video' else '🎵'} **{t}**  \n"
+                        f"<span style='color:#888;font-size:.8em'>"
+                        f"match {score:.0%} · {h.get('site', '')} · "
+                        f"{fmt_size(h.get('size', 0))}"
+                        f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
+                        unsafe_allow_html=True)
+                    if r2.button("📂", key=f"sem_o_{h['id']}", disabled=not on_disk,
+                                 help="Open & highlight"):
+                        open_and_select(h["path"])
+                    if r3.button("⤓", key=f"sem_r_{h['id']}",
+                                 disabled=not h.get("url"), help="Re-download"):
+                        enqueue([media_job(h)], downloads.LANE_NOW)
+                        st.success(f"⚡ Re-downloading **{t}**.")
+
 if not all_hist:
     st.caption("Your downloads will appear here and stay saved between sessions.")
 else:
@@ -1383,11 +1443,19 @@ if dup_groups is not None:
                    f"{len(dup_groups)} group(s) · **{fmt_size(total_recover)}** "
                    "reclaimable. Review the evidence, then move them to "
                    "**Quarantine** (you can restore anytime).")
-        for g in dup_groups[:80]:
+        for gi, g in enumerate(dup_groups[:80]):
             with st.container(border=True):
-                st.markdown(f"✅ **Keep:** `{g['keeper']}`")
-                for d in g["dups"]:
-                    st.markdown(f"🟠 **Duplicate:** `{d}`")
+                kc1, kc2 = st.columns([9, 1])
+                kc1.markdown(f"✅ **Keep:** `{g['keeper']}`")
+                if kc2.button("📂", key=f"dupk_{gi}",
+                              help="Open the folder & highlight the kept file"):
+                    open_and_select(g["keeper"])
+                for di, d in enumerate(g["dups"]):
+                    dc1, dc2 = st.columns([9, 1])
+                    dc1.markdown(f"🟠 **Duplicate:** `{d}`")
+                    if dc2.button("📂", key=f"dupd_{gi}_{di}",
+                                  help="Open the folder & highlight this duplicate"):
+                        open_and_select(d)
                 st.caption(f"{g['reason']} · {fmt_size(g['size'])} each · "
                            f"SHA-256 `{g['hash_short']}…` · "
                            f"reclaims {fmt_size(g['recover'])}")
