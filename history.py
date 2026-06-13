@@ -118,6 +118,29 @@ def add_entry(path, title, fmt, url="", extractor="", size=None):
     return entry
 
 
+def add_archived(rec):
+    """Re-insert an archive record into visible history (used by Archive
+    Recovery → Restore). The file may be gone; the URL allows re-download."""
+    if not rec:
+        return
+    entry = {
+        "id": rec.get("id") or f"{int(time.time() * 1000)}-restore",
+        "ts": rec.get("ts") or datetime.now().replace(microsecond=0).isoformat(),
+        "title": rec.get("title", ""),
+        "path": "",
+        "filename": (rec.get("title", "item") + (rec.get("ext", "") or "")),
+        "fmt": rec.get("fmt", ""),
+        "site": rec.get("site", ""),
+        "url": rec.get("url", ""),
+        "size": int(rec.get("size", 0) or 0),
+    }
+    with _LOCK:
+        entries = [e for e in load_history() if e.get("id") != entry["id"]]
+        entries.insert(0, entry)
+        del entries[MAX_ENTRIES:]
+        _save(entries)
+
+
 def clear_history():
     """Wipe the whole history."""
     with _LOCK:

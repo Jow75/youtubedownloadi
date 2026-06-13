@@ -26,6 +26,7 @@ from pathlib import Path
 import streamlit as st
 
 import ai
+import archive
 import branding
 import downloader as dl
 import downloads
@@ -104,9 +105,19 @@ def fetch_playlist(url, cookiefile=""):
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    main_dir = st.text_input("Save downloads to folder", value=DEFAULT_DOWNLOAD_DIR)
-    st.caption("Files are written straight to this folder on this PC. No browser "
-               "download, so **IDM won't interfere**.")
+    if library.is_enabled():
+        main_dir = st.text_input("Save downloads to folder",
+                                 value=library.get_root(), disabled=True,
+                                 help="Managed library is ON — files auto-organize "
+                                      "here. Turn it off in Managed Library below "
+                                      "to pick a custom folder.")
+        st.caption("📚 **Managed library is ON** — MP3 → Music/MP3, M4A → "
+                   "Music/M4A, MP4 → Videos/MP4.")
+    else:
+        main_dir = st.text_input("Save downloads to folder",
+                                 value=DEFAULT_DOWNLOAD_DIR)
+        st.caption("Files are written straight to this folder on this PC. No "
+                   "browser download, so **IDM won't interfere**.")
 
     separate = st.checkbox("📂 Separate folders for Video and Audio", value=False)
     if separate:
@@ -1094,6 +1105,81 @@ else:
                           help="Remove from history (keeps the file)"):
                 hist.delete_entry(h["id"])
                 st.rerun()
+
+# =========================================================================== #
+# ARCHIVE RECOVERY CENTER  (permanent catalog — survives Clear History)
+# =========================================================================== #
+st.divider()
+
+
+@st.cache_data(show_spinner=False)
+def _load_archive(_mtime):
+    return archive.load()
+
+
+arch_all = _load_archive(archive.mtime())
+with st.expander(f"🗄️ Archive Recovery Center — {len(arch_all)} record(s) "
+                 "(survives Clear History)"):
+    st.caption("A permanent, lightweight catalog of everything you've ever "
+               "downloaded. It is **not** cleared when you clear history — so you "
+               "can always find and re-download past media, even if the files or "
+               "history were removed.")
+    if not arch_all:
+        st.caption("Your downloads are catalogued here automatically.")
+    else:
+        a1, a2, a3, a4 = st.columns([2.4, 1.3, 1.3, 1.2])
+        aq = a1.text_input("Search archive", key="arch_q",
+                           placeholder="Search title / artist / link…",
+                           label_visibility="collapsed")
+        asite = a2.selectbox("Site", ["All sites"] + archive.sites(arch_all),
+                             key="arch_site", label_visibility="collapsed")
+        atype = a3.selectbox("Type", ["All types", "🎬 Video", "🎵 Audio"],
+                             key="arch_type", label_visibility="collapsed")
+        awhen = a4.selectbox("When", ["All time", "Last 7 days", "Last 30 days",
+                                      "Last year"], key="arch_when",
+                             label_visibility="collapsed")
+        af = archive.filter_records(arch_all, aq, asite, atype, awhen)
+
+        s1, s2, s3 = st.columns([3, 1.2, 1.2])
+        s1.caption(f"Showing **{len(af)}** of {len(arch_all)} archived "
+                   f"download(s) · {fmt_size(sum(r.get('size', 0) for r in af))}")
+        s2.download_button("⬇️ Export CSV", archive.to_csv(af),
+                           file_name="umd_archive.csv", mime="text/csv",
+                           use_container_width=True, disabled=not af)
+        ap = af[:200]
+        if ap and s3.button(f"⤓ Re-download ({len(ap)})", key="arch_redl_all",
+                            use_container_width=True,
+                            help="Re-fetch the shown records from their links"):
+            jobs = [{"url": r["url"], "title": r.get("title", ""),
+                     "fmt": r.get("fmt", "audio"),
+                     "audio_codec": "m4a" if r.get("ext") == ".m4a" else "mp3",
+                     "quality": "Best Available"} for r in ap if r.get("url")]
+            n = enqueue(jobs, downloads.LANE_BATCH)
+            st.success(f"⚡ Queued **{n}** re-download(s) — see **Downloads** above.")
+
+        if not af:
+            st.info("No archived downloads match those filters.")
+        for r in ap:
+            icon = "🎬" if r.get("fmt") == "video" else "🎵"
+            ac1, ac2, ac3 = st.columns([7, 1, 1])
+            ac1.markdown(
+                f"{icon} **{r.get('title') or r.get('url')}**  \n"
+                f"<span style='color:#888;font-size:0.82em'>"
+                f"{r.get('site', '')} · {when_label(r.get('ts'))} · "
+                f"{r.get('ext', '')} · {fmt_size(r.get('size', 0))}</span>",
+                unsafe_allow_html=True)
+            if ac2.button("⤓", key=f"arc_redl_{r.get('id') or r.get('url')}",
+                          help="Re-download"):
+                enqueue([{"url": r["url"], "title": r.get("title", ""),
+                          "fmt": r.get("fmt", "audio"),
+                          "audio_codec": "m4a" if r.get("ext") == ".m4a" else "mp3",
+                          "quality": "Best Available"}], downloads.LANE_NOW)
+                st.success(f"⚡ Re-downloading **{r.get('title') or 'item'}**.")
+            if ac3.button("↩️", key=f"arc_rest_{r.get('id') or r.get('url')}",
+                          help="Restore this record to visible History"):
+                hist.add_archived(r)
+                st.success("Restored to History.")
+
 
 # =========================================================================== #
 # LIBRARY & CLEANUP  (exact-dup finder — content hash only, quarantine first)

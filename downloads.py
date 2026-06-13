@@ -21,6 +21,7 @@ import threading
 import uuid
 from datetime import datetime
 
+import archive
 import downloader as dl
 import history as hist
 from downloader import Canceled  # re-exported; raised to abort an in-flight job
@@ -205,8 +206,9 @@ class DownloadManager:
             j.progress = 1.0
             j.detail = "Saved"
             try:
-                hist.add_entry(path, j.title or path, j.fmt, url=j.url,
-                               extractor=extractor)
+                e = hist.add_entry(path, j.title or path, j.fmt, url=j.url,
+                                   extractor=extractor)
+                archive.add_from_history(e)   # permanent recovery catalog
             except Exception:  # noqa: BLE001
                 pass
         except Canceled:
