@@ -393,41 +393,70 @@ def downloads_panel():
         if finished and h3.button("Clear done", key="dl_clear",
                                   use_container_width=True):
             mgr.clear_finished()
+            st.session_state.pop("dl_page", None)
             st.rerun(scope="fragment")
 
-        for j in active[:60]:
-            lane = "📦" if j.lane == downloads.LANE_BATCH else "⚡"
-            r1, r2 = st.columns([7, 1])
-            r1.markdown(
-                f"{lane} **{j.label}**  \n"
-                f"<span style='color:#888;font-size:.8em'>{j.detail}</span>",
-                unsafe_allow_html=True)
-            if r2.button("✕", key=f"dlc_{j.id}", help="Cancel this download"):
-                mgr.cancel(j.id)
-                st.rerun(scope="fragment")
-            r1.progress(j.progress if j.status == "downloading" else 0.0)
-
-        for j in finished[:25]:
-            icon = ("✅" if j.status == "done"
-                    else "⛔" if j.status == "canceled" else "❌")
-            sub = (j.error if j.status == "error"
-                   else os.path.basename(j.result) if j.result else j.detail)
-            r1, r2 = st.columns([7, 1])
-            r1.markdown(
-                f"{icon} **{j.label}**  \n"
-                f"<span style='color:#888;font-size:.8em'>{sub}</span>",
-                unsafe_allow_html=True)
-            if j.status == "done" and j.result:
-                if r2.button("📂", key=f"dlo_{j.id}", help="Open containing folder"):
-                    open_in_explorer(j.result)
-            elif j.status == "error" and st.session_state.get("ai_on"):
-                if r2.button("🤖", key=f"dlx_{j.id}", help="Ask AI why this failed"):
-                    with st.spinner("Asking the AI…"):
-                        st.session_state.setdefault("err_help", {})[j.id] = \
-                            ai.explain_error(j.label, j.error or "")
-            exp = st.session_state.get("err_help", {}).get(j.id)
-            if exp:
-                r1.info("🤖 " + exp)
+        display = active + finished     # in-progress first, then finished
+        if not display:
+            st.caption("idle — queue anything; it keeps going while you browse.")
+        else:
+            # Page the queue into chunks so a big batch isn't one huge list.
+            _per = {"5": 5, "10": 10, "20": 20, "30": 30, "40": 40, "All": 10 ** 9}
+            pp1, pp2 = st.columns([3, 1.2])
+            pp1.caption(f"{len(active)} active · {len(finished)} done")
+            per = _per[pp2.selectbox("Show", list(_per), index=1, key="dl_per",
+                                     label_visibility="collapsed")]
+            total_pages = max(1, (len(display) + per - 1) // per)
+            page = min(st.session_state.get("dl_page", 1), total_pages)
+            if total_pages > 1:
+                nv1, nv2, nv3 = st.columns([1, 2, 1])
+                if nv1.button("← Prev", key="dl_prev", disabled=page <= 1,
+                              use_container_width=True):
+                    st.session_state.dl_page = page - 1
+                    st.rerun(scope="fragment")
+                nv2.markdown(f"<div style='text-align:center;padding-top:6px'>"
+                             f"Page **{page}** of **{total_pages}**</div>",
+                             unsafe_allow_html=True)
+                if nv3.button("Next →", key="dl_next", disabled=page >= total_pages,
+                              use_container_width=True):
+                    st.session_state.dl_page = page + 1
+                    st.rerun(scope="fragment")
+            start = (page - 1) * per
+            for j in display[start:start + per]:
+                if j.status in ("downloading", "queued"):
+                    lane = "📦" if j.lane == downloads.LANE_BATCH else "⚡"
+                    r1, r2 = st.columns([7, 1])
+                    r1.markdown(
+                        f"{lane} **{j.label}**  \n"
+                        f"<span style='color:#888;font-size:.8em'>{j.detail}</span>",
+                        unsafe_allow_html=True)
+                    if r2.button("✕", key=f"dlc_{j.id}", help="Cancel this download"):
+                        mgr.cancel(j.id)
+                        st.rerun(scope="fragment")
+                    r1.progress(j.progress if j.status == "downloading" else 0.0)
+                else:
+                    icon = ("✅" if j.status == "done"
+                            else "⛔" if j.status == "canceled" else "❌")
+                    sub = (j.error if j.status == "error"
+                           else os.path.basename(j.result) if j.result else j.detail)
+                    r1, r2 = st.columns([7, 1])
+                    r1.markdown(
+                        f"{icon} **{j.label}**  \n"
+                        f"<span style='color:#888;font-size:.8em'>{sub}</span>",
+                        unsafe_allow_html=True)
+                    if j.status == "done" and j.result:
+                        if r2.button("📂", key=f"dlo_{j.id}",
+                                     help="Open containing folder"):
+                            open_in_explorer(j.result)
+                    elif j.status == "error" and st.session_state.get("ai_on"):
+                        if r2.button("🤖", key=f"dlx_{j.id}",
+                                     help="Ask AI why this failed"):
+                            with st.spinner("Asking the AI…"):
+                                st.session_state.setdefault("err_help", {})[j.id] = \
+                                    ai.explain_error(j.label, j.error or "")
+                    exp = st.session_state.get("err_help", {}).get(j.id)
+                    if exp:
+                        r1.info("🤖 " + exp)
 
 
 # --------------------------------------------------------------------------- #
