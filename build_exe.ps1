@@ -75,6 +75,7 @@ python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --add-data "downloader.py;." `
     --add-data "downloads.py;." `
     --add-data "history.py;." `
+    --add-data "archive.py;." `
     --add-data "library.py;." `
     --add-data "licensing.py;." `
     --add-data "secret.key;."
