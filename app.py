@@ -436,475 +436,295 @@ def downloads_panel():
 st.title("⬇️ Universal Media Downloader")
 downloads_panel()
 
-_mode_opts = ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"]
-if st.session_state.get("ai_on"):
-    _mode_opts.append("🤖 Assistant")
-mode = st.radio("Mode", _mode_opts, horizontal=True)
 
-# =========================================================================== #
-# SINGLE MODE
-# =========================================================================== #
-if mode == "🔗 Single link":
-    url = st.text_input(
-        "Media link",
-        placeholder="Paste a link from YouTube, X, TikTok, Reddit, Instagram…",
-        label_visibility="collapsed",
-    )
+all_hist = hist.load_history()
+ai_on = bool(st.session_state.get("ai_on"))
+ai_cache = ai.cached_analysis() if ai_on else {}
 
-    st.session_state.last_url = url
+_t_dl, _t_hist, _t_arch, _t_clean = st.tabs([
+    "⬇️  Download",
+    f"🕓  History ({len(all_hist)})",
+    "🗄️  Archive",
+    "🗂️  Library & Cleanup",
+])
 
-    metadata = None
-    if url.strip():
-        with st.spinner("Fetching media details…"):
-            try:
-                metadata = fetch_metadata(url.strip(), cookiefile)
-            except Exception as exc:  # noqa: BLE001
-                st.error("Couldn't read that link. It may be private, unsupported, "
-                         f"or need a login.\n\nDetails: `{exc}`")
+with _t_dl:
+    _mode_opts = ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"]
+    if st.session_state.get("ai_on"):
+        _mode_opts.append("🤖 Assistant")
+    mode = st.radio("Mode", _mode_opts, horizontal=True)
 
-    if metadata:
-        st.success(f"**Found:** {metadata['title']}")
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            if metadata["uploader"]:
-                st.write(f"**By:** {metadata['uploader']}")
-            if metadata["duration"]:
-                st.write(f"**Length:** {dl.human_duration(metadata['duration'])}")
-            if metadata["extractor"]:
-                st.write(f"**Source:** {metadata['extractor']}")
-        with c2:
-            if metadata["thumbnail"]:
-                st.image(metadata["thumbnail"], use_container_width=True)
-
-        st.divider()
-
-        fmt_label = st.radio("Format", ["🎵 Audio Only", "🎬 Video (MP4)"],
-                             horizontal=True)
-        is_video = fmt_label.startswith("🎬")
-        fmt = "video" if is_video else "audio"
-        quality, audio_codec = None, "mp3"
-
-        if is_video:
-            quality = st.selectbox("Quality", ["Best Available", "720p", "480p"])
-        else:
-            audio_choice = st.radio(
-                "Audio format",
-                ["MP3 (universal — converted)", "M4A (original — faster)"],
-                horizontal=True,
-                help="M4A copies the original audio (no re-encoding) so it's much "
-                     "faster. MP3 plays everywhere but must be converted.",
-            )
-            audio_codec = "mp3" if audio_choice.startswith("MP3") else "m4a"
-
-        whole_playlist = st.checkbox(
-            "📜 Download the ENTIRE playlist / channel (if this link is one)",
-            value=False,
+    # =========================================================================== #
+    # SINGLE MODE
+    # =========================================================================== #
+    if mode == "🔗 Single link":
+        url = st.text_input(
+            "Media link",
+            placeholder="Paste a link from YouTube, X, TikTok, Reddit, Instagram…",
+            label_visibility="collapsed",
         )
 
-        trim = None
-        with st.expander("✂️ Trim a clip (optional)"):
-            tc1, tc2 = st.columns(2)
-            start_txt = tc1.text_input("Start (e.g. 1:30)", value="")
-            end_txt = tc2.text_input("End (e.g. 2:45)", value="")
-            st.caption("Leave blank to download the whole thing. "
-                       "(Trimming turns off turbo for accuracy.)")
+        st.session_state.last_url = url
 
-        if st.button("⬇️ Download", type="primary", use_container_width=True):
-            if whole_playlist:
-                with st.spinner("Reading playlist…"):
-                    try:
-                        pl = fetch_playlist(url.strip(), cookiefile)
-                    except Exception as exc:  # noqa: BLE001
-                        pl = None
-                        st.error(f"Couldn't read the playlist: `{exc}`")
-                if pl and pl["entries"]:
-                    jobs = [{"url": e["url"], "fmt": fmt, "quality": quality,
-                             "audio_codec": audio_codec, "title": e["title"]}
-                            for e in pl["entries"]]
-                    n = enqueue(jobs, downloads.LANE_BATCH)
-                    st.success(f"📦 Queued **{n}** item(s) from *{pl['title']}* — "
-                               "track them in **Downloads** above.")
-                elif pl:
-                    st.warning("No items found in that playlist.")
-            else:
-                trim = None
-                s = dl.parse_time(start_txt)
-                e = dl.parse_time(end_txt)
-                if s is not None or e is not None:
-                    end_val = e if e is not None else (metadata["duration"] or 10 ** 9)
-                    trim = (s or 0.0, end_val)
-                enqueue([{"url": url.strip(), "fmt": fmt, "quality": quality,
-                          "audio_codec": audio_codec, "title": metadata["title"],
-                          "trim": trim}], downloads.LANE_NOW)
-                st.success("⚡ Queued — it's downloading now in **Downloads** "
-                           "above. You can paste another link or switch tabs.")
-
-# =========================================================================== #
-# CHANNEL / PROFILE MODE
-# =========================================================================== #
-elif mode == "📺 Channel / Profile":
-    st.caption("Paste an artist's **YouTube channel**, a **TikTok profile**, or "
-               "any playlist link. Scan it to list every video, then grab them "
-               "**all as MP3 or MP4** — or pick per-video.")
-    ch_url = st.text_input(
-        "Channel / profile / playlist link",
-        placeholder="https://www.youtube.com/@artist   ·   https://www.tiktok.com/@user",
-        label_visibility="collapsed",
-    )
-    sc1, sc2 = st.columns([3, 1])
-    max_items = sc2.number_input("Max videos (0 = all)", min_value=0, value=0, step=10,
-                                 help="Cap how many to list — handy for huge channels.")
-    with st.expander("📅 Only a date range (optional)"):
-        st.caption("Grab just the videos posted in a window — e.g. **2025-01-01 → "
-                   "2026-12-31**. Leave blank for everything. *Note: filtering by "
-                   "date reads each video's upload date, so scanning is slower; "
-                   "pairing it with a Max-videos cap keeps it quick.*")
-        dcol1, dcol2 = st.columns(2)
-        date_after = dcol1.text_input("From (YYYY-MM-DD)", value="",
-                                      placeholder="2025-01-01")
-        date_before = dcol2.text_input("To (YYYY-MM-DD)", value="",
-                                       placeholder="2026-12-31")
-
-    if sc1.button("🔎 Scan channel / profile", type="primary", use_container_width=True):
-        if not ch_url.strip():
-            st.warning("Paste a channel or profile link first.")
-        else:
-            dated = bool(date_after.strip() or date_before.strip())
-            msg = ("Reading dates for each video… this is slower."
-                   if dated else "Reading every video… big channels take a moment.")
-            with st.spinner(msg):
+        metadata = None
+        if url.strip():
+            with st.spinner("Fetching media details…"):
                 try:
-                    res = dl.list_media(ch_url.strip(), cookiefile, max_items or None,
-                                        date_after=date_after, date_before=date_before)
-                    st.session_state.channel_res = res
-                    st.session_state.ch_page = 1
-                    st.session_state.pop("ch_search", None)
+                    metadata = fetch_metadata(url.strip(), cookiefile)
                 except Exception as exc:  # noqa: BLE001
-                    st.session_state.pop("channel_res", None)
-                    st.error("Couldn't read that channel/profile. It may be private, "
-                             "unsupported, or need login cookies (sidebar → Speed & "
-                             f"advanced).\n\nDetails: `{exc}`")
+                    st.error("Couldn't read that link. It may be private, unsupported, "
+                             f"or need a login.\n\nDetails: `{exc}`")
 
-    res = st.session_state.get("channel_res")
-    if res and res.get("entries"):
-        entries = res["entries"]
-        rng = " in your date range" if res.get("dated") else ""
-        st.success(f"**{res['title']}** — found **{len(entries)}** video(s){rng}"
-                   + (f"  ·  by {res['uploader']}" if res.get("uploader") else ""))
+        if metadata:
+            st.success(f"**Found:** {metadata['title']}")
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                if metadata["uploader"]:
+                    st.write(f"**By:** {metadata['uploader']}")
+                if metadata["duration"]:
+                    st.write(f"**Length:** {dl.human_duration(metadata['duration'])}")
+                if metadata["extractor"]:
+                    st.write(f"**Source:** {metadata['extractor']}")
+            with c2:
+                if metadata["thumbnail"]:
+                    st.image(metadata["thumbnail"], use_container_width=True)
 
-        # -- Grab everything ------------------------------------------------ #
-        st.markdown("#### ⚡ Grab everything")
-        gq = st.selectbox("Video quality (for MP4)", ["Best Available", "720p", "480p"])
-        ga, gb = st.columns(2)
-        if ga.button("🎵 Download ALL as MP3", use_container_width=True):
-            n = enqueue([{"url": e["url"], "title": e["title"], "fmt": "audio",
-                          "audio_codec": "mp3"} for e in entries],
-                        downloads.LANE_BATCH)
-            st.success(f"📦 Queued **{n}** as MP3 — see **Downloads** above.")
-        if gb.button("🎬 Download ALL as MP4", use_container_width=True):
-            n = enqueue([{"url": e["url"], "title": e["title"], "fmt": "video",
-                          "quality": gq} for e in entries], downloads.LANE_BATCH)
-            st.success(f"📦 Queued **{n}** as MP4 — see **Downloads** above.")
+            st.divider()
 
-        # -- AI Triage: let AI classify + pre-pick what to grab ------------- #
-        if st.session_state.get("ai_on"):
-            with st.expander("🤖 AI Triage — let AI pick what to grab", expanded=False):
-                st.caption("AI reads every title and sorts them, so you can grab "
-                           "just what you want (e.g. **official music only**, skip "
-                           "shorts / vlogs / interviews). Only titles are sent.")
-                ch_titles = [e["title"] for e in entries]
-                cache = ai.cached_analysis()
-                done = [e for e in entries if e["title"] in cache]
-                if st.button(f"✨ Analyze these {len(entries)} videos with AI",
-                             key="triage_run"):
-                    bar = st.progress(0.0)
-                    note = st.empty()
+            fmt_label = st.radio("Format", ["🎵 Audio Only", "🎬 Video (MP4)"],
+                                 horizontal=True)
+            is_video = fmt_label.startswith("🎬")
+            fmt = "video" if is_video else "audio"
+            quality, audio_codec = None, "mp3"
 
-                    def _tp(d, n, _b=bar, _n=note):
-                        _b.progress(d / max(n, 1))
-                        _n.caption(f"Classifying… {d}/{n}")
+            if is_video:
+                quality = st.selectbox("Quality", ["Best Available", "720p", "480p"])
+            else:
+                audio_choice = st.radio(
+                    "Audio format",
+                    ["MP3 (universal — converted)", "M4A (original — faster)"],
+                    horizontal=True,
+                    help="M4A copies the original audio (no re-encoding) so it's much "
+                         "faster. MP3 plays everywhere but must be converted.",
+                )
+                audio_codec = "mp3" if audio_choice.startswith("MP3") else "m4a"
 
-                    with st.spinner("AI is sorting the channel… (big ones take a bit)"):
-                        ai.analyze_titles(ch_titles, progress=_tp)
-                    st.rerun()
+            whole_playlist = st.checkbox(
+                "📜 Download the ENTIRE playlist / channel (if this link is one)",
+                value=False,
+            )
 
-                if done:
-                    from collections import Counter
-                    cats = Counter(cache[e["title"]]["category"] for e in done)
-                    st.caption(f"Classified **{len(done)}/{len(entries)}**.  "
-                               + " · ".join(f"{c}: {n}" for c, n in cats.most_common()))
-                    cat_opts = [c for c, _ in cats.most_common()]
-                    default = [c for c in cat_opts if c == "Music"] or cat_opts[:1]
-                    pick = st.multiselect("Categories to include", cat_opts,
-                                          default=default, key="triage_cats")
-                    official = st.checkbox("Official releases only", value=True,
-                                           key="triage_official")
-                    chosen = [e for e in done
-                              if cache[e["title"]]["category"] in pick
-                              and (not official or cache[e["title"]].get("is_official"))]
-                    tf1, tf2 = st.columns(2)
-                    tfmt = tf1.radio("Format", ["🎵 MP3", "🎬 MP4"], horizontal=True,
-                                     key="triage_fmt")
-                    tq = tf2.selectbox("Quality", ["Best Available", "720p", "480p"],
-                                       key="triage_q",
-                                       disabled=tfmt.startswith("🎵"))
-                    st.write(f"**{len(chosen)}** video(s) match your picks.")
-                    if st.button(f"📦 Queue {len(chosen)} AI-picked video(s)",
-                                 type="primary", key="triage_go",
-                                 disabled=not chosen, use_container_width=True):
-                        is_aud = tfmt.startswith("🎵")
-                        jobs = [{"url": e["url"], "title": e["title"],
-                                 "fmt": "audio" if is_aud else "video",
-                                 "quality": None if is_aud else tq,
-                                 "audio_codec": "mp3"} for e in chosen]
+            trim = None
+            with st.expander("✂️ Trim a clip (optional)"):
+                tc1, tc2 = st.columns(2)
+                start_txt = tc1.text_input("Start (e.g. 1:30)", value="")
+                end_txt = tc2.text_input("End (e.g. 2:45)", value="")
+                st.caption("Leave blank to download the whole thing. "
+                           "(Trimming turns off turbo for accuracy.)")
+
+            if st.button("⬇️ Download", type="primary", use_container_width=True):
+                if whole_playlist:
+                    with st.spinner("Reading playlist…"):
+                        try:
+                            pl = fetch_playlist(url.strip(), cookiefile)
+                        except Exception as exc:  # noqa: BLE001
+                            pl = None
+                            st.error(f"Couldn't read the playlist: `{exc}`")
+                    if pl and pl["entries"]:
+                        jobs = [{"url": e["url"], "fmt": fmt, "quality": quality,
+                                 "audio_codec": audio_codec, "title": e["title"]}
+                                for e in pl["entries"]]
                         n = enqueue(jobs, downloads.LANE_BATCH)
-                        st.success(f"📦 Queued **{n}** AI-picked video(s) — see "
-                                   "**Downloads** above.")
-
-        # -- Search + per-video chooser (paginated) ------------------------- #
-        FMT_OPTIONS = ["🎵 MP3", "🎵 M4A (fast)", "🎬 MP4 — Best",
-                       "🎬 MP4 — 720p", "🎬 MP4 — 480p", "⛔ Skip"]
-        PER_PAGE = 50
-        st.markdown("#### 🎚️ Or pick per video")
-
-        srch = st.text_input("🔎 Search these videos by name",
-                             key="ch_search", placeholder="Type part of a title…")
-        # keep (global index, entry) so per-video choices stay stable across pages
-        indexed = list(enumerate(entries))
-        if srch.strip():
-            q = srch.strip().lower()
-            indexed = [(gi, e) for gi, e in indexed if q in e["title"].lower()]
-
-        total_pages = max(1, (len(indexed) + PER_PAGE - 1) // PER_PAGE)
-        page = min(st.session_state.get("ch_page", 1), total_pages)
-        nav1, nav2, nav3 = st.columns([1, 2, 1])
-        if nav1.button("← Prev", disabled=page <= 1, use_container_width=True):
-            st.session_state.ch_page = page - 1
-            st.rerun()
-        page = min(st.session_state.get("ch_page", 1), total_pages)
-        start = (page - 1) * PER_PAGE
-        shown = indexed[start:start + PER_PAGE]
-        nav2.markdown(f"<div style='text-align:center;padding-top:6px'>Page "
-                      f"**{page}** of **{total_pages}** · showing "
-                      f"{len(shown)} of {len(indexed)}"
-                      f"{' matching' if srch.strip() else ''}</div>",
-                      unsafe_allow_html=True)
-        if nav3.button("Next →", disabled=page >= total_pages,
-                       use_container_width=True):
-            st.session_state.ch_page = page + 1
-            st.rerun()
-
-        if not shown:
-            st.info("No videos match that search.")
-        for gi, e in shown:
-            pc1, pc2 = st.columns([3, 2])
-            dur = dl.human_duration(e["duration"]) if e.get("duration") else ""
-            pc1.write(f"**{e['title']}**" + (f"  ·  {dur}" if dur else ""))
-            pc2.selectbox("format", FMT_OPTIONS, key=f"ch_fmt_{gi}",
-                          label_visibility="collapsed")
-
-        bc1, bc2 = st.columns(2)
-        if bc1.button("⬇️ Download chosen (all pages)", type="primary",
-                      use_container_width=True):
-            jobs = []
-            for gi, e in enumerate(entries):
-                choice = st.session_state.get(f"ch_fmt_{gi}", "🎵 MP3")
-                if choice.startswith("⛔"):
-                    continue
-                job = {"url": e["url"], "title": e["title"]}
-                if choice.startswith("🎬"):
-                    job["fmt"] = "video"
-                    job["quality"] = ("720p" if "720" in choice
-                                      else "480p" if "480" in choice
-                                      else "Best Available")
+                        st.success(f"📦 Queued **{n}** item(s) from *{pl['title']}* — "
+                                   "track them in **Downloads** above.")
+                    elif pl:
+                        st.warning("No items found in that playlist.")
                 else:
-                    job["fmt"] = "audio"
-                    job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
-                jobs.append(job)
-            if not jobs:
-                st.warning("Every video is set to Skip — pick a format for at "
-                           "least one (your picks are remembered across pages).")
+                    trim = None
+                    s = dl.parse_time(start_txt)
+                    e = dl.parse_time(end_txt)
+                    if s is not None or e is not None:
+                        end_val = e if e is not None else (metadata["duration"] or 10 ** 9)
+                        trim = (s or 0.0, end_val)
+                    enqueue([{"url": url.strip(), "fmt": fmt, "quality": quality,
+                              "audio_codec": audio_codec, "title": metadata["title"],
+                              "trim": trim}], downloads.LANE_NOW)
+                    st.success("⚡ Queued — it's downloading now in **Downloads** "
+                               "above. You can paste another link or switch tabs.")
+
+    # =========================================================================== #
+    # CHANNEL / PROFILE MODE
+    # =========================================================================== #
+    elif mode == "📺 Channel / Profile":
+        st.caption("Paste an artist's **YouTube channel**, a **TikTok profile**, or "
+                   "any playlist link. Scan it to list every video, then grab them "
+                   "**all as MP3 or MP4** — or pick per-video.")
+        ch_url = st.text_input(
+            "Channel / profile / playlist link",
+            placeholder="https://www.youtube.com/@artist   ·   https://www.tiktok.com/@user",
+            label_visibility="collapsed",
+        )
+        sc1, sc2 = st.columns([3, 1])
+        max_items = sc2.number_input("Max videos (0 = all)", min_value=0, value=0, step=10,
+                                     help="Cap how many to list — handy for huge channels.")
+        with st.expander("📅 Only a date range (optional)"):
+            st.caption("Grab just the videos posted in a window — e.g. **2025-01-01 → "
+                       "2026-12-31**. Leave blank for everything. *Note: filtering by "
+                       "date reads each video's upload date, so scanning is slower; "
+                       "pairing it with a Max-videos cap keeps it quick.*")
+            dcol1, dcol2 = st.columns(2)
+            date_after = dcol1.text_input("From (YYYY-MM-DD)", value="",
+                                          placeholder="2025-01-01")
+            date_before = dcol2.text_input("To (YYYY-MM-DD)", value="",
+                                           placeholder="2026-12-31")
+
+        if sc1.button("🔎 Scan channel / profile", type="primary", use_container_width=True):
+            if not ch_url.strip():
+                st.warning("Paste a channel or profile link first.")
             else:
-                n = enqueue(jobs, downloads.LANE_BATCH)
-                st.success(f"📦 Queued **{n}** chosen video(s) — see **Downloads** "
-                           "above.")
-        if bc2.button("↺ Reset all picks to Skip", use_container_width=True):
-            for gi in range(len(entries)):
-                st.session_state[f"ch_fmt_{gi}"] = "⛔ Skip"
-            st.rerun()
-    elif res is not None:
-        st.warning("No videos found there. Private content (e.g. TikTok **liked** "
-                   "videos) needs a cookies.txt and a public 'Liked' list — set the "
-                   "cookies path in the sidebar → Speed & advanced.")
-
-# =========================================================================== #
-# ASSISTANT MODE (natural language → actions)
-# =========================================================================== #
-elif mode == "🤖 Assistant":
-    st.caption("Tell me what you want in plain language — I'll work out the rest.")
-    st.markdown("*Try:* `download Diamond Platnumz Fine as mp3` · "
-                "`grab https://youtu.be/… in 720p` · "
-                "`how do I download a whole TikTok profile?`")
-    instruction = st.text_input("What would you like to do?", key="agent_input",
-                                placeholder="download Diamond Platnumz Fine as mp3")
-    if st.button("✨ Ask the assistant", type="primary"):
-        if not instruction.strip():
-            st.warning("Type a request first.")
-        else:
-            with st.spinner("Thinking…"):
-                st.session_state.agent_plan = ai.agent_plan(instruction.strip())
-            st.session_state.pop("agent_results", None)
-
-    plan = st.session_state.get("agent_plan")
-    if plan:
-        action = plan.get("action")
-        is_aud = str(plan.get("fmt", "mp3")).lower() != "mp4"
-        flabel = "MP3" if is_aud else f"MP4 ({plan.get('quality', 'Best Available')})"
-
-        def _job(url, title=""):
-            return {"url": url, "title": title, "fmt": "audio" if is_aud else "video",
-                    "quality": None if is_aud else plan.get("quality", "Best Available"),
-                    "audio_codec": "mp3"}
-
-        if action == "help":
-            st.info(plan.get("answer")
-                    or "I'm here to help — ask me to download something, or how a "
-                       "feature works.")
-        elif action == "download" and plan.get("url"):
-            st.success(f"**Plan:** download `{plan['url']}` as **{flabel}**")
-            if st.button("⬇️ Do it", type="primary", key="agent_dl"):
-                enqueue([_job(plan["url"])], downloads.LANE_NOW)
-                st.success("⚡ Queued — see **Downloads** above.")
-                st.session_state.pop("agent_plan", None)
-        elif action == "channel" and plan.get("url"):
-            st.success(f"**Plan:** grab the whole channel `{plan['url']}` as **{flabel}**")
-            if st.button("📦 Grab channel", type="primary", key="agent_ch"):
-                with st.spinner("Reading the channel…"):
-                    res = dl.list_media(plan["url"], cookiefile)
-                n = enqueue([_job(e["url"], e["title"]) for e in res["entries"]],
-                            downloads.LANE_BATCH)
-                st.success(f"📦 Queued **{n}** from *{res['title']}* — see **Downloads** above.")
-                st.session_state.pop("agent_plan", None)
-        else:  # search (also handles channel-by-name)
-            q = plan.get("query") or instruction
-            st.success(f"**Plan:** search for **{q}**, then you pick what to grab "
-                       f"as **{flabel}**.")
-            if st.button(f"🔎 Search “{q}”", type="primary", key="agent_sr"):
-                with st.spinner("Searching YouTube…"):
-                    st.session_state.agent_results = dl.search(
-                        q, max(5, int(plan.get("count") or 1)), cookiefile)
-            results = st.session_state.get("agent_results")
-            if results:
-                st.write(f"**Top {len(results)} result(s)** — tap ⬇️ to grab:")
-                for i, r in enumerate(results):
-                    rc0, rc1, rc2 = st.columns([1.4, 5, 1])
-                    if r.get("thumbnail"):
-                        rc0.image(r["thumbnail"], use_container_width=True)
-                    else:
-                        rc0.markdown("🎬" if False else "🎵")
-                    dur = dl.human_duration(r["duration"]) if r.get("duration") else ""
-                    rc1.markdown(
-                        f"**{r['title']}**{(' · ' + dur) if dur else ''}  \n"
-                        f"<span style='color:#888;font-size:.82em'>"
-                        f"{r.get('uploader', '')}</span>", unsafe_allow_html=True)
-                    if rc2.button("⬇️", key=f"agent_pick_{i}", help=f"Grab as {flabel}"):
-                        enqueue([_job(r["url"], r["title"])], downloads.LANE_NOW)
-                        st.success(f"⚡ Queued **{r['title']}** — see **Downloads** above.")
-
-# =========================================================================== #
-# BULK MODE
-# =========================================================================== #
-else:
-    bulk_method = st.radio(
-        "Bulk method",
-        ["⚡ Two columns (recommended)", "🎚️ Scan & choose per link"],
-        horizontal=True,
-        help="**Two columns**: fastest — drop links into the MP4 or MP3 box and "
-             "go. **Scan & choose**: paste all links, see their titles, then pick "
-             "the exact format/quality for each one individually.",
-    )
-
-    def _parse(text):
-        return [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-    # ----- Option 1: two columns (recommended) ----------------------------- #
-    if bulk_method.startswith("⚡"):
-        st.caption("Paste links **one per line** in the column for the format "
-                   "you want, then hit **Download all**.")
-        col_v, col_a = st.columns(2)
-        with col_v:
-            st.markdown("### 🎬 Video → MP4")
-            video_links = st.text_area("video links", height=220,
-                                       label_visibility="collapsed",
-                                       placeholder="https://...\nhttps://...")
-            bulk_quality = st.selectbox("Quality for all videos",
-                                        ["Best Available", "720p", "480p"])
-        with col_a:
-            st.markdown("### 🎵 Audio → MP3")
-            audio_links = st.text_area("audio links", height=220,
-                                       label_visibility="collapsed",
-                                       placeholder="https://...\nhttps://...")
-
-        if st.button("⬇️ Download all", type="primary", use_container_width=True):
-            jobs = ([{"url": u, "fmt": "video", "quality": bulk_quality}
-                     for u in _parse(video_links)]
-                    + [{"url": u, "fmt": "audio", "audio_codec": "mp3"}
-                       for u in _parse(audio_links)])
-            if not jobs:
-                st.warning("Paste at least one link into a column first.")
-            else:
-                n = enqueue(jobs, downloads.LANE_NOW)
-                st.success(f"⚡ Queued **{n}** item(s) — they're downloading in "
-                           "**Downloads** above while you keep working.")
-
-    # ----- Option 2: scan & choose per link (secondary) -------------------- #
-    else:
-        st.caption("Paste all links, **🔎 Scan** to see their titles, then pick "
-                   "the format/quality for each, and **Download selected**.")
-        links_text = st.text_area("All links (one per line)", height=160,
-                                   placeholder="https://...\nhttps://...")
-        if st.button("🔎 Scan links"):
-            urls = _parse(links_text)
-            if not urls:
-                st.warning("Paste at least one link first.")
-            else:
-                items, prog = [], st.progress(0.0)
-                for i, u in enumerate(urls, 1):
+                dated = bool(date_after.strip() or date_before.strip())
+                msg = ("Reading dates for each video… this is slower."
+                       if dated else "Reading every video… big channels take a moment.")
+                with st.spinner(msg):
                     try:
-                        m = fetch_metadata(u, cookiefile)
-                        items.append({"url": u, "title": m["title"],
-                                      "duration": m["duration"], "ok": True})
+                        res = dl.list_media(ch_url.strip(), cookiefile, max_items or None,
+                                            date_after=date_after, date_before=date_before)
+                        st.session_state.channel_res = res
+                        st.session_state.ch_page = 1
+                        st.session_state.pop("ch_search", None)
                     except Exception as exc:  # noqa: BLE001
-                        items.append({"url": u, "title": u, "ok": False,
-                                      "err": str(exc)})
-                    prog.progress(i / len(urls))
-                prog.empty()
-                st.session_state.scan_items = items
+                        st.session_state.pop("channel_res", None)
+                        st.error("Couldn't read that channel/profile. It may be private, "
+                                 "unsupported, or need login cookies (sidebar → Speed & "
+                                 f"advanced).\n\nDetails: `{exc}`")
 
-        items = st.session_state.get("scan_items", [])
-        if items:
-            good = [it for it in items if it["ok"]]
-            st.write(f"### Found {len(good)} item(s) — choose format for each")
+        res = st.session_state.get("channel_res")
+        if res and res.get("entries"):
+            entries = res["entries"]
+            rng = " in your date range" if res.get("dated") else ""
+            st.success(f"**{res['title']}** — found **{len(entries)}** video(s){rng}"
+                       + (f"  ·  by {res['uploader']}" if res.get("uploader") else ""))
+
+            # -- Grab everything ------------------------------------------------ #
+            st.markdown("#### ⚡ Grab everything")
+            gq = st.selectbox("Video quality (for MP4)", ["Best Available", "720p", "480p"])
+            ga, gb = st.columns(2)
+            if ga.button("🎵 Download ALL as MP3", use_container_width=True):
+                n = enqueue([{"url": e["url"], "title": e["title"], "fmt": "audio",
+                              "audio_codec": "mp3"} for e in entries],
+                            downloads.LANE_BATCH)
+                st.success(f"📦 Queued **{n}** as MP3 — see **Downloads** above.")
+            if gb.button("🎬 Download ALL as MP4", use_container_width=True):
+                n = enqueue([{"url": e["url"], "title": e["title"], "fmt": "video",
+                              "quality": gq} for e in entries], downloads.LANE_BATCH)
+                st.success(f"📦 Queued **{n}** as MP4 — see **Downloads** above.")
+
+            # -- AI Triage: let AI classify + pre-pick what to grab ------------- #
+            if st.session_state.get("ai_on"):
+                with st.expander("🤖 AI Triage — let AI pick what to grab", expanded=False):
+                    st.caption("AI reads every title and sorts them, so you can grab "
+                               "just what you want (e.g. **official music only**, skip "
+                               "shorts / vlogs / interviews). Only titles are sent.")
+                    ch_titles = [e["title"] for e in entries]
+                    cache = ai.cached_analysis()
+                    done = [e for e in entries if e["title"] in cache]
+                    if st.button(f"✨ Analyze these {len(entries)} videos with AI",
+                                 key="triage_run"):
+                        bar = st.progress(0.0)
+                        note = st.empty()
+
+                        def _tp(d, n, _b=bar, _n=note):
+                            _b.progress(d / max(n, 1))
+                            _n.caption(f"Classifying… {d}/{n}")
+
+                        with st.spinner("AI is sorting the channel… (big ones take a bit)"):
+                            ai.analyze_titles(ch_titles, progress=_tp)
+                        st.rerun()
+
+                    if done:
+                        from collections import Counter
+                        cats = Counter(cache[e["title"]]["category"] for e in done)
+                        st.caption(f"Classified **{len(done)}/{len(entries)}**.  "
+                                   + " · ".join(f"{c}: {n}" for c, n in cats.most_common()))
+                        cat_opts = [c for c, _ in cats.most_common()]
+                        default = [c for c in cat_opts if c == "Music"] or cat_opts[:1]
+                        pick = st.multiselect("Categories to include", cat_opts,
+                                              default=default, key="triage_cats")
+                        official = st.checkbox("Official releases only", value=True,
+                                               key="triage_official")
+                        chosen = [e for e in done
+                                  if cache[e["title"]]["category"] in pick
+                                  and (not official or cache[e["title"]].get("is_official"))]
+                        tf1, tf2 = st.columns(2)
+                        tfmt = tf1.radio("Format", ["🎵 MP3", "🎬 MP4"], horizontal=True,
+                                         key="triage_fmt")
+                        tq = tf2.selectbox("Quality", ["Best Available", "720p", "480p"],
+                                           key="triage_q",
+                                           disabled=tfmt.startswith("🎵"))
+                        st.write(f"**{len(chosen)}** video(s) match your picks.")
+                        if st.button(f"📦 Queue {len(chosen)} AI-picked video(s)",
+                                     type="primary", key="triage_go",
+                                     disabled=not chosen, use_container_width=True):
+                            is_aud = tfmt.startswith("🎵")
+                            jobs = [{"url": e["url"], "title": e["title"],
+                                     "fmt": "audio" if is_aud else "video",
+                                     "quality": None if is_aud else tq,
+                                     "audio_codec": "mp3"} for e in chosen]
+                            n = enqueue(jobs, downloads.LANE_BATCH)
+                            st.success(f"📦 Queued **{n}** AI-picked video(s) — see "
+                                       "**Downloads** above.")
+
+            # -- Search + per-video chooser (paginated) ------------------------- #
             FMT_OPTIONS = ["🎵 MP3", "🎵 M4A (fast)", "🎬 MP4 — Best",
-                           "🎬 MP4 — 720p", "🎬 MP4 — 480p"]
-            for idx, it in enumerate(items):
-                if not it["ok"]:
-                    st.error(f"❌ Couldn't read: {it['url']}")
-                    continue
-                cc1, cc2 = st.columns([3, 2])
-                dur = dl.human_duration(it["duration"]) if it.get("duration") else ""
-                cc1.write(f"**{it['title']}**" + (f"  ·  {dur}" if dur else ""))
-                cc2.selectbox("format", FMT_OPTIONS, key=f"scan_fmt_{idx}",
+                           "🎬 MP4 — 720p", "🎬 MP4 — 480p", "⛔ Skip"]
+            PER_PAGE = 50
+            st.markdown("#### 🎚️ Or pick per video")
+
+            srch = st.text_input("🔎 Search these videos by name",
+                                 key="ch_search", placeholder="Type part of a title…")
+            # keep (global index, entry) so per-video choices stay stable across pages
+            indexed = list(enumerate(entries))
+            if srch.strip():
+                q = srch.strip().lower()
+                indexed = [(gi, e) for gi, e in indexed if q in e["title"].lower()]
+
+            total_pages = max(1, (len(indexed) + PER_PAGE - 1) // PER_PAGE)
+            page = min(st.session_state.get("ch_page", 1), total_pages)
+            nav1, nav2, nav3 = st.columns([1, 2, 1])
+            if nav1.button("← Prev", disabled=page <= 1, use_container_width=True):
+                st.session_state.ch_page = page - 1
+                st.rerun()
+            page = min(st.session_state.get("ch_page", 1), total_pages)
+            start = (page - 1) * PER_PAGE
+            shown = indexed[start:start + PER_PAGE]
+            nav2.markdown(f"<div style='text-align:center;padding-top:6px'>Page "
+                          f"**{page}** of **{total_pages}** · showing "
+                          f"{len(shown)} of {len(indexed)}"
+                          f"{' matching' if srch.strip() else ''}</div>",
+                          unsafe_allow_html=True)
+            if nav3.button("Next →", disabled=page >= total_pages,
+                           use_container_width=True):
+                st.session_state.ch_page = page + 1
+                st.rerun()
+
+            if not shown:
+                st.info("No videos match that search.")
+            for gi, e in shown:
+                pc1, pc2 = st.columns([3, 2])
+                dur = dl.human_duration(e["duration"]) if e.get("duration") else ""
+                pc1.write(f"**{e['title']}**" + (f"  ·  {dur}" if dur else ""))
+                pc2.selectbox("format", FMT_OPTIONS, key=f"ch_fmt_{gi}",
                               label_visibility="collapsed")
 
-            if st.button("⬇️ Download selected", type="primary",
-                         use_container_width=True):
+            bc1, bc2 = st.columns(2)
+            if bc1.button("⬇️ Download chosen (all pages)", type="primary",
+                          use_container_width=True):
                 jobs = []
-                for idx, it in enumerate(items):
-                    if not it["ok"]:
+                for gi, e in enumerate(entries):
+                    choice = st.session_state.get(f"ch_fmt_{gi}", "🎵 MP3")
+                    if choice.startswith("⛔"):
                         continue
-                    choice = st.session_state.get(f"scan_fmt_{idx}", "🎵 MP3")
-                    job = {"url": it["url"], "title": it["title"]}
+                    job = {"url": e["url"], "title": e["title"]}
                     if choice.startswith("🎬"):
                         job["fmt"] = "video"
                         job["quality"] = ("720p" if "720" in choice
@@ -914,598 +734,780 @@ else:
                         job["fmt"] = "audio"
                         job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
                     jobs.append(job)
-                if jobs:
-                    n = enqueue(jobs, downloads.LANE_NOW)
-                    st.success(f"⚡ Queued **{n}** item(s) — see **Downloads** "
+                if not jobs:
+                    st.warning("Every video is set to Skip — pick a format for at "
+                               "least one (your picks are remembered across pages).")
+                else:
+                    n = enqueue(jobs, downloads.LANE_BATCH)
+                    st.success(f"📦 Queued **{n}** chosen video(s) — see **Downloads** "
                                "above.")
+            if bc2.button("↺ Reset all picks to Skip", use_container_width=True):
+                for gi in range(len(entries)):
+                    st.session_state[f"ch_fmt_{gi}"] = "⛔ Skip"
+                st.rerun()
+        elif res is not None:
+            st.warning("No videos found there. Private content (e.g. TikTok **liked** "
+                       "videos) needs a cookies.txt and a public 'Liked' list — set the "
+                       "cookies path in the sidebar → Speed & advanced.")
 
-# =========================================================================== #
-# DOWNLOAD HISTORY  (persistent — survives refresh & restart)
-# =========================================================================== #
-st.divider()
-all_hist = hist.load_history()
-st.subheader(f"🕘 Download history ({len(all_hist)})")
-
-ai_on = bool(st.session_state.get("ai_on"))
-ai_cache = ai.cached_analysis() if ai_on else {}
-
-if ai_on and all_hist:
-    titles_all = [h.get("title") or h.get("filename") for h in all_hist]
-    analyzed = [t for t in titles_all if t in ai_cache]
-    with st.expander(f"🤖 Smart Library — organize with AI "
-                     f"({len(analyzed)}/{len(titles_all)} analyzed)", expanded=False):
-        st.caption("AI cleans each title and tags it by **artist** and "
-                   "**category**, so your downloads become a real library. "
-                   "Only titles are sent online.")
-        ac1, ac2 = st.columns(2)
-        if ac1.button("✨ Analyze with AI", use_container_width=True,
-                      help="Analyzes any titles not done yet (cached, so it's "
-                           "one-time). Large histories take a little while."):
-            bar = st.progress(0.0)
-            note = st.empty()
-
-            def _prog(done, total, _b=bar, _n=note):
-                _b.progress(done / max(total, 1))
-                _n.caption(f"Analyzing… {done}/{total}")
-
-            with st.spinner("Asking the AI to clean up your titles…"):
-                ai.analyze_titles(titles_all, progress=_prog)
-            st.rerun()
-        if ac2.button("🏷️ Write tags to files", use_container_width=True,
-                      help="Writes artist/title/genre into the actual files "
-                           "(only where the file still exists)."):
-            done = 0
-            for _h in all_hist:
-                _t = _h.get("title") or _h.get("filename")
-                _m = ai_cache.get(_t)
-                if _m and os.path.isfile(_h.get("path", "")):
-                    if ai.write_tags(_h["path"], artist=_m.get("artist"),
-                                     title=_m.get("clean_title"),
-                                     genre=_m.get("category")):
-                        done += 1
-            st.success(f"Tagged {done} file(s).")
-        if analyzed:
-            from collections import Counter
-
-            def _ai_of(h):
-                return ai_cache.get(h.get("title") or h.get("filename")) or {}
-
-            cats = Counter(ai_cache[t]["category"] for t in analyzed)
-            arts = Counter(ai_cache[t]["artist"] for t in analyzed
-                           if ai_cache[t].get("artist"))
-            st.caption("👇 Click any category or artist to see those exact files — "
-                       "then open each in its folder (highlighted) or re-download it.")
-            g1, g2 = st.columns(2)
-            g1.markdown("**By category**")
-            for c, n in cats.most_common():
-                if g1.button(f"{c} · {n}", key=f"smcat_{c}",
-                             use_container_width=True):
-                    st.session_state.smart_pick = ("category", c)
-            g2.markdown("**Top artists**")
-            for a, n in arts.most_common(12):
-                if g2.button(f"{a} · {n}", key=f"smart_{a}",
-                             use_container_width=True):
-                    st.session_state.smart_pick = ("artist", a)
-
-            pick = st.session_state.get("smart_pick")
-            if pick:
-                kind, val = pick
-                items = [h for h in all_hist
-                         if _ai_of(h).get(kind) == val] if kind == "category" \
-                    else [h for h in all_hist if _ai_of(h).get("artist") == val]
-                pk1, pk2 = st.columns([4, 1])
-                pk1.markdown(f"#### {val} — {len(items)} file(s)")
-                if pk2.button("Close", key="smart_close"):
-                    st.session_state.pop("smart_pick", None)
-                    st.rerun()
-                for it in items[:150]:
-                    on_disk = bool(it.get("path") and os.path.isfile(it["path"]))
-                    e1, e2, e3 = st.columns([7, 1, 1])
-                    e1.markdown(
-                        f"{'🎬' if it.get('fmt') == 'video' else '🎵'} "
-                        f"**{it.get('title') or it.get('filename')}**  \n"
-                        f"<span style='color:#888;font-size:.8em'>"
-                        f"{it.get('site', '')} · {fmt_size(it.get('size', 0))}"
-                        f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
-                        unsafe_allow_html=True)
-                    if e2.button("📂", key=f"smp_o_{it['id']}", disabled=not on_disk,
-                                 help="Open the folder & highlight this file"):
-                        open_and_select(it["path"])
-                    if e3.button("⤓", key=f"smp_r_{it['id']}",
-                                 disabled=not it.get("url"), help="Re-download"):
-                        enqueue([media_job(it)], downloads.LANE_NOW)
-                        st.success(f"⚡ Re-downloading **{it.get('title') or 'item'}**.")
-
-            # Same song/artist grouping (AI artist+title) — VERSIONS, not byte dups.
-            groups = {}
-            for _h in all_hist:
-                _m = _ai_of(_h)
-                if _m.get("artist") and _m.get("clean_title"):
-                    k = (_m["artist"].strip().lower(),
-                         _m["clean_title"].strip().lower())
-                    groups.setdefault(k, []).append(_h)
-            multi = {k: v for k, v in groups.items() if len(v) > 1}
-            if multi:
-                st.markdown("---")
-                tot = sum(len(v) for v in multi.values())
-                st.markdown(f"**🎭 Same song / artist — multiple files** · {tot} "
-                            f"files in {len(multi)} group(s)")
-                st.caption("Grouped by AI **artist + title**, so these are often "
-                           "different **versions** (official video, visualizer, "
-                           "live, teaser) — **not** necessarily identical files. "
-                           "Same-size items are flagged *likely identical*; to "
-                           "remove only true byte-for-byte copies **safely**, use "
-                           "**Library & Cleanup** below (it verifies by hash and "
-                           "quarantines, never deletes blindly).")
-                for (artist, _tt), grp in list(multi.items())[:15]:
-                    nice = _ai_of(grp[0]).get("clean_title") or grp[0].get("title")
-                    szc = Counter(round((it.get("size", 0) or 0) / 1024)
-                                  for it in grp)
-                    with st.container(border=True):
-                        st.caption(f"**{artist.title()} — {nice}** · {len(grp)} files")
-                        for it in grp:
-                            likely = szc[round((it.get("size", 0) or 0) / 1024)] > 1
-                            d1, d2 = st.columns([8, 1])
-                            d1.markdown(
-                                f"• {it.get('filename')} "
-                                f"<span style='color:#888;font-size:.8em'>"
-                                f"({fmt_size(it.get('size', 0))}"
-                                f"{' · 🟠 likely identical' if likely else ' · unique size'})"
-                                f"</span>", unsafe_allow_html=True)
-                            if d2.button("📂", key=f"sg_o_{it['id']}",
-                                         help="Open & highlight"):
-                                open_and_select(it["path"])
-
-# --- Wave D: semantic search across the library ---------------------------- #
-if ai_on and all_hist:
-    with st.expander("🔮 Smart Search — find by meaning"):
-        st.caption("Search by what things *are*, not exact words — e.g. "
-                   "*live concert on stage*, *sad love song*, *behind the "
-                   "scenes*. Build the index once (it's cached); then search.")
-        _titles = [h.get("title") or h.get("filename") for h in all_hist]
-        ix1, ix2 = st.columns([3, 1])
-        ix1.caption(f"Indexed **{ai.embeds_count()}** item(s) · "
-                    f"{len(_titles)} in your library.")
-        if ix2.button("⚙️ Build / update index", use_container_width=True):
-            bar = st.progress(0.0)
-            note = st.empty()
-
-            def _ep(d, n, _b=bar, _n=note):
-                _b.progress(d / max(n, 1))
-                _n.caption(f"Embedding… {d}/{n}")
-
-            with st.spinner("Indexing your library by meaning… (one-time, cached)"):
-                ai.build_embeddings(_titles, progress=_ep)
-            note.empty()
-            st.rerun()
-
-        sq = st.text_input("Search by meaning", key="sem_q",
-                           placeholder="e.g. live performance on stage")
-        if sq.strip():
-            with st.spinner("Searching by meaning…"):
-                try:
-                    results = ai.semantic_search(sq.strip(), _titles, top_k=25)
-                except Exception as exc:  # noqa: BLE001
-                    results = []
-                    st.error(f"Search failed: {exc}")
-            if not results:
-                st.info("Nothing indexed yet — click **Build / update index** "
-                        "first.")
+    # =========================================================================== #
+    # ASSISTANT MODE (natural language → actions)
+    # =========================================================================== #
+    elif mode == "🤖 Assistant":
+        st.caption("Tell me what you want in plain language — I'll work out the rest.")
+        st.markdown("*Try:* `download Diamond Platnumz Fine as mp3` · "
+                    "`grab https://youtu.be/… in 720p` · "
+                    "`how do I download a whole TikTok profile?`")
+        instruction = st.text_input("What would you like to do?", key="agent_input",
+                                    placeholder="download Diamond Platnumz Fine as mp3")
+        if st.button("✨ Ask the assistant", type="primary"):
+            if not instruction.strip():
+                st.warning("Type a request first.")
             else:
-                _by_title = {}
-                for h in all_hist:
-                    _by_title.setdefault(h.get("title") or h.get("filename"), h)
-                for t, score in results:
-                    h = _by_title.get(t)
-                    if not h:
-                        continue
-                    on_disk = bool(h.get("path") and os.path.isfile(h["path"]))
-                    r1, r2, r3 = st.columns([7, 1, 1])
-                    r1.markdown(
-                        f"{'🎬' if h.get('fmt') == 'video' else '🎵'} **{t}**  \n"
-                        f"<span style='color:#888;font-size:.8em'>"
-                        f"match {score:.0%} · {h.get('site', '')} · "
-                        f"{fmt_size(h.get('size', 0))}"
-                        f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
-                        unsafe_allow_html=True)
-                    if r2.button("📂", key=f"sem_o_{h['id']}", disabled=not on_disk,
-                                 help="Open & highlight"):
-                        open_and_select(h["path"])
-                    if r3.button("⤓", key=f"sem_r_{h['id']}",
-                                 disabled=not h.get("url"), help="Re-download"):
-                        enqueue([media_job(h)], downloads.LANE_NOW)
-                        st.success(f"⚡ Re-downloading **{t}**.")
+                with st.spinner("Thinking…"):
+                    st.session_state.agent_plan = ai.agent_plan(instruction.strip())
+                st.session_state.pop("agent_results", None)
 
-if not all_hist:
-    st.caption("Your downloads will appear here and stay saved between sessions.")
-else:
-    def _hist_job(h):
-        ext = os.path.splitext(h.get("filename", ""))[1].lower()
-        if h.get("fmt") == "audio":
-            return {"url": h.get("url"), "title": h.get("title", ""),
-                    "fmt": "audio",
-                    "audio_codec": "m4a" if ext == ".m4a" else "mp3"}
-        return {"url": h.get("url"), "title": h.get("title", ""),
-                "fmt": "video", "quality": "Best Available"}
+        plan = st.session_state.get("agent_plan")
+        if plan:
+            action = plan.get("action")
+            is_aud = str(plan.get("fmt", "mp3")).lower() != "mp4"
+            flabel = "MP3" if is_aud else f"MP4 ({plan.get('quality', 'Best Available')})"
 
-    def _hist_csv(rows):
-        import csv as _csv
-        import io as _io
-        cols = ["ts", "title", "site", "fmt", "size", "url", "filename", "path"]
-        buf = _io.StringIO()
-        w = _csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
-        w.writeheader()
-        for r in rows:
-            w.writerow({c: r.get(c, "") for c in cols})
-        return buf.getvalue()
+            def _job(url, title=""):
+                return {"url": url, "title": title, "fmt": "audio" if is_aud else "video",
+                        "quality": None if is_aud else plan.get("quality", "Best Available"),
+                        "audio_codec": "mp3"}
 
-    f1, f2, f3, f4, f5 = st.columns([2, 1.2, 1.1, 1.3, 1.4])
-    hq = f1.text_input("Search history", placeholder="Search title or filename…",
-                       label_visibility="collapsed")
-    site_sel = f2.selectbox("Site", ["All sites"] + hist.all_sites(all_hist),
-                            label_visibility="collapsed")
-    type_sel = f3.selectbox("Type", ["All types", "🎬 Video", "🎵 Audio"],
-                            label_visibility="collapsed")
-    date_sel = f4.selectbox("When", ["All time", "Today", "Yesterday",
-                                     "This week", "This month", "This year",
-                                     "Custom range…"], label_visibility="collapsed")
-    sort_opts = ["Newest", "Oldest", "Title A–Z", "Largest", "Smallest", "Source"]
-    if ai_on:
-        sort_opts.append("Artist")
-    sort_sel = f5.selectbox("Sort", sort_opts, label_visibility="collapsed")
+            if action == "help":
+                st.info(plan.get("answer")
+                        or "I'm here to help — ask me to download something, or how a "
+                           "feature works.")
+            elif action == "download" and plan.get("url"):
+                st.success(f"**Plan:** download `{plan['url']}` as **{flabel}**")
+                if st.button("⬇️ Do it", type="primary", key="agent_dl"):
+                    enqueue([_job(plan["url"])], downloads.LANE_NOW)
+                    st.success("⚡ Queued — see **Downloads** above.")
+                    st.session_state.pop("agent_plan", None)
+            elif action == "channel" and plan.get("url"):
+                st.success(f"**Plan:** grab the whole channel `{plan['url']}` as **{flabel}**")
+                if st.button("📦 Grab channel", type="primary", key="agent_ch"):
+                    with st.spinner("Reading the channel…"):
+                        res = dl.list_media(plan["url"], cookiefile)
+                    n = enqueue([_job(e["url"], e["title"]) for e in res["entries"]],
+                                downloads.LANE_BATCH)
+                    st.success(f"📦 Queued **{n}** from *{res['title']}* — see **Downloads** above.")
+                    st.session_state.pop("agent_plan", None)
+            else:  # search (also handles channel-by-name)
+                q = plan.get("query") or instruction
+                st.success(f"**Plan:** search for **{q}**, then you pick what to grab "
+                           f"as **{flabel}**.")
+                if st.button(f"🔎 Search “{q}”", type="primary", key="agent_sr"):
+                    with st.spinner("Searching YouTube…"):
+                        st.session_state.agent_results = dl.search(
+                            q, max(5, int(plan.get("count") or 1)), cookiefile)
+                results = st.session_state.get("agent_results")
+                if results:
+                    st.write(f"**Top {len(results)} result(s)** — tap ⬇️ to grab:")
+                    for i, r in enumerate(results):
+                        rc0, rc1, rc2 = st.columns([1.4, 5, 1])
+                        if r.get("thumbnail"):
+                            rc0.image(r["thumbnail"], use_container_width=True)
+                        else:
+                            rc0.markdown("🎬" if False else "🎵")
+                        dur = dl.human_duration(r["duration"]) if r.get("duration") else ""
+                        rc1.markdown(
+                            f"**{r['title']}**{(' · ' + dur) if dur else ''}  \n"
+                            f"<span style='color:#888;font-size:.82em'>"
+                            f"{r.get('uploader', '')}</span>", unsafe_allow_html=True)
+                        if rc2.button("⬇️", key=f"agent_pick_{i}", help=f"Grab as {flabel}"):
+                            enqueue([_job(r["url"], r["title"])], downloads.LANE_NOW)
+                            st.success(f"⚡ Queued **{r['title']}** — see **Downloads** above.")
 
-    cust_from = cust_to = None
-    if date_sel == "Custom range…":
-        dca, dcb = st.columns(2)
-        cust_from = dca.date_input("From", value=None, key="hist_from")
-        cust_to = dcb.date_input("To", value=None, key="hist_to")
-
-    def _in_when(ts):
-        now = datetime.now()
-        d = ts.date()
-        if date_sel == "Today":
-            return d == now.date()
-        if date_sel == "Yesterday":
-            return (now.date() - d).days == 1
-        if date_sel == "This week":
-            return d >= (now.date() - timedelta(days=now.weekday()))
-        if date_sel == "This month":
-            return d.year == now.year and d.month == now.month
-        if date_sel == "This year":
-            return d.year == now.year
-        if date_sel == "Custom range…":
-            if cust_from and d < cust_from:
-                return False
-            if cust_to and d > cust_to:
-                return False
-            return True
-        return True
-
-    def _match(h):
-        if hq and hq.lower() not in (
-                (h.get("title", "") + " " + h.get("filename", "")).lower()):
-            return False
-        if site_sel != "All sites" and h.get("site") != site_sel:
-            return False
-        if type_sel.endswith("Video") and h.get("fmt") != "video":
-            return False
-        if type_sel.endswith("Audio") and h.get("fmt") != "audio":
-            return False
-        if date_sel != "All time":
-            try:
-                ts = datetime.fromisoformat(h.get("ts", ""))
-            except (ValueError, TypeError):
-                return False
-            if not _in_when(ts):
-                return False
-        return True
-
-    def _artist(h):
-        m = ai_cache.get(h.get("title") or h.get("filename")) if ai_on else None
-        return (m or {}).get("artist") or ""
-
-    filtered = [h for h in all_hist if _match(h)]
-    _sorters = {
-        "Newest": (lambda h: h.get("ts", ""), True),
-        "Oldest": (lambda h: h.get("ts", ""), False),
-        "Title A–Z": (lambda h: (h.get("title") or "").lower(), False),
-        "Largest": (lambda h: h.get("size", 0), True),
-        "Smallest": (lambda h: h.get("size", 0), False),
-        "Source": (lambda h: (h.get("site") or "").lower(), False),
-        "Artist": (lambda h: _artist(h).lower(), False),
-    }
-    _key, _rev = _sorters.get(sort_sel, _sorters["Newest"])
-    filtered = sorted(filtered, key=_key, reverse=_rev)
-
-    total_size = sum(h.get("size", 0) for h in filtered)
-    pc1, pc2, pc3, pc4 = st.columns([2.2, 1.3, 1.3, 1.2])
-    pc1.caption(f"Showing **{len(filtered)}** of {len(all_hist)} downloads  ·  "
-                f"{fmt_size(total_size)} total")
-    per_sel = pc2.selectbox("Per page",
-                            ["10 per page", "20 per page", "30 per page",
-                             "50 per page", "Show all"], index=1,
-                            key="hist_per_page", label_visibility="collapsed")
-    pc3.download_button("⬇️ Export", _hist_csv(filtered),
-                        file_name="umd_history.csv", mime="text/csv",
-                        use_container_width=True, disabled=not filtered)
-    if pc4.button("🗑️ Clear all", use_container_width=True,
-                  help="Permanently remove every VISIBLE history entry "
-                       "(your permanent archive is kept)"):
-        hist.clear_history()
-        st.rerun()
-    _redl_all = [h for h in filtered if h.get("url")]
-    if _redl_all and st.button(f"⤓ Re-download all filtered ({len(_redl_all)})",
-                               key="hist_redl_filtered"):
-        n = enqueue([_hist_job(h) for h in _redl_all], downloads.LANE_BATCH)
-        st.success(f"⚡ Queued **{n}** re-download(s) — see **Downloads** above.")
-
-    if not filtered:
-        st.info("No downloads match those filters.")
+    # =========================================================================== #
+    # BULK MODE
+    # =========================================================================== #
     else:
-        # Page the (already filtered) list into chunks, or show the full list.
-        if per_sel.startswith("Show"):
-            page_items = filtered
+        bulk_method = st.radio(
+            "Bulk method",
+            ["⚡ Two columns (recommended)", "🎚️ Scan & choose per link"],
+            horizontal=True,
+            help="**Two columns**: fastest — drop links into the MP4 or MP3 box and "
+                 "go. **Scan & choose**: paste all links, see their titles, then pick "
+                 "the exact format/quality for each one individually.",
+        )
+
+        def _parse(text):
+            return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+        # ----- Option 1: two columns (recommended) ----------------------------- #
+        if bulk_method.startswith("⚡"):
+            st.caption("Paste links **one per line** in the column for the format "
+                       "you want, then hit **Download all**.")
+            col_v, col_a = st.columns(2)
+            with col_v:
+                st.markdown("### 🎬 Video → MP4")
+                video_links = st.text_area("video links", height=220,
+                                           label_visibility="collapsed",
+                                           placeholder="https://...\nhttps://...")
+                bulk_quality = st.selectbox("Quality for all videos",
+                                            ["Best Available", "720p", "480p"])
+            with col_a:
+                st.markdown("### 🎵 Audio → MP3")
+                audio_links = st.text_area("audio links", height=220,
+                                           label_visibility="collapsed",
+                                           placeholder="https://...\nhttps://...")
+
+            if st.button("⬇️ Download all", type="primary", use_container_width=True):
+                jobs = ([{"url": u, "fmt": "video", "quality": bulk_quality}
+                         for u in _parse(video_links)]
+                        + [{"url": u, "fmt": "audio", "audio_codec": "mp3"}
+                           for u in _parse(audio_links)])
+                if not jobs:
+                    st.warning("Paste at least one link into a column first.")
+                else:
+                    n = enqueue(jobs, downloads.LANE_NOW)
+                    st.success(f"⚡ Queued **{n}** item(s) — they're downloading in "
+                               "**Downloads** above while you keep working.")
+
+        # ----- Option 2: scan & choose per link (secondary) -------------------- #
         else:
-            per = int(per_sel.split()[0])
-            total_pages = max(1, (len(filtered) + per - 1) // per)
-            cur_page = min(st.session_state.get("hist_page", 1), total_pages)
-            n1, n2, n3 = st.columns([1, 2, 1])
-            if n1.button("← Prev", key="hist_prev", disabled=cur_page <= 1,
-                         use_container_width=True):
-                st.session_state.hist_page = cur_page - 1
+            st.caption("Paste all links, **🔎 Scan** to see their titles, then pick "
+                       "the format/quality for each, and **Download selected**.")
+            links_text = st.text_area("All links (one per line)", height=160,
+                                       placeholder="https://...\nhttps://...")
+            if st.button("🔎 Scan links"):
+                urls = _parse(links_text)
+                if not urls:
+                    st.warning("Paste at least one link first.")
+                else:
+                    items, prog = [], st.progress(0.0)
+                    for i, u in enumerate(urls, 1):
+                        try:
+                            m = fetch_metadata(u, cookiefile)
+                            items.append({"url": u, "title": m["title"],
+                                          "duration": m["duration"], "ok": True})
+                        except Exception as exc:  # noqa: BLE001
+                            items.append({"url": u, "title": u, "ok": False,
+                                          "err": str(exc)})
+                        prog.progress(i / len(urls))
+                    prog.empty()
+                    st.session_state.scan_items = items
+
+            items = st.session_state.get("scan_items", [])
+            if items:
+                good = [it for it in items if it["ok"]]
+                st.write(f"### Found {len(good)} item(s) — choose format for each")
+                FMT_OPTIONS = ["🎵 MP3", "🎵 M4A (fast)", "🎬 MP4 — Best",
+                               "🎬 MP4 — 720p", "🎬 MP4 — 480p"]
+                for idx, it in enumerate(items):
+                    if not it["ok"]:
+                        st.error(f"❌ Couldn't read: {it['url']}")
+                        continue
+                    cc1, cc2 = st.columns([3, 2])
+                    dur = dl.human_duration(it["duration"]) if it.get("duration") else ""
+                    cc1.write(f"**{it['title']}**" + (f"  ·  {dur}" if dur else ""))
+                    cc2.selectbox("format", FMT_OPTIONS, key=f"scan_fmt_{idx}",
+                                  label_visibility="collapsed")
+
+                if st.button("⬇️ Download selected", type="primary",
+                             use_container_width=True):
+                    jobs = []
+                    for idx, it in enumerate(items):
+                        if not it["ok"]:
+                            continue
+                        choice = st.session_state.get(f"scan_fmt_{idx}", "🎵 MP3")
+                        job = {"url": it["url"], "title": it["title"]}
+                        if choice.startswith("🎬"):
+                            job["fmt"] = "video"
+                            job["quality"] = ("720p" if "720" in choice
+                                              else "480p" if "480" in choice
+                                              else "Best Available")
+                        else:
+                            job["fmt"] = "audio"
+                            job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
+                        jobs.append(job)
+                    if jobs:
+                        n = enqueue(jobs, downloads.LANE_NOW)
+                        st.success(f"⚡ Queued **{n}** item(s) — see **Downloads** "
+                                   "above.")
+
+
+with _t_hist:
+    if ai_on and all_hist:
+        titles_all = [h.get("title") or h.get("filename") for h in all_hist]
+        analyzed = [t for t in titles_all if t in ai_cache]
+        with st.expander(f"🤖 Smart Library — organize with AI "
+                         f"({len(analyzed)}/{len(titles_all)} analyzed)", expanded=False):
+            st.caption("AI cleans each title and tags it by **artist** and "
+                       "**category**, so your downloads become a real library. "
+                       "Only titles are sent online.")
+            ac1, ac2 = st.columns(2)
+            if ac1.button("✨ Analyze with AI", use_container_width=True,
+                          help="Analyzes any titles not done yet (cached, so it's "
+                               "one-time). Large histories take a little while."):
+                bar = st.progress(0.0)
+                note = st.empty()
+
+                def _prog(done, total, _b=bar, _n=note):
+                    _b.progress(done / max(total, 1))
+                    _n.caption(f"Analyzing… {done}/{total}")
+
+                with st.spinner("Asking the AI to clean up your titles…"):
+                    ai.analyze_titles(titles_all, progress=_prog)
                 st.rerun()
-            n2.markdown(f"<div style='text-align:center;padding-top:6px'>Page "
-                        f"**{cur_page}** of **{total_pages}**</div>",
-                        unsafe_allow_html=True)
-            if n3.button("Next →", key="hist_next", disabled=cur_page >= total_pages,
-                         use_container_width=True):
-                st.session_state.hist_page = cur_page + 1
+            if ac2.button("🏷️ Write tags to files", use_container_width=True,
+                          help="Writes artist/title/genre into the actual files "
+                               "(only where the file still exists)."):
+                done = 0
+                for _h in all_hist:
+                    _t = _h.get("title") or _h.get("filename")
+                    _m = ai_cache.get(_t)
+                    if _m and os.path.isfile(_h.get("path", "")):
+                        if ai.write_tags(_h["path"], artist=_m.get("artist"),
+                                         title=_m.get("clean_title"),
+                                         genre=_m.get("category")):
+                            done += 1
+                st.success(f"Tagged {done} file(s).")
+            if analyzed:
+                from collections import Counter
+
+                def _ai_of(h):
+                    return ai_cache.get(h.get("title") or h.get("filename")) or {}
+
+                cats = Counter(ai_cache[t]["category"] for t in analyzed)
+                arts = Counter(ai_cache[t]["artist"] for t in analyzed
+                               if ai_cache[t].get("artist"))
+                st.caption("👇 Click any category or artist to see those exact files — "
+                           "then open each in its folder (highlighted) or re-download it.")
+                g1, g2 = st.columns(2)
+                g1.markdown("**By category**")
+                for c, n in cats.most_common():
+                    if g1.button(f"{c} · {n}", key=f"smcat_{c}",
+                                 use_container_width=True):
+                        st.session_state.smart_pick = ("category", c)
+                g2.markdown("**Top artists**")
+                for a, n in arts.most_common(12):
+                    if g2.button(f"{a} · {n}", key=f"smart_{a}",
+                                 use_container_width=True):
+                        st.session_state.smart_pick = ("artist", a)
+
+                pick = st.session_state.get("smart_pick")
+                if pick:
+                    kind, val = pick
+                    items = [h for h in all_hist
+                             if _ai_of(h).get(kind) == val] if kind == "category" \
+                        else [h for h in all_hist if _ai_of(h).get("artist") == val]
+                    pk1, pk2 = st.columns([4, 1])
+                    pk1.markdown(f"#### {val} — {len(items)} file(s)")
+                    if pk2.button("Close", key="smart_close"):
+                        st.session_state.pop("smart_pick", None)
+                        st.rerun()
+                    for it in items[:150]:
+                        on_disk = bool(it.get("path") and os.path.isfile(it["path"]))
+                        e1, e2, e3 = st.columns([7, 1, 1])
+                        e1.markdown(
+                            f"{'🎬' if it.get('fmt') == 'video' else '🎵'} "
+                            f"**{it.get('title') or it.get('filename')}**  \n"
+                            f"<span style='color:#888;font-size:.8em'>"
+                            f"{it.get('site', '')} · {fmt_size(it.get('size', 0))}"
+                            f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
+                            unsafe_allow_html=True)
+                        if e2.button("📂", key=f"smp_o_{it['id']}", disabled=not on_disk,
+                                     help="Open the folder & highlight this file"):
+                            open_and_select(it["path"])
+                        if e3.button("⤓", key=f"smp_r_{it['id']}",
+                                     disabled=not it.get("url"), help="Re-download"):
+                            enqueue([media_job(it)], downloads.LANE_NOW)
+                            st.success(f"⚡ Re-downloading **{it.get('title') or 'item'}**.")
+
+                # Same song/artist grouping (AI artist+title) — VERSIONS, not byte dups.
+                groups = {}
+                for _h in all_hist:
+                    _m = _ai_of(_h)
+                    if _m.get("artist") and _m.get("clean_title"):
+                        k = (_m["artist"].strip().lower(),
+                             _m["clean_title"].strip().lower())
+                        groups.setdefault(k, []).append(_h)
+                multi = {k: v for k, v in groups.items() if len(v) > 1}
+                if multi:
+                    st.markdown("---")
+                    tot = sum(len(v) for v in multi.values())
+                    st.markdown(f"**🎭 Same song / artist — multiple files** · {tot} "
+                                f"files in {len(multi)} group(s)")
+                    st.caption("Grouped by AI **artist + title**, so these are often "
+                               "different **versions** (official video, visualizer, "
+                               "live, teaser) — **not** necessarily identical files. "
+                               "Same-size items are flagged *likely identical*; to "
+                               "remove only true byte-for-byte copies **safely**, use "
+                               "**Library & Cleanup** below (it verifies by hash and "
+                               "quarantines, never deletes blindly).")
+                    for (artist, _tt), grp in list(multi.items())[:15]:
+                        nice = _ai_of(grp[0]).get("clean_title") or grp[0].get("title")
+                        szc = Counter(round((it.get("size", 0) or 0) / 1024)
+                                      for it in grp)
+                        with st.container(border=True):
+                            st.caption(f"**{artist.title()} — {nice}** · {len(grp)} files")
+                            for it in grp:
+                                likely = szc[round((it.get("size", 0) or 0) / 1024)] > 1
+                                d1, d2 = st.columns([8, 1])
+                                d1.markdown(
+                                    f"• {it.get('filename')} "
+                                    f"<span style='color:#888;font-size:.8em'>"
+                                    f"({fmt_size(it.get('size', 0))}"
+                                    f"{' · 🟠 likely identical' if likely else ' · unique size'})"
+                                    f"</span>", unsafe_allow_html=True)
+                                if d2.button("📂", key=f"sg_o_{it['id']}",
+                                             help="Open & highlight"):
+                                    open_and_select(it["path"])
+
+    # --- Wave D: semantic search across the library ---------------------------- #
+    if ai_on and all_hist:
+        with st.expander("🔮 Smart Search — find by meaning"):
+            st.caption("Search by what things *are*, not exact words — e.g. "
+                       "*live concert on stage*, *sad love song*, *behind the "
+                       "scenes*. Build the index once (it's cached); then search.")
+            _titles = [h.get("title") or h.get("filename") for h in all_hist]
+            ix1, ix2 = st.columns([3, 1])
+            ix1.caption(f"Indexed **{ai.embeds_count()}** item(s) · "
+                        f"{len(_titles)} in your library.")
+            if ix2.button("⚙️ Build / update index", use_container_width=True):
+                bar = st.progress(0.0)
+                note = st.empty()
+
+                def _ep(d, n, _b=bar, _n=note):
+                    _b.progress(d / max(n, 1))
+                    _n.caption(f"Embedding… {d}/{n}")
+
+                with st.spinner("Indexing your library by meaning… (one-time, cached)"):
+                    ai.build_embeddings(_titles, progress=_ep)
+                note.empty()
                 st.rerun()
-            start = (cur_page - 1) * per
-            page_items = filtered[start:start + per]
 
-        redl = [h for h in page_items if h.get("url")]
-        if redl and st.button(f"⤓ Re-download this page ({len(redl)})",
-                              help="Re-fetch these from their original links — "
-                                   "handy if files were moved or deleted"):
-            n = enqueue([_hist_job(h) for h in redl], downloads.LANE_NOW)
-            st.success(f"⚡ Queued **{n}** re-download(s) — see **Downloads** above.")
+            sq = st.text_input("Search by meaning", key="sem_q",
+                               placeholder="e.g. live performance on stage")
+            if sq.strip():
+                with st.spinner("Searching by meaning…"):
+                    try:
+                        results = ai.semantic_search(sq.strip(), _titles, top_k=25)
+                    except Exception as exc:  # noqa: BLE001
+                        results = []
+                        st.error(f"Search failed: {exc}")
+                if not results:
+                    st.info("Nothing indexed yet — click **Build / update index** "
+                            "first.")
+                else:
+                    _by_title = {}
+                    for h in all_hist:
+                        _by_title.setdefault(h.get("title") or h.get("filename"), h)
+                    for t, score in results:
+                        h = _by_title.get(t)
+                        if not h:
+                            continue
+                        on_disk = bool(h.get("path") and os.path.isfile(h["path"]))
+                        r1, r2, r3 = st.columns([7, 1, 1])
+                        r1.markdown(
+                            f"{'🎬' if h.get('fmt') == 'video' else '🎵'} **{t}**  \n"
+                            f"<span style='color:#888;font-size:.8em'>"
+                            f"match {score:.0%} · {h.get('site', '')} · "
+                            f"{fmt_size(h.get('size', 0))}"
+                            f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
+                            unsafe_allow_html=True)
+                        if r2.button("📂", key=f"sem_o_{h['id']}", disabled=not on_disk,
+                                     help="Open & highlight"):
+                            open_and_select(h["path"])
+                        if r3.button("⤓", key=f"sem_r_{h['id']}",
+                                     disabled=not h.get("url"), help="Re-download"):
+                            enqueue([media_job(h)], downloads.LANE_NOW)
+                            st.success(f"⚡ Re-downloading **{t}**.")
 
-        for h in page_items:
-            icon = "🎬" if h.get("fmt") == "video" else "🎵"
-            hc1, hc2, hc3, hc4 = st.columns([7, 1, 1, 1])
-            _m = ai_cache.get(h.get("title") or h.get("filename")) if ai_on else None
-            ai_badge = ""
-            if _m:
-                ai_badge = (f" · 🏷️ {_m.get('category', '')}"
-                            + (f" · {_m['artist']}" if _m.get("artist") else ""))
-            on_disk = bool(h.get("path") and os.path.isfile(h["path"]))
-            miss = "" if on_disk else " · ⚠️ file missing"
-            hc1.markdown(
-                f"{icon} **{h.get('title') or h.get('filename')}**  \n"
-                f"<span style='color:#888;font-size:0.82em'>"
-                f"{h.get('site', '')} · {when_label(h.get('ts'))} · "
-                f"{fmt_size(h.get('size', 0))}{ai_badge}{miss}</span>",
-                unsafe_allow_html=True)
-            if hc2.button("⤓", key=f"hredl_{h['id']}", help="Re-download",
-                          disabled=not h.get("url")):
-                enqueue([_hist_job(h)], downloads.LANE_NOW)
-                st.success(f"⚡ Re-downloading **{h.get('title') or 'item'}**.")
-            if hc3.button("📂", key=f"hopen_{h['id']}", help="Open containing folder"):
-                if not open_in_explorer(h["path"]):
-                    st.warning("That file/folder may have been moved or deleted.")
-            if hc4.button("✕", key=f"hdel_{h['id']}",
-                          help="Remove from history (keeps the file)"):
-                hist.delete_entry(h["id"])
-                st.rerun()
-
-# =========================================================================== #
-# ARCHIVE RECOVERY CENTER  (permanent catalog — survives Clear History)
-# =========================================================================== #
-st.divider()
-
-
-@st.cache_data(show_spinner=False)
-def _load_archive(_mtime):
-    return archive.load()
-
-
-arch_all = _load_archive(archive.mtime())
-with st.expander(f"🗄️ Archive Recovery Center — {len(arch_all)} record(s) "
-                 "(survives Clear History)"):
-    st.caption("A permanent, lightweight catalog of everything you've ever "
-               "downloaded. It is **not** cleared when you clear history — so you "
-               "can always find and re-download past media, even if the files or "
-               "history were removed.")
-    if not arch_all:
-        st.caption("Your downloads are catalogued here automatically.")
+    if not all_hist:
+        st.caption("Your downloads will appear here and stay saved between sessions.")
     else:
-        a1, a2, a3, a4 = st.columns([2.4, 1.3, 1.3, 1.2])
-        aq = a1.text_input("Search archive", key="arch_q",
-                           placeholder="Search title / artist / link…",
-                           label_visibility="collapsed")
-        asite = a2.selectbox("Site", ["All sites"] + archive.sites(arch_all),
-                             key="arch_site", label_visibility="collapsed")
-        atype = a3.selectbox("Type", ["All types", "🎬 Video", "🎵 Audio"],
-                             key="arch_type", label_visibility="collapsed")
-        awhen = a4.selectbox("When", ["All time", "Last 7 days", "Last 30 days",
-                                      "Last year"], key="arch_when",
-                             label_visibility="collapsed")
-        af = archive.filter_records(arch_all, aq, asite, atype, awhen)
+        def _hist_job(h):
+            ext = os.path.splitext(h.get("filename", ""))[1].lower()
+            if h.get("fmt") == "audio":
+                return {"url": h.get("url"), "title": h.get("title", ""),
+                        "fmt": "audio",
+                        "audio_codec": "m4a" if ext == ".m4a" else "mp3"}
+            return {"url": h.get("url"), "title": h.get("title", ""),
+                    "fmt": "video", "quality": "Best Available"}
 
-        s1, s2, s3 = st.columns([3, 1.2, 1.2])
-        s1.caption(f"Showing **{len(af)}** of {len(arch_all)} archived "
-                   f"download(s) · {fmt_size(sum(r.get('size', 0) for r in af))}")
-        s2.download_button("⬇️ Export CSV", archive.to_csv(af),
-                           file_name="umd_archive.csv", mime="text/csv",
-                           use_container_width=True, disabled=not af)
-        ap = af[:200]
-        if ap and s3.button(f"⤓ Re-download ({len(ap)})", key="arch_redl_all",
-                            use_container_width=True,
-                            help="Re-fetch the shown records from their links"):
-            jobs = [{"url": r["url"], "title": r.get("title", ""),
-                     "fmt": r.get("fmt", "audio"),
-                     "audio_codec": "m4a" if r.get("ext") == ".m4a" else "mp3",
-                     "quality": "Best Available"} for r in ap if r.get("url")]
-            n = enqueue(jobs, downloads.LANE_BATCH)
+        def _hist_csv(rows):
+            import csv as _csv
+            import io as _io
+            cols = ["ts", "title", "site", "fmt", "size", "url", "filename", "path"]
+            buf = _io.StringIO()
+            w = _csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+            w.writeheader()
+            for r in rows:
+                w.writerow({c: r.get(c, "") for c in cols})
+            return buf.getvalue()
+
+        f1, f2, f3, f4, f5 = st.columns([2, 1.2, 1.1, 1.3, 1.4])
+        hq = f1.text_input("Search history", placeholder="Search title or filename…",
+                           label_visibility="collapsed")
+        site_sel = f2.selectbox("Site", ["All sites"] + hist.all_sites(all_hist),
+                                label_visibility="collapsed")
+        type_sel = f3.selectbox("Type", ["All types", "🎬 Video", "🎵 Audio"],
+                                label_visibility="collapsed")
+        date_sel = f4.selectbox("When", ["All time", "Today", "Yesterday",
+                                         "This week", "This month", "This year",
+                                         "Custom range…"], label_visibility="collapsed")
+        sort_opts = ["Newest", "Oldest", "Title A–Z", "Largest", "Smallest", "Source"]
+        if ai_on:
+            sort_opts.append("Artist")
+        sort_sel = f5.selectbox("Sort", sort_opts, label_visibility="collapsed")
+
+        cust_from = cust_to = None
+        if date_sel == "Custom range…":
+            dca, dcb = st.columns(2)
+            cust_from = dca.date_input("From", value=None, key="hist_from")
+            cust_to = dcb.date_input("To", value=None, key="hist_to")
+
+        def _in_when(ts):
+            now = datetime.now()
+            d = ts.date()
+            if date_sel == "Today":
+                return d == now.date()
+            if date_sel == "Yesterday":
+                return (now.date() - d).days == 1
+            if date_sel == "This week":
+                return d >= (now.date() - timedelta(days=now.weekday()))
+            if date_sel == "This month":
+                return d.year == now.year and d.month == now.month
+            if date_sel == "This year":
+                return d.year == now.year
+            if date_sel == "Custom range…":
+                if cust_from and d < cust_from:
+                    return False
+                if cust_to and d > cust_to:
+                    return False
+                return True
+            return True
+
+        def _match(h):
+            if hq and hq.lower() not in (
+                    (h.get("title", "") + " " + h.get("filename", "")).lower()):
+                return False
+            if site_sel != "All sites" and h.get("site") != site_sel:
+                return False
+            if type_sel.endswith("Video") and h.get("fmt") != "video":
+                return False
+            if type_sel.endswith("Audio") and h.get("fmt") != "audio":
+                return False
+            if date_sel != "All time":
+                try:
+                    ts = datetime.fromisoformat(h.get("ts", ""))
+                except (ValueError, TypeError):
+                    return False
+                if not _in_when(ts):
+                    return False
+            return True
+
+        def _artist(h):
+            m = ai_cache.get(h.get("title") or h.get("filename")) if ai_on else None
+            return (m or {}).get("artist") or ""
+
+        filtered = [h for h in all_hist if _match(h)]
+        _sorters = {
+            "Newest": (lambda h: h.get("ts", ""), True),
+            "Oldest": (lambda h: h.get("ts", ""), False),
+            "Title A–Z": (lambda h: (h.get("title") or "").lower(), False),
+            "Largest": (lambda h: h.get("size", 0), True),
+            "Smallest": (lambda h: h.get("size", 0), False),
+            "Source": (lambda h: (h.get("site") or "").lower(), False),
+            "Artist": (lambda h: _artist(h).lower(), False),
+        }
+        _key, _rev = _sorters.get(sort_sel, _sorters["Newest"])
+        filtered = sorted(filtered, key=_key, reverse=_rev)
+
+        total_size = sum(h.get("size", 0) for h in filtered)
+        pc1, pc2, pc3, pc4 = st.columns([2.2, 1.3, 1.3, 1.2])
+        pc1.caption(f"Showing **{len(filtered)}** of {len(all_hist)} downloads  ·  "
+                    f"{fmt_size(total_size)} total")
+        per_sel = pc2.selectbox("Per page",
+                                ["10 per page", "20 per page", "30 per page",
+                                 "50 per page", "Show all"], index=1,
+                                key="hist_per_page", label_visibility="collapsed")
+        pc3.download_button("⬇️ Export", _hist_csv(filtered),
+                            file_name="umd_history.csv", mime="text/csv",
+                            use_container_width=True, disabled=not filtered)
+        if pc4.button("🗑️ Clear all", use_container_width=True,
+                      help="Permanently remove every VISIBLE history entry "
+                           "(your permanent archive is kept)"):
+            hist.clear_history()
+            st.rerun()
+        _redl_all = [h for h in filtered if h.get("url")]
+        if _redl_all and st.button(f"⤓ Re-download all filtered ({len(_redl_all)})",
+                                   key="hist_redl_filtered"):
+            n = enqueue([_hist_job(h) for h in _redl_all], downloads.LANE_BATCH)
             st.success(f"⚡ Queued **{n}** re-download(s) — see **Downloads** above.")
 
-        if not af:
-            st.info("No archived downloads match those filters.")
-        for r in ap:
-            icon = "🎬" if r.get("fmt") == "video" else "🎵"
-            ac1, ac2, ac3 = st.columns([7, 1, 1])
-            ac1.markdown(
-                f"{icon} **{r.get('title') or r.get('url')}**  \n"
-                f"<span style='color:#888;font-size:0.82em'>"
-                f"{r.get('site', '')} · {when_label(r.get('ts'))} · "
-                f"{r.get('ext', '')} · {fmt_size(r.get('size', 0))}</span>",
-                unsafe_allow_html=True)
-            if ac2.button("⤓", key=f"arc_redl_{r.get('id') or r.get('url')}",
-                          help="Re-download"):
-                enqueue([{"url": r["url"], "title": r.get("title", ""),
-                          "fmt": r.get("fmt", "audio"),
-                          "audio_codec": "m4a" if r.get("ext") == ".m4a" else "mp3",
-                          "quality": "Best Available"}], downloads.LANE_NOW)
-                st.success(f"⚡ Re-downloading **{r.get('title') or 'item'}**.")
-            if ac3.button("↩️", key=f"arc_rest_{r.get('id') or r.get('url')}",
-                          help="Restore this record to visible History"):
-                hist.add_archived(r)
-                st.success("Restored to History.")
+        if not filtered:
+            st.info("No downloads match those filters.")
+        else:
+            # Page the (already filtered) list into chunks, or show the full list.
+            if per_sel.startswith("Show"):
+                page_items = filtered
+            else:
+                per = int(per_sel.split()[0])
+                total_pages = max(1, (len(filtered) + per - 1) // per)
+                cur_page = min(st.session_state.get("hist_page", 1), total_pages)
+                n1, n2, n3 = st.columns([1, 2, 1])
+                if n1.button("← Prev", key="hist_prev", disabled=cur_page <= 1,
+                             use_container_width=True):
+                    st.session_state.hist_page = cur_page - 1
+                    st.rerun()
+                n2.markdown(f"<div style='text-align:center;padding-top:6px'>Page "
+                            f"**{cur_page}** of **{total_pages}**</div>",
+                            unsafe_allow_html=True)
+                if n3.button("Next →", key="hist_next", disabled=cur_page >= total_pages,
+                             use_container_width=True):
+                    st.session_state.hist_page = cur_page + 1
+                    st.rerun()
+                start = (cur_page - 1) * per
+                page_items = filtered[start:start + per]
+
+            redl = [h for h in page_items if h.get("url")]
+            if redl and st.button(f"⤓ Re-download this page ({len(redl)})",
+                                  help="Re-fetch these from their original links — "
+                                       "handy if files were moved or deleted"):
+                n = enqueue([_hist_job(h) for h in redl], downloads.LANE_NOW)
+                st.success(f"⚡ Queued **{n}** re-download(s) — see **Downloads** above.")
+
+            for h in page_items:
+                icon = "🎬" if h.get("fmt") == "video" else "🎵"
+                hc1, hc2, hc3, hc4 = st.columns([7, 1, 1, 1])
+                _m = ai_cache.get(h.get("title") or h.get("filename")) if ai_on else None
+                ai_badge = ""
+                if _m:
+                    ai_badge = (f" · 🏷️ {_m.get('category', '')}"
+                                + (f" · {_m['artist']}" if _m.get("artist") else ""))
+                on_disk = bool(h.get("path") and os.path.isfile(h["path"]))
+                miss = "" if on_disk else " · ⚠️ file missing"
+                hc1.markdown(
+                    f"{icon} **{h.get('title') or h.get('filename')}**  \n"
+                    f"<span style='color:#888;font-size:0.82em'>"
+                    f"{h.get('site', '')} · {when_label(h.get('ts'))} · "
+                    f"{fmt_size(h.get('size', 0))}{ai_badge}{miss}</span>",
+                    unsafe_allow_html=True)
+                if hc2.button("⤓", key=f"hredl_{h['id']}", help="Re-download",
+                              disabled=not h.get("url")):
+                    enqueue([_hist_job(h)], downloads.LANE_NOW)
+                    st.success(f"⚡ Re-downloading **{h.get('title') or 'item'}**.")
+                if hc3.button("📂", key=f"hopen_{h['id']}", help="Open containing folder"):
+                    if not open_in_explorer(h["path"]):
+                        st.warning("That file/folder may have been moved or deleted.")
+                if hc4.button("✕", key=f"hdel_{h['id']}",
+                              help="Remove from history (keeps the file)"):
+                    hist.delete_entry(h["id"])
+                    st.rerun()
 
 
-# =========================================================================== #
-# LIBRARY & CLEANUP  (exact-dup finder — content hash only, quarantine first)
-# =========================================================================== #
-st.divider()
-st.subheader("🗂️ Library & Cleanup")
-# Scan wherever the media ACTUALLY lives — the managed library, the real
-# Downloads folder, AND every folder your tracked files sit in (e.g. files
-# downloaded before you turned the library on). collapse_folders keeps it
-# overlap-safe so nothing is ever counted twice.
-_quarantine_root = library.get_root() if library.is_enabled() else main_dir
-_scan_roots = {DEFAULT_DOWNLOAD_DIR, main_dir}
-if library.is_enabled():
-    _scan_roots.add(library.get_root())
-for _h in all_hist:
-    _p = _h.get("path")
-    if _p:
-        _d = os.path.dirname(_p)
-        if _d and len(_d) > 3:        # skip blanks / drive roots like "C:\"
-            _scan_roots.add(_d)
-scan_folders = library.collapse_folders(_scan_roots)
+with _t_arch:
 
-with st.expander("🔧 Rebuild library index"):
-    st.caption("Scans your folders and **reconstructs missing history records** "
-               "for media already on disk — recovering the original download "
-               "link from the permanent archive where possible. It only **adds** "
-               "records; it never moves or deletes files.")
-    if st.button("🔧 Rebuild now", disabled=not scan_folders):
+
+    @st.cache_data(show_spinner=False)
+    def _load_archive(_mtime):
+        return archive.load()
+
+
+    arch_all = _load_archive(archive.mtime())
+    with st.expander(f"🗄️ Archive Recovery Center — {len(arch_all)} record(s) "
+                     "(survives Clear History)"):
+        st.caption("A permanent, lightweight catalog of everything you've ever "
+                   "downloaded. It is **not** cleared when you clear history — so you "
+                   "can always find and re-download past media, even if the files or "
+                   "history were removed.")
+        if not arch_all:
+            st.caption("Your downloads are catalogued here automatically.")
+        else:
+            a1, a2, a3, a4 = st.columns([2.4, 1.3, 1.3, 1.2])
+            aq = a1.text_input("Search archive", key="arch_q",
+                               placeholder="Search title / artist / link…",
+                               label_visibility="collapsed")
+            asite = a2.selectbox("Site", ["All sites"] + archive.sites(arch_all),
+                                 key="arch_site", label_visibility="collapsed")
+            atype = a3.selectbox("Type", ["All types", "🎬 Video", "🎵 Audio"],
+                                 key="arch_type", label_visibility="collapsed")
+            awhen = a4.selectbox("When", ["All time", "Last 7 days", "Last 30 days",
+                                          "Last year"], key="arch_when",
+                                 label_visibility="collapsed")
+            af = archive.filter_records(arch_all, aq, asite, atype, awhen)
+
+            s1, s2, s3 = st.columns([3, 1.2, 1.2])
+            s1.caption(f"Showing **{len(af)}** of {len(arch_all)} archived "
+                       f"download(s) · {fmt_size(sum(r.get('size', 0) for r in af))}")
+            s2.download_button("⬇️ Export CSV", archive.to_csv(af),
+                               file_name="umd_archive.csv", mime="text/csv",
+                               use_container_width=True, disabled=not af)
+            ap = af[:200]
+            if ap and s3.button(f"⤓ Re-download ({len(ap)})", key="arch_redl_all",
+                                use_container_width=True,
+                                help="Re-fetch the shown records from their links"):
+                jobs = [{"url": r["url"], "title": r.get("title", ""),
+                         "fmt": r.get("fmt", "audio"),
+                         "audio_codec": "m4a" if r.get("ext") == ".m4a" else "mp3",
+                         "quality": "Best Available"} for r in ap if r.get("url")]
+                n = enqueue(jobs, downloads.LANE_BATCH)
+                st.success(f"⚡ Queued **{n}** re-download(s) — see **Downloads** above.")
+
+            if not af:
+                st.info("No archived downloads match those filters.")
+            for r in ap:
+                icon = "🎬" if r.get("fmt") == "video" else "🎵"
+                ac1, ac2, ac3 = st.columns([7, 1, 1])
+                ac1.markdown(
+                    f"{icon} **{r.get('title') or r.get('url')}**  \n"
+                    f"<span style='color:#888;font-size:0.82em'>"
+                    f"{r.get('site', '')} · {when_label(r.get('ts'))} · "
+                    f"{r.get('ext', '')} · {fmt_size(r.get('size', 0))}</span>",
+                    unsafe_allow_html=True)
+                if ac2.button("⤓", key=f"arc_redl_{r.get('id') or r.get('url')}",
+                              help="Re-download"):
+                    enqueue([{"url": r["url"], "title": r.get("title", ""),
+                              "fmt": r.get("fmt", "audio"),
+                              "audio_codec": "m4a" if r.get("ext") == ".m4a" else "mp3",
+                              "quality": "Best Available"}], downloads.LANE_NOW)
+                    st.success(f"⚡ Re-downloading **{r.get('title') or 'item'}**.")
+                if ac3.button("↩️", key=f"arc_rest_{r.get('id') or r.get('url')}",
+                              help="Restore this record to visible History"):
+                    hist.add_archived(r)
+                    st.success("Restored to History.")
+
+
+
+with _t_clean:
+    st.subheader("🗂️ Library & Cleanup")
+    # Scan wherever the media ACTUALLY lives — the managed library, the real
+    # Downloads folder, AND every folder your tracked files sit in (e.g. files
+    # downloaded before you turned the library on). collapse_folders keeps it
+    # overlap-safe so nothing is ever counted twice.
+    _quarantine_root = library.get_root() if library.is_enabled() else main_dir
+    _scan_roots = {DEFAULT_DOWNLOAD_DIR, main_dir}
+    if library.is_enabled():
+        _scan_roots.add(library.get_root())
+    for _h in all_hist:
+        _p = _h.get("path")
+        if _p:
+            _d = os.path.dirname(_p)
+            if _d and len(_d) > 3:        # skip blanks / drive roots like "C:\"
+                _scan_roots.add(_d)
+    scan_folders = library.collapse_folders(_scan_roots)
+
+    with st.expander("🔧 Rebuild library index"):
+        st.caption("Scans your folders and **reconstructs missing history records** "
+                   "for media already on disk — recovering the original download "
+                   "link from the permanent archive where possible. It only **adds** "
+                   "records; it never moves or deletes files.")
+        if st.button("🔧 Rebuild now", disabled=not scan_folders):
+            bar = st.progress(0.0)
+            note = st.empty()
+
+            def _rp(d, n, _b=bar, _n=note):
+                _b.progress(d / max(n, 1))
+                _n.caption(f"Indexing… {d}/{n}")
+
+            with st.spinner("Re-indexing your library…"):
+                res = library.rebuild(scan_folders, progress=_rp)
+            note.empty()
+            st.success(f"Scanned **{res['scanned']}** file(s) · added "
+                       f"**{res['added']}** new record(s) · recovered "
+                       f"**{res['recovered_links']}** download link(s) from the "
+                       f"archive · {res['already_tracked']} already tracked.")
+
+    st.caption("Finds **only exact** duplicate files — identical **content** "
+               "(same size **and** same SHA-256 hash). Never by filename. "
+               "Scanning: " + (" · ".join(f"`{p}`" for p in scan_folders)
+                               or "no valid folder"))
+    sc1, sc2 = st.columns([2, 1])
+    if sc1.button("🔍 Scan for duplicates", disabled=not scan_folders,
+                  use_container_width=True):
         bar = st.progress(0.0)
         note = st.empty()
 
-        def _rp(d, n, _b=bar, _n=note):
+        def _dp(d, n, _b=bar, _n=note):
             _b.progress(d / max(n, 1))
-            _n.caption(f"Indexing… {d}/{n}")
+            _n.caption(f"Hashing… {d}/{n}")
 
-        with st.spinner("Re-indexing your library…"):
-            res = library.rebuild(scan_folders, progress=_rp)
+        with st.spinner("Hashing file contents…"):
+            st.session_state.dup_groups = library.scan_duplicates(scan_folders,
+                                                                  progress=_dp)
         note.empty()
-        st.success(f"Scanned **{res['scanned']}** file(s) · added "
-                   f"**{res['added']}** new record(s) · recovered "
-                   f"**{res['recovered_links']}** download link(s) from the "
-                   f"archive · {res['already_tracked']} already tracked.")
+        st.rerun()
 
-st.caption("Finds **only exact** duplicate files — identical **content** "
-           "(same size **and** same SHA-256 hash). Never by filename. "
-           "Scanning: " + (" · ".join(f"`{p}`" for p in scan_folders)
-                           or "no valid folder"))
-sc1, sc2 = st.columns([2, 1])
-if sc1.button("🔍 Scan for duplicates", disabled=not scan_folders,
-              use_container_width=True):
-    bar = st.progress(0.0)
-    note = st.empty()
+    dup_groups = st.session_state.get("dup_groups")
+    if dup_groups is not None:
+        if not dup_groups:
+            st.success("No exact duplicates found — nothing to clean. 🎉")
+        else:
+            total_recover = sum(g["recover"] for g in dup_groups)
+            total_files = sum(len(g["dups"]) for g in dup_groups)
+            st.warning(f"Found **{total_files}** exact duplicate(s) in "
+                       f"{len(dup_groups)} group(s) · **{fmt_size(total_recover)}** "
+                       "reclaimable. Review the evidence, then move them to "
+                       "**Quarantine** (you can restore anytime).")
+            for gi, g in enumerate(dup_groups[:80]):
+                with st.container(border=True):
+                    kc1, kc2 = st.columns([9, 1])
+                    kc1.markdown(f"✅ **Keep:** `{g['keeper']}`")
+                    if kc2.button("📂", key=f"dupk_{gi}",
+                                  help="Open the folder & highlight the kept file"):
+                        open_and_select(g["keeper"])
+                    for di, d in enumerate(g["dups"]):
+                        dc1, dc2 = st.columns([9, 1])
+                        dc1.markdown(f"🟠 **Duplicate:** `{d}`")
+                        if dc2.button("📂", key=f"dupd_{gi}_{di}",
+                                      help="Open the folder & highlight this duplicate"):
+                            open_and_select(d)
+                    st.caption(f"{g['reason']} · {fmt_size(g['size'])} each · "
+                               f"SHA-256 `{g['hash_short']}…` · "
+                               f"reclaims {fmt_size(g['recover'])}")
+            q1, q2 = st.columns([2, 1])
+            if q1.button("🛡️ Move duplicates to Quarantine", type="primary",
+                         use_container_width=True,
+                         help="Moves (not deletes) the duplicates into "
+                              "Quarantine/Duplicates — fully restorable"):
+                to_move = [d for g in dup_groups for d in g["dups"]]
+                batch, moved = library.quarantine(to_move, root=_quarantine_root)
+                st.success(f"Moved **{moved}** duplicate(s) to Quarantine "
+                           f"(`{batch}`). Restore anytime below.")
+                st.session_state.pop("dup_groups", None)
+            if q2.button("Keep all", use_container_width=True):
+                st.session_state.pop("dup_groups", None)
+                st.rerun()
 
-    def _dp(d, n, _b=bar, _n=note):
-        _b.progress(d / max(n, 1))
-        _n.caption(f"Hashing… {d}/{n}")
+    # -- Quarantine management (restore / permanent delete) --------------------- #
+    _batches = library.list_quarantine(root=_quarantine_root)
+    if _batches:
+        qtot = sum(b["bytes"] for b in _batches)
+        with st.expander(f"🛡️ Quarantine — {sum(len(b['items']) for b in _batches)} "
+                         f"file(s), {fmt_size(qtot)} (restorable)"):
+            st.caption("Quarantined duplicates are still on disk. Restore them, or "
+                       "permanently delete (to the Recycle Bin) once you're sure.")
+            for b in _batches:
+                with st.container(border=True):
+                    bc1, bc2, bc3 = st.columns([3, 1, 1])
+                    bc1.markdown(f"**{b['name']}** · {len(b['items'])} file(s) · "
+                                 f"{fmt_size(b['bytes'])}")
+                    if bc2.button("♻️ Restore", key=f"qr_{b['name']}",
+                                  use_container_width=True):
+                        n = library.restore_batch(b["batch"])
+                        st.success(f"Restored **{n}** file(s) to their original "
+                                   "locations.")
+                        st.rerun()
+                    if bc3.button("🗑️ Delete", key=f"qp_{b['name']}",
+                                  use_container_width=True,
+                                  help="Permanently remove this batch (to Recycle Bin)"):
+                        n = library.purge_batch(b["batch"])
+                        st.success(f"Permanently removed **{n}** file(s) "
+                                   "(to the Recycle Bin).")
+                        st.rerun()
+                    for it in b["items"][:8]:
+                        bc1.caption(f"• {os.path.basename(it['quarantined'])} "
+                                    f"← {it['original']}")
 
-    with st.spinner("Hashing file contents…"):
-        st.session_state.dup_groups = library.scan_duplicates(scan_folders,
-                                                              progress=_dp)
-    note.empty()
-    st.rerun()
-
-dup_groups = st.session_state.get("dup_groups")
-if dup_groups is not None:
-    if not dup_groups:
-        st.success("No exact duplicates found — nothing to clean. 🎉")
-    else:
-        total_recover = sum(g["recover"] for g in dup_groups)
-        total_files = sum(len(g["dups"]) for g in dup_groups)
-        st.warning(f"Found **{total_files}** exact duplicate(s) in "
-                   f"{len(dup_groups)} group(s) · **{fmt_size(total_recover)}** "
-                   "reclaimable. Review the evidence, then move them to "
-                   "**Quarantine** (you can restore anytime).")
-        for gi, g in enumerate(dup_groups[:80]):
-            with st.container(border=True):
-                kc1, kc2 = st.columns([9, 1])
-                kc1.markdown(f"✅ **Keep:** `{g['keeper']}`")
-                if kc2.button("📂", key=f"dupk_{gi}",
-                              help="Open the folder & highlight the kept file"):
-                    open_and_select(g["keeper"])
-                for di, d in enumerate(g["dups"]):
-                    dc1, dc2 = st.columns([9, 1])
-                    dc1.markdown(f"🟠 **Duplicate:** `{d}`")
-                    if dc2.button("📂", key=f"dupd_{gi}_{di}",
-                                  help="Open the folder & highlight this duplicate"):
-                        open_and_select(d)
-                st.caption(f"{g['reason']} · {fmt_size(g['size'])} each · "
-                           f"SHA-256 `{g['hash_short']}…` · "
-                           f"reclaims {fmt_size(g['recover'])}")
-        q1, q2 = st.columns([2, 1])
-        if q1.button("🛡️ Move duplicates to Quarantine", type="primary",
-                     use_container_width=True,
-                     help="Moves (not deletes) the duplicates into "
-                          "Quarantine/Duplicates — fully restorable"):
-            to_move = [d for g in dup_groups for d in g["dups"]]
-            batch, moved = library.quarantine(to_move, root=_quarantine_root)
-            st.success(f"Moved **{moved}** duplicate(s) to Quarantine "
-                       f"(`{batch}`). Restore anytime below.")
-            st.session_state.pop("dup_groups", None)
-        if q2.button("Keep all", use_container_width=True):
-            st.session_state.pop("dup_groups", None)
-            st.rerun()
-
-# -- Quarantine management (restore / permanent delete) --------------------- #
-_batches = library.list_quarantine(root=_quarantine_root)
-if _batches:
-    qtot = sum(b["bytes"] for b in _batches)
-    with st.expander(f"🛡️ Quarantine — {sum(len(b['items']) for b in _batches)} "
-                     f"file(s), {fmt_size(qtot)} (restorable)"):
-        st.caption("Quarantined duplicates are still on disk. Restore them, or "
-                   "permanently delete (to the Recycle Bin) once you're sure.")
-        for b in _batches:
-            with st.container(border=True):
-                bc1, bc2, bc3 = st.columns([3, 1, 1])
-                bc1.markdown(f"**{b['name']}** · {len(b['items'])} file(s) · "
-                             f"{fmt_size(b['bytes'])}")
-                if bc2.button("♻️ Restore", key=f"qr_{b['name']}",
-                              use_container_width=True):
-                    n = library.restore_batch(b["batch"])
-                    st.success(f"Restored **{n}** file(s) to their original "
-                               "locations.")
-                    st.rerun()
-                if bc3.button("🗑️ Delete", key=f"qp_{b['name']}",
-                              use_container_width=True,
-                              help="Permanently remove this batch (to Recycle Bin)"):
-                    n = library.purge_batch(b["batch"])
-                    st.success(f"Permanently removed **{n}** file(s) "
-                               "(to the Recycle Bin).")
-                    st.rerun()
-                for it in b["items"][:8]:
-                    bc1.caption(f"• {os.path.basename(it['quarantined'])} "
-                                f"← {it['original']}")
 
 # --------------------------------------------------------------------------- #
 # Footer
