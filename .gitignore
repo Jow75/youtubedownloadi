@@ -35,6 +35,18 @@ nvidia.key
 .env
 .env.*
 *.secret
+
+# Android (mobile/) — build artifacts + signing secret
+mobile/.gradle/
+mobile/build/
+mobile/app/build/
+mobile/local.properties
+mobile/secret.properties
+mobile/.idea/
+mobile/captures/
+*.apk
+*.aab
+*.iml
 # Private analysis doc (contains another project's secret) — keep out of the repo
 licensing_system_forensic_analysis.md
 

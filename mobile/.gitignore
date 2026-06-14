@@ -1,0 +1,17 @@
+*.iml
+.gradle/
+/local.properties
+local.properties
+.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx/
+# The signing secret — NEVER commit it
+secret.properties
+# Build outputs
+*.apk
+*.aab
+/app/build/
+/app/release/

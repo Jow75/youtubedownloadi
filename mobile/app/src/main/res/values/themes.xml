@@ -1,0 +1,8 @@
+<resources>
+    <!-- Framework Material theme so we don't need the extra Material Components
+         library; the actual UI colors come from Compose's MaterialTheme. -->
+    <style name="Theme.UMD" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/umd_bg</item>
+        <item name="android:windowBackground">@color/umd_bg</item>
+    </style>
+</resources>
