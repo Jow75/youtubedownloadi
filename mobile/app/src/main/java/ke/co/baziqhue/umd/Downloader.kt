@@ -81,7 +81,7 @@ object Downloader {
             }
             req.addOption("--embed-metadata")
             YoutubeDL.getInstance().execute(req) { progress, _, line ->
-                onProgress(if (progress < 0) 0f else progress, line ?: "")
+                onProgress(if (progress < 0) 0f else progress, line.orEmpty())
             }
             Result.success("Saved to ${outDir(context).name}/")
         } catch (e: Exception) {

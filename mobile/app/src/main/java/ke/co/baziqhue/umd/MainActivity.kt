@@ -101,7 +101,7 @@ fun LicenseGate(lm: LicenseManager, onActivated: () -> Unit) {
             else MaterialTheme.colorScheme.error)
         }
 
-        Divider()
+        HorizontalDivider()
         Text("Need a license / upgrade?", style = MaterialTheme.typography.titleMedium)
         ContactLinks(ctx)
         Text("Universal Media Downloader v1.0 · Published by George (Jowgei), Kenya",
@@ -183,7 +183,7 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
             enabled = !busy, modifier = Modifier.fillMaxWidth()
         ) { Text("Update download engine (yt-dlp)") }
 
-        Divider()
+        HorizontalDivider()
         ContactLinks(ctx)
         TextButton(onClick = { lm.deactivate(); onDeactivated() }) {
             Text("Remove license from this device")
