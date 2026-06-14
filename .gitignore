@@ -44,6 +44,7 @@ mobile/local.properties
 mobile/secret.properties
 mobile/.idea/
 mobile/captures/
+mobile/*.log
 *.apk
 *.aab
 *.iml

@@ -19,11 +19,19 @@ side).
   like the desktop. Expired key → re-locks (same behaviour).
 - **Download** a link as **Audio (MP3)** — the default — or **Video (MP4)** with
   Best/720p/480p, with a progress bar.
+- **Public, browsable saves** — files land in
+  **`Download/Universal Media Downloader/`** (audio → `Music/MP3`, video →
+  `Videos/MP4`), the same layout as the desktop, so they show up in your Files
+  app / Gallery / music players (not the hidden `Android/data` sandbox).
+- **Find your file instantly** — after each download a card shows the exact path
+  with **Open folder / Play / Share**.
+- **Storage-access gate** — one-tap prompt to grant the access needed to write to
+  the public folder (All-files access on Android 11+, storage permission on 8–10).
 - **Update engine** button (keeps yt-dlp current).
 - Publisher/contact links on the gate (email / WhatsApp / website).
 
-Channel/Profile, Bulk, History, AI, and public-folder saving come next (parity
-with desktop, phase by phase).
+Channel/Profile, Bulk, History, and AI come next (parity with desktop, phase by
+phase).
 
 ---
 
@@ -56,10 +64,12 @@ and mobile**.
 ---
 
 ## Notes / known follow-ups
-- **Where files save:** the app's external files dir
-  (`Android/data/ke.co.baziqhue.umd/files/Music/UniversalMediaDownloader`). A
-  planned follow-up publishes finished files to the public **Downloads/Music**
-  folder (via MediaStore) so they appear in the system Files app.
+- **Where files save:** the public **`Download/Universal Media Downloader/`** tree
+  (`Music/MP3`, `Videos/MP4`, plus `Downloads/ History/ Metadata/ AI Library/`
+  placeholders mirroring the desktop). Writing there needs storage access — the
+  app prompts for it. (Android 11+ uses *All files access* / `MANAGE_EXTERNAL_STORAGE`;
+  that's fine for sideloaded/licensed distribution but would need justification
+  for Google Play — a MediaStore-only path is the Play-friendly alternative later.)
 - **minSdk 26** (Android 8.0+) so the app icon can be a vector adaptive icon with
   no binary PNGs. Lower it + add PNG icons via *Asset Studio* if you need older.
 - **App icon:** a vector version of the desktop download icon is included. To use

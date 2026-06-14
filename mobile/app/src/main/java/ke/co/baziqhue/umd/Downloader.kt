@@ -1,7 +1,6 @@
 package ke.co.baziqhue.umd
 
 import android.content.Context
-import android.os.Environment
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
@@ -11,11 +10,20 @@ import java.io.File
 
 /**
  * Thin wrapper over youtubedl-android (Python + yt-dlp + ffmpeg, bundled for
- * Android). Same engine as the desktop, so behaviour matches.
+ * Android). Same engine as the desktop, so behaviour matches. Files are written
+ * to the public Downloads tree via [Storage].
  */
 object Downloader {
 
+    private val MEDIA_EXT = setOf(
+        "mp3", "m4a", "aac", "opus", "ogg", "wav", "flac",
+        "mp4", "mkv", "webm", "mov", "avi", "m4v",
+    )
+
     @Volatile private var ready = false
+
+    /** Result of a finished download: the file that landed and where. */
+    data class Outcome(val file: File?, val dir: File, val message: String)
 
     /** Heavy one-time init (unpacks Python). Call off the main thread. */
     suspend fun ensureInit(context: Context) = withContext(Dispatchers.IO) {
@@ -36,23 +44,12 @@ object Downloader {
         }
     }
 
-    private fun outDir(context: Context): File {
-        // App-specific external dir — no storage permission needed, works on all
-        // Android versions. (Follow-up: publish to the public Music/Movies folder
-        // via MediaStore so files show in the system Files app.)
-        val dir = File(
-            context.getExternalFilesDir(Environment.DIRECTORY_MUSIC),
-            "UniversalMediaDownloader"
-        )
-        if (!dir.exists()) dir.mkdirs()
-        return dir
-    }
-
-    fun outputFolder(context: Context): String = outDir(context).absolutePath
+    /** Folder a download of this type will land in (public, user-browsable). */
+    fun targetDir(audio: Boolean): File = if (audio) Storage.audioDir() else Storage.videoDir()
 
     /**
      * Download [url] as audio (mp3) or video (mp4). [onProgress] gets 0..100.
-     * Returns the result message. Run from a coroutine (it blocks).
+     * Returns the saved file + its folder. Run from a coroutine (it blocks).
      */
     suspend fun download(
         context: Context,
@@ -60,12 +57,17 @@ object Downloader {
         audio: Boolean,
         quality: String,
         onProgress: (Float, String) -> Unit,
-    ): Result<String> = withContext(Dispatchers.IO) {
+    ): Result<Outcome> = withContext(Dispatchers.IO) {
         try {
             ensureInit(context)
+            val dir = targetDir(audio)
+            // Snapshot so we can tell which file is the new one afterwards.
+            val before = dir.listFiles()?.associate { it.name to it.lastModified() } ?: emptyMap()
+
             val req = YoutubeDLRequest(url)
             req.addOption("--no-mtime")
-            req.addOption("-o", File(outDir(context), "%(title)s.%(ext)s").absolutePath)
+            req.addOption("--no-playlist")
+            req.addOption("-o", File(dir, "%(title)s.%(ext)s").absolutePath)
             if (audio) {
                 req.addOption("-x")
                 req.addOption("--audio-format", "mp3")
@@ -80,10 +82,28 @@ object Downloader {
                 req.addOption("--merge-output-format", "mp4")
             }
             req.addOption("--embed-metadata")
+
             YoutubeDL.getInstance().execute(req) { progress, _, line ->
                 onProgress(if (progress < 0) 0f else progress, line.orEmpty())
             }
-            Result.success("Saved to ${outDir(context).name}/")
+
+            // Identify what actually landed: a new (or freshly rewritten) media
+            // file, biggest first (the final merged file dwarfs leftover parts).
+            val after = dir.listFiles()?.toList() ?: emptyList()
+            val saved = after
+                .filter { f ->
+                    val prev = before[f.name]
+                    (prev == null || f.lastModified() > prev) &&
+                        f.extension.lowercase() in MEDIA_EXT
+                }
+                .maxByOrNull { it.length() }
+                ?: after.filter { it.extension.lowercase() in MEDIA_EXT }
+                    .maxByOrNull { it.lastModified() }
+
+            saved?.let { Storage.scan(context, it) }
+            Storage.scan(context, dir)
+
+            Result.success(Outcome(saved, dir, "Saved to ${Storage.displayPath(dir)}"))
         } catch (e: Exception) {
             Result.failure(e)
         }

@@ -1,10 +1,14 @@
 package ke.co.baziqhue.umd
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -21,6 +25,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -120,6 +126,15 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
     var log by remember { mutableStateOf("") }
+    var done by remember { mutableStateOf<Downloader.Outcome?>(null) }
+
+    // Public-storage access is required to save where the user can browse.
+    var hasStorage by remember { mutableStateOf(Storage.hasAccess(ctx)) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { hasStorage = Storage.hasAccess(ctx) }
+    LaunchedEffect(hasStorage) { if (hasStorage) Storage.ensureTree() }
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> hasStorage = granted }
 
     Column(
         Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
@@ -128,6 +143,27 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text("⬇️ Universal Media Downloader", style = MaterialTheme.typography.headlineSmall)
         Text(lm.status(), style = MaterialTheme.typography.bodySmall)
+
+        if (!hasStorage) {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Allow storage access", style = MaterialTheme.typography.titleMedium)
+                    Text("So your music & videos save to a folder you can open in your " +
+                        "Files app (Download/Universal Media Downloader) — not a hidden " +
+                        "app folder — grant storage access.",
+                        style = MaterialTheme.typography.bodySmall)
+                    Button(
+                        onClick = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                                Storage.requestAllFilesAccess(ctx)
+                            else
+                                permLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Grant storage access") }
+                }
+            }
+        }
 
         OutlinedTextField(
             value = url, onValueChange = { url = it },
@@ -158,28 +194,33 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
 
         Button(
             onClick = {
-                busy = true; progress = 0f; log = "Starting…"
+                busy = true; progress = 0f; log = "Starting…"; done = null
                 scope.launch {
                     val res = Downloader.download(ctx, url.trim(), audio, quality) { p, line ->
                         progress = p / 100f
                         if (line.isNotBlank()) log = line
                     }
                     busy = false
-                    log = res.fold({ it }, { "Failed: ${it.message}" })
+                    res.fold(
+                        onSuccess = { done = it; log = it.message },
+                        onFailure = { done = null; log = "Failed: ${it.message}" }
+                    )
                 }
             },
-            enabled = url.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()
+            enabled = url.isNotBlank() && !busy && hasStorage, modifier = Modifier.fillMaxWidth()
         ) { Text(if (busy) "Downloading…" else "⬇️ Download") }
 
         if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-        if (log.isNotBlank()) Text(log, style = MaterialTheme.typography.bodySmall)
+        if (log.isNotBlank() && done == null) Text(log, style = MaterialTheme.typography.bodySmall)
+
+        done?.let { DownloadDoneCard(ctx, it) }
 
         Spacer(Modifier.height(8.dp))
-        Text("Saves to: ${Downloader.outputFolder(ctx)}",
+        Text("Saves to: ${Storage.displayPath(Downloader.targetDir(audio))}",
             style = MaterialTheme.typography.bodySmall)
 
         OutlinedButton(
-            onClick = { scope.launch { log = Downloader.updateEngine(ctx) } },
+            onClick = { scope.launch { log = Downloader.updateEngine(ctx); done = null } },
             enabled = !busy, modifier = Modifier.fillMaxWidth()
         ) { Text("Update download engine (yt-dlp)") }
 
@@ -187,6 +228,33 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
         ContactLinks(ctx)
         TextButton(onClick = { lm.deactivate(); onDeactivated() }) {
             Text("Remove license from this device")
+        }
+    }
+}
+
+@Composable
+fun DownloadDoneCard(ctx: android.content.Context, out: Downloader.Outcome) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("✅ Download complete", style = MaterialTheme.typography.titleMedium)
+            Text("Saved to", style = MaterialTheme.typography.labelMedium)
+            Text(Storage.displayPath(out.dir), fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall)
+            out.file?.let {
+                Text("📄 ${it.name}", style = MaterialTheme.typography.bodySmall)
+            }
+            Button(
+                onClick = { Storage.openFolder(ctx, out.dir) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("📂 Open folder") }
+            out.file?.let { f ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { Storage.viewFile(ctx, f) },
+                        modifier = Modifier.weight(1f)) { Text("▶ Play") }
+                    OutlinedButton(onClick = { Storage.shareFile(ctx, f) },
+                        modifier = Modifier.weight(1f)) { Text("↗ Share") }
+                }
+            }
         }
     }
 }
