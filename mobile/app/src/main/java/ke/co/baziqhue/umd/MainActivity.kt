@@ -127,6 +127,14 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
     var progress by remember { mutableFloatStateOf(0f) }
     var log by remember { mutableStateOf("") }
     var done by remember { mutableStateOf<Downloader.Outcome?>(null) }
+    var engineStatus by remember { mutableStateOf("") }
+
+    // Auto-refresh the (bundled, fast-stale) yt-dlp engine on launch so YouTube/
+    // TikTok work without the user racing the "Update engine" button.
+    LaunchedEffect(Unit) {
+        Downloader.prepareEngine(ctx) { s -> engineStatus = s }
+        engineStatus = ""
+    }
 
     // Public-storage access is required to save where the user can browse.
     var hasStorage by remember { mutableStateOf(Storage.hasAccess(ctx)) }
@@ -143,6 +151,16 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text("⬇️ Universal Media Downloader", style = MaterialTheme.typography.headlineSmall)
         Text(lm.status(), style = MaterialTheme.typography.bodySmall)
+
+        if (engineStatus.isNotBlank()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(engineStatus, style = MaterialTheme.typography.bodySmall)
+            }
+        }
 
         if (!hasStorage) {
             ElevatedCard(Modifier.fillMaxWidth()) {
