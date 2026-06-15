@@ -22,8 +22,8 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 9
+        versionName = "1.8"
 
         // Baked into BuildConfig at build time (not in the repo).
         buildConfigField("String", "UMD_SECRET", "\"$umdSecret\"")
@@ -78,4 +78,7 @@ dependencies {
 
     // Encrypted-at-rest storage for the user's AI API key (Android Keystore).
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Reliable HTTP for the AI calls (dead-connection detection / HTTP-2 / retries).
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

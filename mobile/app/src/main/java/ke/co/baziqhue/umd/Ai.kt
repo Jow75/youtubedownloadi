@@ -6,25 +6,42 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.concurrent.TimeUnit
 
 /**
- * AI layer — a faithful port of the desktop ai.py, scoped (for now) to the
- * "explain a failed download" helper. Bring-your-own-key: the user pastes their
- * NVIDIA API key once; it's stored encrypted (Android Keystore via
- * EncryptedSharedPreferences) and only TEXT (the error + title) is ever sent.
+ * AI layer — a faithful port of the desktop ai.py (NVIDIA, OpenAI-compatible).
+ * Bring-your-own-key: the user pastes their NVIDIA key once; it's stored
+ * encrypted (Android Keystore) and only TEXT (errors / titles / prompts) is sent.
  *
- * Same provider/model/prompt as desktop, so explanations match.
+ * Networking uses OkHttp, not HttpURLConnection — the latter reuses pooled
+ * connections that NVIDIA may have closed, which manifested as POSTs hanging
+ * until timeout ("Sorry — timeout") even though the key validated fine.
  */
 object Ai {
     private const val BASE_URL = "https://integrate.api.nvidia.com/v1"
     private const val CHAT_MODEL = "meta/llama-3.3-70b-instruct"
+    private const val EMBED_MODEL = "nvidia/nv-embedqa-e5-v5"
     const val KEY_PREFIX = "nvapi-"
     const val GET_KEY_URL = "https://build.nvidia.com/"
+
+    private val JSON = "application/json; charset=utf-8".toMediaType()
+
+    private val http: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(120, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
 
     // ---- key storage (encrypted, with a graceful fallback) ----------------- #
     @Volatile private var cachedPrefs: SharedPreferences? = null
@@ -41,8 +58,6 @@ object Ai {
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
             )
         } catch (e: Exception) {
-            // Some devices have a flaky keystore — fall back to app-private prefs
-            // (still sandboxed to this app) rather than losing the feature.
             ctx.applicationContext.getSharedPreferences("umd_ai_plain", Context.MODE_PRIVATE)
         }
         cachedPrefs = p
@@ -63,22 +78,48 @@ object Ai {
         }
     }
 
-    // ---- API calls --------------------------------------------------------- #
+    // ---- HTTP helpers ------------------------------------------------------ #
+    private fun postJson(path: String, key: String, payload: String): String {
+        val req = Request.Builder()
+            .url("$BASE_URL$path")
+            .addHeader("Authorization", "Bearer $key")
+            .post(payload.toRequestBody(JSON))
+            .build()
+        http.newCall(req).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) throw IOException("AI service error (HTTP ${resp.code}).")
+            return text
+        }
+    }
+
     /** Check a key by listing models (cheap, like the desktop validate_key). */
     suspend fun validateKey(key: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val conn = (URL("$BASE_URL/models").openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                setRequestProperty("Authorization", "Bearer ${key.trim()}")
-                connectTimeout = 20000; readTimeout = 20000
+            val req = Request.Builder()
+                .url("$BASE_URL/models")
+                .addHeader("Authorization", "Bearer ${key.trim()}")
+                .get().build()
+            http.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) Result.success(Unit)
+                else Result.failure(IOException("Key rejected (HTTP ${resp.code})."))
             }
-            val code = conn.responseCode
-            conn.disconnect()
-            if (code in 200..299) Result.success(Unit)
-            else Result.failure(IOException("Key rejected (HTTP $code)."))
         } catch (e: Exception) {
-            Result.failure(IOException("Couldn't reach provider: ${e.message}"))
+            Result.failure(IOException("Couldn't reach NVIDIA: ${e.message}"))
         }
+    }
+
+    private fun chat(key: String, prompt: String, maxTokens: Int): String {
+        val payload = JSONObject()
+            .put("model", CHAT_MODEL)
+            .put("messages", JSONArray().put(
+                JSONObject().put("role", "user").put("content", prompt)))
+            .put("temperature", 0.1)
+            .put("max_tokens", maxTokens)
+            .toString()
+        val text = postJson("/chat/completions", key, payload)
+        return JSONObject(text)
+            .getJSONArray("choices").getJSONObject(0)
+            .getJSONObject("message").getString("content").trim()
     }
 
     /** Plain-language "why it failed + how to fix" — same prompt as desktop. */
@@ -100,35 +141,7 @@ object Ai {
             }
         }
 
-    private fun chat(key: String, prompt: String, maxTokens: Int): String {
-        val body = JSONObject()
-            .put("model", CHAT_MODEL)
-            .put("messages", JSONArray().put(
-                JSONObject().put("role", "user").put("content", prompt)))
-            .put("temperature", 0.1)
-            .put("max_tokens", maxTokens)
-            .toString()
-        val conn = (URL("$BASE_URL/chat/completions").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            setRequestProperty("Authorization", "Bearer $key")
-            setRequestProperty("Content-Type", "application/json")
-            doOutput = true
-            connectTimeout = 30000; readTimeout = 120000
-        }
-        conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-        conn.disconnect()
-        if (code !in 200..299) throw IOException("AI service error (HTTP $code).")
-        return JSONObject(text)
-            .getJSONArray("choices").getJSONObject(0)
-            .getJSONObject("message").getString("content").trim()
-    }
-
     // ---- embeddings (semantic search) -------------------------------------- #
-    private const val EMBED_MODEL = "nvidia/nv-embedqa-e5-v5"
-
     /** Embed each text (NVIDIA NeMo retriever). inputType: "passage" | "query". */
     suspend fun embed(ctx: Context, texts: List<String>, inputType: String): Result<List<FloatArray>> =
         withContext(Dispatchers.IO) {
@@ -141,19 +154,7 @@ object Ai {
                     .put("encoding_format", "float")
                     .put("input_type", inputType)
                     .toString()
-                val conn = (URL("$BASE_URL/embeddings").openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    setRequestProperty("Authorization", "Bearer $key")
-                    setRequestProperty("Content-Type", "application/json")
-                    doOutput = true
-                    connectTimeout = 30000; readTimeout = 90000
-                }
-                conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-                val code = conn.responseCode
-                val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
-                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
-                conn.disconnect()
-                if (code !in 200..299) return@withContext Result.failure(IOException("Embeddings error (HTTP $code)."))
+                val body = postJson("/embeddings", key, payload)
                 val data = JSONObject(body).getJSONArray("data")
                 val out = ArrayList<FloatArray>(data.length())
                 for (i in 0 until data.length()) {
@@ -284,4 +285,3 @@ object Ai {
         return null
     }
 }
-
