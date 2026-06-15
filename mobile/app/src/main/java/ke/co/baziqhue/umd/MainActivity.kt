@@ -290,6 +290,10 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
         Spacer(Modifier.height(8.dp))
         Text("Saves to: ${Storage.displayPath(Downloader.targetDir(ui.audio))}",
             style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(
+            onClick = { Storage.openFolder(ctx, Downloader.targetDir(ui.audio)) },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("📂 Open downloads folder") }
 
         OutlinedButton(
             onClick = { scope.launch { ui.log = Downloader.updateEngine(ctx); ui.done = null } },

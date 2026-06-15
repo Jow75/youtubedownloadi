@@ -93,6 +93,17 @@ object Downloader {
     /** Folder a download of this type will land in (public, user-browsable). */
     fun targetDir(audio: Boolean): File = if (audio) Storage.audioDir() else Storage.videoDir()
 
+    /** Retrying won't help clearly-permanent failures — bail early on those. */
+    private fun isRetryable(msg: String?): Boolean {
+        val m = (msg ?: "").lowercase()
+        val permanent = listOf(
+            "private video", "video unavailable", "removed by the user",
+            "not available in your country", "members-only", "sign in to confirm your age",
+            "requested format is not available", "no video formats", "unsupported url",
+        )
+        return permanent.none { it in m }
+    }
+
     /**
      * Download [url] as audio (mp3) or video (mp4). [onProgress] gets 0..100.
      * Returns the saved file + its folder. Run from a coroutine (it blocks).
@@ -130,9 +141,27 @@ object Downloader {
             }
             req.addOption("--embed-metadata")
 
-            YoutubeDL.getInstance().execute(req) { progress, _, line ->
-                onProgress(if (progress < 0) 0f else progress, line.orEmpty())
+            // Some sites (TikTok especially) have probabilistic anti-bot
+            // responses — the same request fails one moment and succeeds the
+            // next. Retry a few times before giving up so the user doesn't have
+            // to keep re-tapping. Skip retries for clearly-permanent failures.
+            var lastError: String? = null
+            var succeeded = false
+            val maxAttempts = 3
+            for (attempt in 1..maxAttempts) {
+                try {
+                    if (attempt > 1) onProgress(0f, "Site was flaky — retrying ($attempt/$maxAttempts)…")
+                    YoutubeDL.getInstance().execute(req) { progress, _, line ->
+                        onProgress(if (progress < 0) 0f else progress, line.orEmpty())
+                    }
+                    succeeded = true
+                    break
+                } catch (e: Exception) {
+                    lastError = e.message ?: "Download failed"
+                    if (!isRetryable(lastError)) break
+                }
             }
+            if (!succeeded) return@withContext Result.failure(Exception(lastError ?: "Download failed"))
 
             // Identify what actually landed: a new (or freshly rewritten) media
             // file, biggest first (the final merged file dwarfs leftover parts).
