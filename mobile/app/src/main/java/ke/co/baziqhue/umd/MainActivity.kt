@@ -1,6 +1,7 @@
 package ke.co.baziqhue.umd
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -12,10 +13,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
@@ -45,7 +49,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            UmdTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     App()
                 }
@@ -69,6 +73,17 @@ class DownloadUi {
     var aiExplanation by mutableStateOf<String?>(null)
 }
 
+/** One line in the assistant chat. */
+data class ChatMsg(val fromUser: Boolean, val text: String)
+
+/** Assistant chat state, hoisted so it survives tab switches / in-flight replies. */
+class AssistantUi {
+    val messages = mutableStateListOf<ChatMsg>()
+    var input by mutableStateOf("")
+    var busy by mutableStateOf(false)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App() {
     val ctx = LocalContext.current
@@ -80,30 +95,48 @@ fun App() {
         return
     }
 
-    // Licensed: a two-tab shell (Download / History). State + coroutine scope live
-    // here so they persist across tab switches.
+    // Licensed: a tabbed shell. State + coroutine scope live here so they persist
+    // across tab switches (a download or chat reply keeps running).
     val scope = rememberCoroutineScope()
     val ui = remember { DownloadUi() }
+    val assistant = remember { AssistantUi() }
     var tab by remember { mutableStateOf(0) }
+    val sections = listOf("Download", "History", "Library", "Assistant")
 
     Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Universal Media Downloader",
+                            style = MaterialTheme.typography.titleMedium)
+                        Text(sections[tab], style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary)
+                    }
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+        },
         bottomBar = {
             NavigationBar {
                 NavigationBarItem(
                     selected = tab == 0, onClick = { tab = 0 },
                     icon = { Icon(Icons.Filled.Download, contentDescription = null) },
-                    label = { Text("Download") }
-                )
+                    label = { Text("Download") })
                 NavigationBarItem(
                     selected = tab == 1, onClick = { tab = 1 },
                     icon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
-                    label = { Text("History") }
-                )
+                    label = { Text("History") })
                 NavigationBarItem(
                     selected = tab == 2, onClick = { tab = 2 },
                     icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
-                    label = { Text("Library") }
-                )
+                    label = { Text("Library") })
+                NavigationBarItem(
+                    selected = tab == 3, onClick = { tab = 3 },
+                    icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+                    label = { Text("Assistant") })
             }
         }
     ) { pad ->
@@ -113,7 +146,8 @@ fun App() {
                 1 -> HistoryScreen { url, audio ->
                     ui.url = url; ui.audio = audio; ui.done = null; tab = 0
                 }
-                else -> LibraryScreen()
+                2 -> LibraryScreen()
+                else -> AssistantScreen(assistant, scope)
             }
         }
     }
@@ -205,9 +239,8 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
         Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Spacer(Modifier.height(8.dp))
-        Text("⬇️ Universal Media Downloader", style = MaterialTheme.typography.headlineSmall)
-        Text(lm.status(), style = MaterialTheme.typography.bodySmall)
+        Text(lm.status(), style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         if (engineStatus.isNotBlank()) {
             Row(
@@ -355,9 +388,6 @@ fun HistoryScreen(onRedownload: (url: String, audio: Boolean) -> Unit) {
         Modifier.fillMaxSize().padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Spacer(Modifier.height(8.dp))
-        Text("🕘 Download history", style = MaterialTheme.typography.headlineSmall)
-
         if (entries.isEmpty()) {
             Text("No downloads yet. Finished downloads show up here — and the list " +
                 "lives in your History folder, so it survives reinstalls.",
@@ -448,9 +478,6 @@ fun LibraryScreen() {
         Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Spacer(Modifier.height(8.dp))
-        Text("✨ Library & AI", style = MaterialTheme.typography.headlineSmall)
-
         if (!aiOn) {
             ElevatedCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -675,6 +702,153 @@ private fun TitleCleanupSection(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AssistantScreen(ui: AssistantUi, scope: CoroutineScope) {
+    val ctx = LocalContext.current
+    val listState = rememberLazyListState()
+    LaunchedEffect(ui.messages.size) {
+        if (ui.messages.isNotEmpty()) listState.animateScrollToItem(ui.messages.size - 1)
+    }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        if (ui.messages.isEmpty()) {
+            Column(
+                Modifier.weight(1f).fillMaxWidth(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Ask me to grab something", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(6.dp))
+                Text("e.g. \"download lo-fi beats as mp3\", \"get this video in 720p\", " +
+                    "or \"where do my files save?\"",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(ui.messages) { m -> ChatBubble(m) }
+            }
+        }
+
+        if (ui.busy) {
+            Row(
+                Modifier.padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("Thinking…", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedTextField(
+                value = ui.input, onValueChange = { ui.input = it },
+                placeholder = { Text("Ask the assistant…") },
+                modifier = Modifier.weight(1f), maxLines = 4
+            )
+            FilledIconButton(
+                onClick = { assistantSend(ctx, scope, ui) },
+                enabled = !ui.busy && ui.input.isNotBlank(),
+                modifier = Modifier.size(56.dp)
+            ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send") }
+        }
+    }
+}
+
+@Composable
+private fun ChatBubble(m: ChatMsg) {
+    val bg = if (m.fromUser) MaterialTheme.colorScheme.primaryContainer
+    else MaterialTheme.colorScheme.surfaceVariant
+    val fg = if (m.fromUser) MaterialTheme.colorScheme.onPrimaryContainer
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = if (m.fromUser) Alignment.End else Alignment.Start
+    ) {
+        Surface(color = bg, shape = MaterialTheme.shapes.large) {
+            Text(m.text, color = fg,
+                modifier = Modifier.widthIn(max = 300.dp)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+private fun assistantSend(ctx: Context, scope: CoroutineScope, ui: AssistantUi) {
+    val text = ui.input.trim()
+    if (text.isBlank() || ui.busy) return
+    ui.messages.add(ChatMsg(true, text))
+    ui.input = ""
+    ui.busy = true
+    scope.launch {
+        if (!Ai.isConfigured(ctx)) {
+            ui.messages.add(ChatMsg(false,
+                "I need an AI key first — go to Download → \"AI assistant settings\" and paste your NVIDIA key."))
+            ui.busy = false
+            return@launch
+        }
+        Ai.agentPlan(ctx, text).fold(
+            onSuccess = { plan -> runPlan(ctx, ui, plan) },
+            onFailure = { ui.messages.add(ChatMsg(false, "Sorry — ${it.message}")); ui.busy = false }
+        )
+    }
+}
+
+private suspend fun runPlan(ctx: Context, ui: AssistantUi, plan: Ai.AgentPlan) {
+    if (plan.action == "help") {
+        ui.messages.add(ChatMsg(false, plan.answer ?: "How can I help with your downloads?"))
+        ui.busy = false
+        return
+    }
+    if (!Storage.hasAccess(ctx)) {
+        ui.messages.add(ChatMsg(false,
+            "I need storage access first — open the Download tab and tap \"Grant storage access\"."))
+        ui.busy = false
+        return
+    }
+    val url = when {
+        !plan.url.isNullOrBlank() -> plan.url
+        !plan.query.isNullOrBlank() -> "ytsearch1:${plan.query}"
+        else -> null
+    }
+    if (url == null) {
+        ui.messages.add(ChatMsg(false,
+            plan.answer ?: "I couldn't find anything to download — give me a link or a song/video name."))
+        ui.busy = false
+        return
+    }
+    val audio = !plan.fmt.equals("mp4", ignoreCase = true)
+    val quality = when {
+        plan.quality.contains("720") -> "720p"
+        plan.quality.contains("480") -> "480p"
+        else -> "Best"
+    }
+    ui.messages.add(ChatMsg(false,
+        "On it — downloading ${if (audio) "audio (MP3)" else "video (MP4)"}…"))
+    Downloader.download(ctx, url, audio, quality) { _, _ -> }.fold(
+        onSuccess = { out ->
+            out.file?.let { f ->
+                History.add(HistoryEntry(f.nameWithoutExtension, url, audio,
+                    f.absolutePath, f.length(), System.currentTimeMillis()))
+            }
+            ui.messages.add(ChatMsg(false, "✅ Done — saved to ${Storage.displayPath(out.dir)}" +
+                (out.file?.let { "\n${it.name}" } ?: "")))
+        },
+        onFailure = { ui.messages.add(ChatMsg(false, "❌ Couldn't download it: ${it.message}")) }
+    )
+    ui.busy = false
 }
 
 @Composable

@@ -227,5 +227,61 @@ object Ai {
         if (a in 0 until b) runCatching { return JSONArray(raw.substring(a, b + 1)) }
         return null
     }
+
+    // ---- chat assistant (natural language -> action) ----------------------- #
+    data class AgentPlan(
+        val action: String,       // download | search | channel | help
+        val url: String?,
+        val query: String?,
+        val fmt: String,          // mp3 | mp4
+        val quality: String,      // Best Available | 720p | 480p
+        val count: Int,
+        val answer: String?,      // a reply when action == help
+    )
+
+    /** Turn a plain-language request into an action plan — ports desktop agent_plan. */
+    suspend fun agentPlan(ctx: Context, instruction: String): Result<AgentPlan> =
+        withContext(Dispatchers.IO) {
+            val key = storedKey(ctx)
+            if (key.isBlank()) return@withContext Result.failure(IOException("No AI key configured."))
+            val prompt =
+                "You are the built-in assistant of a media downloader app (YouTube, X, " +
+                "TikTok, etc.). Convert the user's request into a JSON action plan. " +
+                "Fields: action ('download' if they gave a specific media URL; 'channel' " +
+                "if they gave a channel/profile URL or want a whole channel/artist; " +
+                "'search' to find something by name; 'help' to answer a question about " +
+                "using the app); url (string or null); query (search/artist text or " +
+                "null); fmt ('mp3' for songs/audio — the default — or 'mp4' for video); " +
+                "quality ('Best Available' default, or '720p'/'480p'); count (1-10, how " +
+                "many search results, default 1); answer (a short helpful reply when " +
+                "action is 'help', else null). Return ONLY the JSON object.\n\n" +
+                "User: $instruction"
+            try {
+                val o = extractJsonObject(chat(key, prompt, maxTokens = 500))
+                    ?: return@withContext Result.failure(IOException("AI returned an unexpected response."))
+                fun str(k: String) = o.optString(k).ifBlank { null }?.takeUnless { it.equals("null", true) }
+                Result.success(AgentPlan(
+                    action = o.optString("action").ifBlank { "help" },
+                    url = str("url"),
+                    query = str("query"),
+                    fmt = o.optString("fmt").ifBlank { "mp3" },
+                    quality = o.optString("quality").ifBlank { "Best Available" },
+                    count = if (o.has("count")) o.optInt("count", 1).coerceIn(1, 10) else 1,
+                    answer = str("answer"),
+                ))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    private fun extractJsonObject(text: String): JSONObject? {
+        val fenced = Regex("```(?:json)?\\s*(.*?)```", RegexOption.DOT_MATCHES_ALL)
+            .find(text)?.groupValues?.get(1)
+        val raw = (fenced ?: text).trim()
+        runCatching { return JSONObject(raw) }
+        val a = raw.indexOf('{'); val b = raw.lastIndexOf('}')
+        if (a in 0 until b) runCatching { return JSONObject(raw.substring(a, b + 1)) }
+        return null
+    }
 }
 

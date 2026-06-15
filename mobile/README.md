@@ -39,6 +39,11 @@ side).
   embeddings), *Duplicate cleanup* (byte-identical files), and *Title clean-up*
   (AI-suggested artist · title · category, with one-tap rename). The search index
   lives in the public AI Library folder.
+- **Assistant tab** — a chat assistant: say "download lo-fi beats as mp3" or
+  "get this video in 720p" and it plans + runs the download (ports the desktop
+  agent_plan); ask "where do my files save?" and it answers. Uses the same key.
+- **Modern UI** — Material You dynamic colour (themes to your wallpaper on
+  Android 12+), a top app bar, and tidier screens — same flow, fresher look.
 - **Storage-access gate** — one-tap prompt to grant the access needed to write to
   the public folder (All-files access on Android 11+, storage permission on 8–10).
 - **Update engine** button (keeps yt-dlp current).
