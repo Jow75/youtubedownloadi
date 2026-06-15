@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Schedule
@@ -32,7 +33,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -96,15 +99,21 @@ fun App() {
                     icon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
                     label = { Text("History") }
                 )
+                NavigationBarItem(
+                    selected = tab == 2, onClick = { tab = 2 },
+                    icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
+                    label = { Text("Library") }
+                )
             }
         }
     ) { pad ->
         Box(Modifier.fillMaxSize().padding(pad)) {
             when (tab) {
                 0 -> DownloadScreen(lm, ui, scope) { licensed = false }
-                else -> HistoryScreen { url, audio ->
+                1 -> HistoryScreen { url, audio ->
                     ui.url = url; ui.audio = audio; ui.done = null; tab = 0
                 }
+                else -> LibraryScreen()
             }
         }
     }
@@ -421,6 +430,251 @@ private fun humanSize(bytes: Long): String = when {
     bytes < 1024 * 1024 -> "%.0f KB".format(bytes / 1024.0)
     bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
     else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LibraryScreen() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var entries by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
+    var aiOn by remember { mutableStateOf(false) }
+    var showAiKey by remember { mutableStateOf(false) }
+    fun reload() { entries = History.all(); aiOn = Ai.isConfigured(ctx) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { reload() }
+    LaunchedEffect(Unit) { reload() }
+
+    Column(
+        Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Spacer(Modifier.height(8.dp))
+        Text("✨ Library & AI", style = MaterialTheme.typography.headlineSmall)
+
+        if (!aiOn) {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Smart search and title clean-up use the AI assistant.",
+                        style = MaterialTheme.typography.bodyMedium)
+                    Button(onClick = { showAiKey = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("🤖 Set up AI key")
+                    }
+                }
+            }
+        }
+
+        SmartSearchSection(ctx, scope, entries, aiOn) { showAiKey = true }
+        DuplicatesSection(ctx, scope)
+        TitleCleanupSection(ctx, scope, entries, aiOn, { showAiKey = true }) { reload() }
+
+        Spacer(Modifier.height(8.dp))
+    }
+
+    if (showAiKey) AiKeyDialog(ctx) { showAiKey = false }
+}
+
+@Composable
+private fun SmartSearchSection(
+    ctx: android.content.Context,
+    scope: CoroutineScope,
+    entries: List<HistoryEntry>,
+    aiOn: Boolean,
+    onNeedKey: () -> Unit,
+) {
+    var indexed by remember { mutableStateOf(0) }
+    var status by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<Pair<HistoryEntry, Float>>>(emptyList()) }
+    LaunchedEffect(entries.size) { indexed = SearchIndex.indexedCount() }
+
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("🔎 Smart search", style = MaterialTheme.typography.titleMedium)
+            Text("Find downloads by meaning, not exact words — e.g. \"that calm " +
+                "piano study music\".", style = MaterialTheme.typography.bodySmall)
+            Text("Indexed: $indexed / ${entries.size}", style = MaterialTheme.typography.bodySmall)
+
+            OutlinedButton(
+                onClick = {
+                    if (!aiOn) onNeedKey() else {
+                        busy = true; status = "Indexing…"
+                        scope.launch {
+                            val r = SearchIndex.build(ctx, entries.map { it.title }) { d, t ->
+                                status = "Indexing $d / $t…"
+                            }
+                            indexed = SearchIndex.indexedCount()
+                            busy = false
+                            status = r.fold({ "Index ready ($indexed)." }, { "Failed: ${it.message}" })
+                        }
+                    }
+                },
+                enabled = !busy && entries.isNotEmpty(), modifier = Modifier.fillMaxWidth()
+            ) { Text("Build / refresh search index") }
+
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                label = { Text("Search by meaning") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                onClick = {
+                    if (!aiOn) onNeedKey() else {
+                        busy = true; status = "Searching…"
+                        scope.launch {
+                            val r = SearchIndex.search(ctx, query.trim(), entries.map { it.title })
+                            results = r.getOrDefault(emptyList()).mapNotNull { (title, score) ->
+                                entries.firstOrNull { it.title == title }?.let { it to score }
+                            }
+                            busy = false
+                            status = r.fold(
+                                { if (results.isEmpty()) "No matches (build the index first?)." else "" },
+                                { "Failed: ${it.message}" })
+                        }
+                    }
+                },
+                enabled = !busy && query.isNotBlank(), modifier = Modifier.fillMaxWidth()
+            ) { Text("Search") }
+
+            if (busy) Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(status, style = MaterialTheme.typography.bodySmall)
+            } else if (status.isNotBlank()) {
+                Text(status, style = MaterialTheme.typography.bodySmall)
+            }
+
+            results.forEach { (e, score) ->
+                val f = File(e.path)
+                Column {
+                    Text((if (e.audio) "🎵 " else "🎬 ") + e.title +
+                        "  ·  ${(score * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                    if (f.exists()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TextButton(onClick = { Storage.viewFile(ctx, f) }) { Text("▶ Play") }
+                            TextButton(onClick = { Storage.shareFile(ctx, f) }) { Text("↗ Share") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DuplicatesSection(ctx: android.content.Context, scope: CoroutineScope) {
+    var busy by remember { mutableStateOf(false) }
+    var scanned by remember { mutableStateOf(false) }
+    var groups by remember { mutableStateOf<List<List<File>>>(emptyList()) }
+
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("🧹 Duplicate cleanup", style = MaterialTheme.typography.titleMedium)
+            Text("Finds byte-identical files in your Music/Video folders so you can " +
+                "free up space.", style = MaterialTheme.typography.bodySmall)
+            Button(
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        groups = withContext(Dispatchers.IO) { Library.findDuplicates() }
+                        scanned = true; busy = false
+                    }
+                },
+                enabled = !busy, modifier = Modifier.fillMaxWidth()
+            ) { Text(if (busy) "Scanning…" else "Scan for duplicates") }
+
+            if (scanned && groups.isEmpty()) {
+                Text("No duplicates found 🎉", style = MaterialTheme.typography.bodyMedium)
+            }
+            groups.forEachIndexed { gi, group ->
+                HorizontalDivider()
+                Text("Group ${gi + 1} — ${group.size} copies of \"${group.first().name}\"",
+                    style = MaterialTheme.typography.bodySmall)
+                group.forEachIndexed { i, f ->
+                    var deleted by remember(f.absolutePath) { mutableStateOf(!f.exists()) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text((if (i == 0) "✓ keep  " else "• ") + f.name +
+                            (if (deleted) "  (deleted)" else ""),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f))
+                        if (i > 0 && !deleted) {
+                            TextButton(onClick = {
+                                if (f.delete()) { Storage.scan(ctx, f); deleted = true }
+                            }) { Text("Delete") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TitleCleanupSection(
+    ctx: android.content.Context,
+    scope: CoroutineScope,
+    entries: List<HistoryEntry>,
+    aiOn: Boolean,
+    onNeedKey: () -> Unit,
+    onChanged: () -> Unit,
+) {
+    var busy by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf("") }
+    var cleaned by remember { mutableStateOf<List<Pair<HistoryEntry, Ai.TitleInfo>>>(emptyList()) }
+
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("🏷️ Title clean-up", style = MaterialTheme.typography.titleMedium)
+            Text("AI suggests a clean artist · title · category for your downloads. " +
+                "Rename a file to tidy your library.", style = MaterialTheme.typography.bodySmall)
+            Button(
+                onClick = {
+                    if (!aiOn) onNeedKey() else {
+                        busy = true; status = "Analyzing titles…"
+                        scope.launch {
+                            val r = Ai.analyzeTitles(ctx, entries.map { it.title })
+                            busy = false
+                            r.fold(
+                                onSuccess = { m ->
+                                    cleaned = entries.mapNotNull { e -> m[e.title]?.let { e to it } }
+                                    status = if (cleaned.isEmpty()) "Nothing to clean." else ""
+                                },
+                                onFailure = { status = "Failed: ${it.message}" }
+                            )
+                        }
+                    }
+                },
+                enabled = !busy && entries.isNotEmpty(), modifier = Modifier.fillMaxWidth()
+            ) { Text(if (busy) "Analyzing…" else "Analyze titles (AI)") }
+
+            if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
+
+            cleaned.forEach { (e, info) ->
+                HorizontalDivider()
+                val suggested = listOfNotNull(info.artist, info.cleanTitle)
+                    .joinToString(" — ").ifBlank { info.cleanTitle }
+                Column {
+                    Text("From: ${e.title}", style = MaterialTheme.typography.bodySmall)
+                    Text("→ $suggested  ·  ${info.category}",
+                        style = MaterialTheme.typography.bodyMedium)
+                    val f = File(e.path)
+                    if (f.exists()) {
+                        TextButton(onClick = {
+                            val nf = Library.rename(f, suggested)
+                            if (nf != null) {
+                                Storage.scan(ctx, f); Storage.scan(ctx, nf)
+                                History.updatePath(e, nf.absolutePath, nf.nameWithoutExtension)
+                                onChanged()
+                            }
+                        }) { Text("Rename file to this") }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

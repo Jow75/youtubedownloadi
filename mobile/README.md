@@ -35,6 +35,10 @@ side).
   cryptic yt-dlp error into a plain-language reason + fix, using the same NVIDIA
   BYO key as the desktop. The key is entered in *AI assistant settings* and
   stored encrypted (Android Keystore); only the error text is ever sent.
+- **Library tab (AI)** — *Smart search* (find downloads by meaning via NVIDIA
+  embeddings), *Duplicate cleanup* (byte-identical files), and *Title clean-up*
+  (AI-suggested artist · title · category, with one-tap rename). The search index
+  lives in the public AI Library folder.
 - **Storage-access gate** — one-tap prompt to grant the access needed to write to
   the public folder (All-files access on Android 11+, storage permission on 8–10).
 - **Update engine** button (keeps yt-dlp current).

@@ -73,6 +73,23 @@ object History {
         }
     }
 
+    /** Point an entry at a renamed file (keeps it playable from History). */
+    fun updatePath(old: HistoryEntry, newPath: String, newTitle: String) {
+        val f = file()
+        if (!f.exists()) return
+        try {
+            val lines = f.readLines().map { line ->
+                if (line.isBlank()) return@map line
+                val o = try { JSONObject(line) } catch (_: Exception) { return@map line }
+                if (o.optString("url") == old.url && o.optLong("ts") == old.timestamp) {
+                    o.put("path", newPath).put("title", newTitle).toString()
+                } else line
+            }.filter { it.isNotBlank() }
+            f.writeText(if (lines.isEmpty()) "" else lines.joinToString("\n") + "\n")
+        } catch (_: Exception) {
+        }
+    }
+
     fun clear() {
         try { file().writeText("") } catch (_: Exception) {}
     }
