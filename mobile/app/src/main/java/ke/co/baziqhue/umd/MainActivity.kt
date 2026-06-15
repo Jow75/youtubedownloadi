@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -55,7 +56,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             UmdTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    App()
+                    // Makes all read-only text selectable/copyable (long-press to
+                    // select → Copy). Text fields keep their own paste/selection.
+                    SelectionContainer { App() }
                 }
             }
         }
