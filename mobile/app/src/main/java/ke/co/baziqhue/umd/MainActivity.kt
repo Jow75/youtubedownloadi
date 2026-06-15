@@ -20,10 +20,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -76,11 +80,40 @@ class DownloadUi {
 /** One line in the assistant chat. */
 data class ChatMsg(val fromUser: Boolean, val text: String)
 
-/** Assistant chat state, hoisted so it survives tab switches / in-flight replies. */
+/** One conversation. Each artist/topic can have its own, ChatGPT-style. */
+class ChatSession(val id: String, title: String, messages: List<ChatMsg> = emptyList()) {
+    var title by mutableStateOf(title)
+    val messages = mutableStateListOf<ChatMsg>().also { it.addAll(messages) }
+}
+
+/** Assistant state, hoisted so it survives tab switches / in-flight replies. */
 class AssistantUi {
-    val messages = mutableStateListOf<ChatMsg>()
+    val sessions = mutableStateListOf<ChatSession>()
+    var currentId by mutableStateOf("")
     var input by mutableStateOf("")
     var busy by mutableStateOf(false)
+    var loaded = false
+
+    val current: ChatSession?
+        get() = sessions.firstOrNull { it.id == currentId } ?: sessions.firstOrNull()
+
+    fun ensureChat() {
+        if (sessions.none { it.id == currentId }) {
+            if (sessions.isEmpty()) newChat() else currentId = sessions.first().id
+        }
+    }
+
+    fun newChat() {
+        val s = ChatSession(System.nanoTime().toString(), "New chat")
+        sessions.add(0, s); currentId = s.id; input = ""
+    }
+
+    fun delete(id: String) {
+        sessions.removeAll { it.id == id }
+        if (currentId == id) currentId = sessions.firstOrNull()?.id.orEmpty()
+    }
+
+    fun deleteAll() { sessions.clear(); currentId = ""; newChat() }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -101,7 +134,7 @@ fun App() {
     val ui = remember { DownloadUi() }
     val assistant = remember { AssistantUi() }
     var tab by remember { mutableStateOf(0) }
-    val sections = listOf("Download", "History", "Library", "Assistant")
+    val sections = listOf("Download", "Channel", "History", "Library", "Assistant")
 
     Scaffold(
         topBar = {
@@ -127,14 +160,18 @@ fun App() {
                     label = { Text("Download") })
                 NavigationBarItem(
                     selected = tab == 1, onClick = { tab = 1 },
+                    icon = { Icon(Icons.Filled.Subscriptions, contentDescription = null) },
+                    label = { Text("Channel") })
+                NavigationBarItem(
+                    selected = tab == 2, onClick = { tab = 2 },
                     icon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
                     label = { Text("History") })
                 NavigationBarItem(
-                    selected = tab == 2, onClick = { tab = 2 },
+                    selected = tab == 3, onClick = { tab = 3 },
                     icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
                     label = { Text("Library") })
                 NavigationBarItem(
-                    selected = tab == 3, onClick = { tab = 3 },
+                    selected = tab == 4, onClick = { tab = 4 },
                     icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
                     label = { Text("Assistant") })
             }
@@ -143,10 +180,11 @@ fun App() {
         Box(Modifier.fillMaxSize().padding(pad)) {
             when (tab) {
                 0 -> DownloadScreen(lm, ui, scope) { licensed = false }
-                1 -> HistoryScreen { url, audio ->
+                1 -> ChannelScreen()
+                2 -> HistoryScreen { url, audio ->
                     ui.url = url; ui.audio = audio; ui.done = null; tab = 0
                 }
-                2 -> LibraryScreen()
+                3 -> LibraryScreen()
                 else -> AssistantScreen(assistant, scope)
             }
         }
@@ -708,61 +746,132 @@ private fun TitleCleanupSection(
 @Composable
 fun AssistantScreen(ui: AssistantUi, scope: CoroutineScope) {
     val ctx = LocalContext.current
-    val listState = rememberLazyListState()
-    LaunchedEffect(ui.messages.size) {
-        if (ui.messages.isNotEmpty()) listState.animateScrollToItem(ui.messages.size - 1)
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    fun persist() = scope.launch(Dispatchers.IO) { ChatStore.save(ui.sessions.toList(), ui.currentId) }
+
+    LaunchedEffect(Unit) {
+        if (!ui.loaded) {
+            val (list, cur) = withContext(Dispatchers.IO) { ChatStore.load() }
+            if (ui.sessions.isEmpty()) { ui.sessions.addAll(list); ui.currentId = cur }
+            ui.loaded = true
+        }
+        ui.ensureChat()
     }
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        if (ui.messages.isEmpty()) {
-            Column(
-                Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text("Ask me to grab something", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(6.dp))
-                Text("e.g. \"download lo-fi beats as mp3\", \"get this video in 720p\", " +
-                    "or \"where do my files save?\"",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(ui.messages) { m -> ChatBubble(m) }
+    val session = ui.current
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                Column(Modifier.fillMaxSize().padding(12.dp)) {
+                    Text("Your chats", style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(12.dp))
+                    Button(
+                        onClick = { ui.newChat(); persist(); scope.launch { drawerState.close() } },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null)
+                        Spacer(Modifier.width(8.dp)); Text("New chat")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(Modifier.weight(1f)) {
+                        items(ui.sessions, key = { it.id }) { s ->
+                            NavigationDrawerItem(
+                                selected = s.id == ui.currentId,
+                                label = { Text(s.title.ifBlank { "New chat" }, maxLines = 1) },
+                                badge = {
+                                    IconButton(onClick = { ui.delete(s.id); persist() }) {
+                                        Icon(Icons.Filled.Delete, contentDescription = "Delete chat")
+                                    }
+                                },
+                                onClick = {
+                                    ui.currentId = s.id; persist()
+                                    scope.launch { drawerState.close() }
+                                },
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            )
+                        }
+                    }
+                    if (ui.sessions.size > 1) {
+                        HorizontalDivider()
+                        TextButton(onClick = { ui.deleteAll(); persist() }) {
+                            Text("Delete all chats")
+                        }
+                    }
+                }
             }
         }
+    ) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                    Icon(Icons.Filled.Menu, contentDescription = "Chats")
+                }
+                Text(session?.title?.ifBlank { "New chat" } ?: "New chat",
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1, modifier = Modifier.weight(1f))
+                IconButton(onClick = { ui.newChat(); persist() }) {
+                    Icon(Icons.Filled.Add, contentDescription = "New chat")
+                }
+            }
 
-        if (ui.busy) {
+            val msgs = session?.messages
+            val listState = rememberLazyListState()
+            LaunchedEffect(msgs?.size) {
+                if (!msgs.isNullOrEmpty()) listState.animateScrollToItem(msgs.size - 1)
+            }
+
+            if (msgs.isNullOrEmpty()) {
+                Column(
+                    Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Ask me to grab something", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("e.g. \"download lo-fi beats as mp3\", \"get this video in 720p\". " +
+                        "Tap ☰ to keep separate chats (one per artist).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(msgs) { m -> ChatBubble(m) }
+                }
+            }
+
+            if (ui.busy) {
+                Row(
+                    Modifier.padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("Thinking…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
             Row(
-                Modifier.padding(vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                Modifier.fillMaxWidth().padding(top = 4.dp),
+                verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                Text("Thinking…", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = ui.input, onValueChange = { ui.input = it },
+                    placeholder = { Text("Ask the assistant…") },
+                    modifier = Modifier.weight(1f), maxLines = 4
+                )
+                FilledIconButton(
+                    onClick = { assistantSend(ctx, scope, ui) { persist() } },
+                    enabled = !ui.busy && ui.input.isNotBlank(),
+                    modifier = Modifier.size(56.dp)
+                ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send") }
             }
-        }
-
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedTextField(
-                value = ui.input, onValueChange = { ui.input = it },
-                placeholder = { Text("Ask the assistant…") },
-                modifier = Modifier.weight(1f), maxLines = 4
-            )
-            FilledIconButton(
-                onClick = { assistantSend(ctx, scope, ui) },
-                enabled = !ui.busy && ui.input.isNotBlank(),
-                modifier = Modifier.size(56.dp)
-            ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send") }
         }
     }
 }
@@ -786,36 +895,38 @@ private fun ChatBubble(m: ChatMsg) {
     }
 }
 
-private fun assistantSend(ctx: Context, scope: CoroutineScope, ui: AssistantUi) {
+private fun assistantSend(ctx: Context, scope: CoroutineScope, ui: AssistantUi, persist: () -> Unit) {
     val text = ui.input.trim()
     if (text.isBlank() || ui.busy) return
-    ui.messages.add(ChatMsg(true, text))
+    val session = ui.current ?: return
+    session.messages.add(ChatMsg(true, text))
+    if (session.title.isBlank() || session.title == "New chat") session.title = text.take(40)
     ui.input = ""
     ui.busy = true
+    persist()
     scope.launch {
         if (!Ai.isConfigured(ctx)) {
-            ui.messages.add(ChatMsg(false,
+            session.messages.add(ChatMsg(false,
                 "I need an AI key first — go to Download → \"AI assistant settings\" and paste your NVIDIA key."))
-            ui.busy = false
-            return@launch
+        } else {
+            Ai.agentPlan(ctx, text).fold(
+                onSuccess = { plan -> runPlan(ctx, session, plan) },
+                onFailure = { session.messages.add(ChatMsg(false, "Sorry — ${it.message}")) }
+            )
         }
-        Ai.agentPlan(ctx, text).fold(
-            onSuccess = { plan -> runPlan(ctx, ui, plan) },
-            onFailure = { ui.messages.add(ChatMsg(false, "Sorry — ${it.message}")); ui.busy = false }
-        )
+        ui.busy = false
+        persist()
     }
 }
 
-private suspend fun runPlan(ctx: Context, ui: AssistantUi, plan: Ai.AgentPlan) {
+private suspend fun runPlan(ctx: Context, session: ChatSession, plan: Ai.AgentPlan) {
     if (plan.action == "help") {
-        ui.messages.add(ChatMsg(false, plan.answer ?: "How can I help with your downloads?"))
-        ui.busy = false
+        session.messages.add(ChatMsg(false, plan.answer ?: "How can I help with your downloads?"))
         return
     }
     if (!Storage.hasAccess(ctx)) {
-        ui.messages.add(ChatMsg(false,
+        session.messages.add(ChatMsg(false,
             "I need storage access first — open the Download tab and tap \"Grant storage access\"."))
-        ui.busy = false
         return
     }
     val url = when {
@@ -824,9 +935,8 @@ private suspend fun runPlan(ctx: Context, ui: AssistantUi, plan: Ai.AgentPlan) {
         else -> null
     }
     if (url == null) {
-        ui.messages.add(ChatMsg(false,
+        session.messages.add(ChatMsg(false,
             plan.answer ?: "I couldn't find anything to download — give me a link or a song/video name."))
-        ui.busy = false
         return
     }
     val audio = !plan.fmt.equals("mp4", ignoreCase = true)
@@ -835,7 +945,7 @@ private suspend fun runPlan(ctx: Context, ui: AssistantUi, plan: Ai.AgentPlan) {
         plan.quality.contains("480") -> "480p"
         else -> "Best"
     }
-    ui.messages.add(ChatMsg(false,
+    session.messages.add(ChatMsg(false,
         "On it — downloading ${if (audio) "audio (MP3)" else "video (MP4)"}…"))
     Downloader.download(ctx, url, audio, quality) { _, _ -> }.fold(
         onSuccess = { out ->
@@ -843,12 +953,127 @@ private suspend fun runPlan(ctx: Context, ui: AssistantUi, plan: Ai.AgentPlan) {
                 History.add(HistoryEntry(f.nameWithoutExtension, url, audio,
                     f.absolutePath, f.length(), System.currentTimeMillis()))
             }
-            ui.messages.add(ChatMsg(false, "✅ Done — saved to ${Storage.displayPath(out.dir)}" +
+            session.messages.add(ChatMsg(false, "✅ Done — saved to ${Storage.displayPath(out.dir)}" +
                 (out.file?.let { "\n${it.name}" } ?: "")))
         },
-        onFailure = { ui.messages.add(ChatMsg(false, "❌ Couldn't download it: ${it.message}")) }
+        onFailure = { session.messages.add(ChatMsg(false, "❌ Couldn't download it: ${it.message}")) }
     )
-    ui.busy = false
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChannelScreen() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var url by remember { mutableStateOf("") }
+    var audio by remember { mutableStateOf(true) }
+    var quality by remember { mutableStateOf("Best") }
+    var limit by remember { mutableStateOf("All") }
+    var scanning by remember { mutableStateOf(false) }
+    var entries by remember { mutableStateOf<List<Downloader.Entry>>(emptyList()) }
+    var busy by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    var log by remember { mutableStateOf("") }
+    var hasStorage by remember { mutableStateOf(Storage.hasAccess(ctx)) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { hasStorage = Storage.hasAccess(ctx) }
+
+    Column(
+        Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("Download a whole channel, playlist or profile.",
+            style = MaterialTheme.typography.bodyMedium)
+
+        OutlinedTextField(
+            value = url, onValueChange = { url = it },
+            label = { Text("Channel / playlist / profile URL") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+        )
+
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            SegmentedButton(selected = audio, onClick = { audio = true },
+                shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 Audio (MP3)") }
+            SegmentedButton(selected = !audio, onClick = { audio = false },
+                shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 Video (MP4)") }
+        }
+        if (!audio) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Best", "720p", "480p").forEach {
+                    FilterChip(selected = quality == it, onClick = { quality = it }, label = { Text(it) })
+                }
+            }
+        }
+
+        Text("How many?", style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("All", "10", "25", "50").forEach {
+                FilterChip(selected = limit == it, onClick = { limit = it }, label = { Text(it) })
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = {
+                    scanning = true; log = ""; entries = emptyList()
+                    scope.launch {
+                        val r = Downloader.scanEntries(ctx, url.trim())
+                        scanning = false
+                        r.fold(
+                            onSuccess = { entries = it; log = "Found ${it.size} item(s)." },
+                            onFailure = { log = "Scan failed: ${it.message}" }
+                        )
+                    }
+                },
+                enabled = url.isNotBlank() && !scanning && !busy,
+                modifier = Modifier.weight(1f)
+            ) { Text(if (scanning) "Scanning…" else "Scan") }
+
+            Button(
+                onClick = {
+                    busy = true; progress = 0f; log = "Starting…"
+                    scope.launch {
+                        val r = Downloader.downloadAll(ctx, url.trim(), audio, quality, limit.toIntOrNull()) { p, line ->
+                            progress = p / 100f
+                            if (line.isNotBlank()) log = line
+                        }
+                        busy = false
+                        log = r.fold(
+                            { "✅ Downloaded $it file(s) to ${Storage.displayPath(Downloader.targetDir(audio))}" },
+                            { "❌ Failed: ${it.message}" })
+                    }
+                },
+                enabled = url.isNotBlank() && hasStorage && !busy,
+                modifier = Modifier.weight(1f)
+            ) { Text(if (busy) "Downloading…" else "Download all") }
+        }
+
+        if (!hasStorage) {
+            Text("Grant storage access on the Download tab first.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error)
+        }
+
+        if (scanning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+        if (log.isNotBlank()) Text(log, style = MaterialTheme.typography.bodySmall)
+
+        if (entries.isNotEmpty()) {
+            HorizontalDivider()
+            Text("In this link:", style = MaterialTheme.typography.titleSmall)
+            entries.take(50).forEachIndexed { i, e ->
+                Text("${i + 1}. ${e.title}", style = MaterialTheme.typography.bodySmall, maxLines = 2)
+            }
+            if (entries.size > 50) {
+                Text("…and ${entries.size - 50} more",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text("Saves to: ${Storage.displayPath(Downloader.targetDir(audio))}",
+            style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable

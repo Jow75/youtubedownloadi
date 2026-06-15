@@ -39,9 +39,14 @@ side).
   embeddings), *Duplicate cleanup* (byte-identical files), and *Title clean-up*
   (AI-suggested artist · title · category, with one-tap rename). The search index
   lives in the public AI Library folder.
+- **Channel tab** — paste a channel / playlist / profile link, **Scan** to see
+  everything in it, then **Download all** (audio or video, optional cap of
+  10/25/50). Each file lands in your folders and History.
 - **Assistant tab** — a chat assistant: say "download lo-fi beats as mp3" or
   "get this video in 720p" and it plans + runs the download (ports the desktop
-  agent_plan); ask "where do my files save?" and it answers. Uses the same key.
+  agent_plan); ask "where do my files save?" and it answers. **Multiple chats**
+  (ChatGPT-style drawer): one per artist/topic, switch/new/delete/delete-all, and
+  they're saved to disk so they survive restarts. Uses the same key.
 - **Modern UI** — Material You dynamic colour (themes to your wallpaper on
   Android 12+), a top app bar, and tidier screens — same flow, fresher look.
 - **Storage-access gate** — one-tap prompt to grant the access needed to write to

@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 
 /**
@@ -180,6 +181,104 @@ object Downloader {
             Storage.scan(context, dir)
 
             Result.success(Outcome(saved, dir, "Saved to ${Storage.displayPath(dir)}"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** One item in a channel/playlist/profile. */
+    data class Entry(val title: String, val url: String)
+
+    /**
+     * List everything in a channel / playlist / profile URL without downloading
+     * (flat extraction — fast). Returns the items so the user can preview them.
+     */
+    suspend fun scanEntries(context: Context, url: String): Result<List<Entry>> =
+        withContext(Dispatchers.IO) {
+            try {
+                ensureInit(context)
+                val req = YoutubeDLRequest(url)
+                req.addOption("--flat-playlist")
+                req.addOption("--dump-single-json")
+                req.addOption("--no-warnings")
+                val resp = YoutubeDL.getInstance().execute(req)
+                val root = JSONObject(resp.out)
+                val arr = root.optJSONArray("entries")
+                val list = ArrayList<Entry>()
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val e = arr.optJSONObject(i) ?: continue
+                        val u = e.optString("url").ifBlank {
+                            e.optString("webpage_url").ifBlank { e.optString("id") }
+                        }
+                        if (u.isNotBlank()) list.add(Entry(e.optString("title").ifBlank { u }, u))
+                    }
+                } else {
+                    val u = root.optString("webpage_url").ifBlank { url }
+                    list.add(Entry(root.optString("title").ifBlank { u }, u))
+                }
+                Result.success(list)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Download a whole channel/playlist/profile (yt-dlp iterates it natively, so
+     * URL resolution is robust). [limit] caps the count (null = all). Returns how
+     * many files landed; each is logged to History.
+     */
+    suspend fun downloadAll(
+        context: Context,
+        url: String,
+        audio: Boolean,
+        quality: String,
+        limit: Int?,
+        onProgress: (Float, String) -> Unit,
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            prepareEngine(context)
+            val dir = targetDir(audio)
+            val before = dir.listFiles()?.associate { it.name to it.lastModified() } ?: emptyMap()
+
+            val req = YoutubeDLRequest(url)
+            req.addOption("--no-mtime")
+            req.addOption("--yes-playlist")
+            req.addOption("--ignore-errors")   // skip a bad entry, keep going
+            if (limit != null && limit > 0) req.addOption("--playlist-end", limit.toString())
+            req.addOption("-o", File(dir, "%(title)s.%(ext)s").absolutePath)
+            if (audio) {
+                req.addOption("-x")
+                req.addOption("--audio-format", "mp3")
+                req.addOption("--audio-quality", "0")
+            } else {
+                val sel = when (quality) {
+                    "720p" -> "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+                    "480p" -> "bestvideo[height<=480]+bestaudio/best[height<=480]/best"
+                    else -> "bestvideo+bestaudio/best"
+                }
+                req.addOption("-f", sel)
+                req.addOption("--merge-output-format", "mp4")
+            }
+            req.addOption("--embed-metadata")
+
+            YoutubeDL.getInstance().execute(req) { p, _, line ->
+                onProgress(if (p < 0) 0f else p, line.orEmpty())
+            }
+
+            val after = dir.listFiles()?.toList() ?: emptyList()
+            val newFiles = after.filter { f ->
+                val prev = before[f.name]
+                (prev == null || f.lastModified() > prev) && f.extension.lowercase() in MEDIA_EXT
+            }
+            newFiles.forEach { f ->
+                Storage.scan(context, f)
+                History.add(HistoryEntry(
+                    f.nameWithoutExtension, url, audio, f.absolutePath, f.length(),
+                    System.currentTimeMillis()))
+            }
+            Storage.scan(context, dir)
+            Result.success(newFiles.size)
         } catch (e: Exception) {
             Result.failure(e)
         }
