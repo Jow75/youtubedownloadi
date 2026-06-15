@@ -25,6 +25,12 @@ side).
   app / Gallery / music players (not the hidden `Android/data` sandbox).
 - **Find your file instantly** — after each download a card shows the exact path
   with **Open folder / Play / Share**.
+- **History tab** — every finished download is logged (title, type, size, date,
+  folder) with **Play / Share / Re-download / Remove** and search. The log lives
+  in `History/history.jsonl` in public storage, so it survives reinstalls (it
+  doubles as the permanent archive).
+- **Auto-updating engine** — yt-dlp refreshes itself on launch (throttled), so
+  YouTube/TikTok keep working without manually pressing *Update engine*.
 - **Storage-access gate** — one-tap prompt to grant the access needed to write to
   the public folder (All-files access on Android 11+, storage permission on 8–10).
 - **Update engine** button (keeps yt-dlp current).

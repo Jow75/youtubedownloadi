@@ -10,11 +10,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,7 +31,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,6 +51,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Download-screen state, hoisted so a tab switch never cancels an in-flight download. */
+class DownloadUi {
+    var url by mutableStateOf("")
+    var audio by mutableStateOf(true)
+    var quality by mutableStateOf("Best")
+    var busy by mutableStateOf(false)
+    var progress by mutableStateOf(0f)
+    var log by mutableStateOf("")
+    var done by mutableStateOf<Downloader.Outcome?>(null)
+}
+
 @Composable
 fun App() {
     val ctx = LocalContext.current
@@ -50,8 +70,39 @@ fun App() {
 
     if (!licensed) {
         LicenseGate(lm) { licensed = true }
-    } else {
-        DownloadScreen(lm) { licensed = false }
+        return
+    }
+
+    // Licensed: a two-tab shell (Download / History). State + coroutine scope live
+    // here so they persist across tab switches.
+    val scope = rememberCoroutineScope()
+    val ui = remember { DownloadUi() }
+    var tab by remember { mutableStateOf(0) }
+
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = tab == 0, onClick = { tab = 0 },
+                    icon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                    label = { Text("Download") }
+                )
+                NavigationBarItem(
+                    selected = tab == 1, onClick = { tab = 1 },
+                    icon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
+                    label = { Text("History") }
+                )
+            }
+        }
+    ) { pad ->
+        Box(Modifier.fillMaxSize().padding(pad)) {
+            when (tab) {
+                0 -> DownloadScreen(lm, ui, scope) { licensed = false }
+                else -> HistoryScreen { url, audio ->
+                    ui.url = url; ui.audio = audio; ui.done = null; tab = 0
+                }
+            }
+        }
     }
 }
 
@@ -117,16 +168,8 @@ fun LicenseGate(lm: LicenseManager, onActivated: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
+fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, onDeactivated: () -> Unit) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var url by remember { mutableStateOf("") }
-    var audio by remember { mutableStateOf(true) }
-    var quality by remember { mutableStateOf("Best") }
-    var busy by remember { mutableStateOf(false) }
-    var progress by remember { mutableFloatStateOf(0f) }
-    var log by remember { mutableStateOf("") }
-    var done by remember { mutableStateOf<Downloader.Outcome?>(null) }
     var engineStatus by remember { mutableStateOf("") }
 
     // Auto-refresh the (bundled, fast-stale) yt-dlp engine on launch so YouTube/
@@ -184,7 +227,7 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
         }
 
         OutlinedTextField(
-            value = url, onValueChange = { url = it },
+            value = ui.url, onValueChange = { ui.url = it },
             label = { Text("Paste a link (YouTube, X, TikTok…)") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
@@ -193,18 +236,18 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
         // Format: Audio is the primary choice (left), Video second.
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             SegmentedButton(
-                selected = audio, onClick = { audio = true },
+                selected = ui.audio, onClick = { ui.audio = true },
                 shape = SegmentedButtonDefaults.itemShape(0, 2)
             ) { Text("🎵 Audio (MP3)") }
             SegmentedButton(
-                selected = !audio, onClick = { audio = false },
+                selected = !ui.audio, onClick = { ui.audio = false },
                 shape = SegmentedButtonDefaults.itemShape(1, 2)
             ) { Text("🎬 Video (MP4)") }
         }
-        if (!audio) {
+        if (!ui.audio) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("Best", "720p", "480p").forEach {
-                    FilterChip(selected = quality == it, onClick = { quality = it },
+                    FilterChip(selected = ui.quality == it, onClick = { ui.quality = it },
                         label = { Text(it) })
                 }
             }
@@ -212,34 +255,45 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
 
         Button(
             onClick = {
-                busy = true; progress = 0f; log = "Starting…"; done = null
+                ui.busy = true; ui.progress = 0f; ui.log = "Starting…"; ui.done = null
+                val reqUrl = ui.url.trim(); val reqAudio = ui.audio; val reqQ = ui.quality
                 scope.launch {
-                    val res = Downloader.download(ctx, url.trim(), audio, quality) { p, line ->
-                        progress = p / 100f
-                        if (line.isNotBlank()) log = line
+                    val res = Downloader.download(ctx, reqUrl, reqAudio, reqQ) { p, line ->
+                        ui.progress = p / 100f
+                        if (line.isNotBlank()) ui.log = line
                     }
-                    busy = false
+                    ui.busy = false
                     res.fold(
-                        onSuccess = { done = it; log = it.message },
-                        onFailure = { done = null; log = "Failed: ${it.message}" }
+                        onSuccess = { out ->
+                            ui.done = out; ui.log = out.message
+                            out.file?.let { f ->
+                                History.add(HistoryEntry(
+                                    title = f.nameWithoutExtension, url = reqUrl, audio = reqAudio,
+                                    path = f.absolutePath, sizeBytes = f.length(),
+                                    timestamp = System.currentTimeMillis()
+                                ))
+                            }
+                        },
+                        onFailure = { ui.done = null; ui.log = "Failed: ${it.message}" }
                     )
                 }
             },
-            enabled = url.isNotBlank() && !busy && hasStorage, modifier = Modifier.fillMaxWidth()
-        ) { Text(if (busy) "Downloading…" else "⬇️ Download") }
+            enabled = ui.url.isNotBlank() && !ui.busy && hasStorage,
+            modifier = Modifier.fillMaxWidth()
+        ) { Text(if (ui.busy) "Downloading…" else "⬇️ Download") }
 
-        if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-        if (log.isNotBlank() && done == null) Text(log, style = MaterialTheme.typography.bodySmall)
+        if (ui.busy) LinearProgressIndicator(progress = { ui.progress }, modifier = Modifier.fillMaxWidth())
+        if (ui.log.isNotBlank() && ui.done == null) Text(ui.log, style = MaterialTheme.typography.bodySmall)
 
-        done?.let { DownloadDoneCard(ctx, it) }
+        ui.done?.let { DownloadDoneCard(ctx, it) }
 
         Spacer(Modifier.height(8.dp))
-        Text("Saves to: ${Storage.displayPath(Downloader.targetDir(audio))}",
+        Text("Saves to: ${Storage.displayPath(Downloader.targetDir(ui.audio))}",
             style = MaterialTheme.typography.bodySmall)
 
         OutlinedButton(
-            onClick = { scope.launch { log = Downloader.updateEngine(ctx); done = null } },
-            enabled = !busy, modifier = Modifier.fillMaxWidth()
+            onClick = { scope.launch { ui.log = Downloader.updateEngine(ctx); ui.done = null } },
+            enabled = !ui.busy, modifier = Modifier.fillMaxWidth()
         ) { Text("Update download engine (yt-dlp)") }
 
         HorizontalDivider()
@@ -248,6 +302,102 @@ fun DownloadScreen(lm: LicenseManager, onDeactivated: () -> Unit) {
             Text("Remove license from this device")
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HistoryScreen(onRedownload: (url: String, audio: Boolean) -> Unit) {
+    val ctx = LocalContext.current
+    var query by remember { mutableStateOf("") }
+    var entries by remember { mutableStateOf(emptyList<HistoryEntry>()) }
+    fun refresh() { entries = History.all() }
+    // Reload whenever this screen comes to the foreground.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refresh() }
+    LaunchedEffect(Unit) { refresh() }
+
+    val filtered = entries.filter {
+        query.isBlank() || it.title.contains(query, true) || it.url.contains(query, true)
+    }
+
+    Column(
+        Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Spacer(Modifier.height(8.dp))
+        Text("🕘 Download history", style = MaterialTheme.typography.headlineSmall)
+
+        if (entries.isEmpty()) {
+            Text("No downloads yet. Finished downloads show up here — and the list " +
+                "lives in your History folder, so it survives reinstalls.",
+                style = MaterialTheme.typography.bodyMedium)
+            return@Column
+        }
+
+        OutlinedTextField(
+            value = query, onValueChange = { query = it },
+            label = { Text("Search history") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("${filtered.size} of ${entries.size}", style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f))
+            TextButton(onClick = { History.clear(); refresh() }) { Text("Clear all") }
+        }
+
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth()
+        ) {
+            items(filtered) { e ->
+                HistoryRow(ctx, e, onRedownload) { History.remove(e); refresh() }
+            }
+        }
+    }
+}
+
+@Composable
+fun HistoryRow(
+    ctx: android.content.Context,
+    e: HistoryEntry,
+    onRedownload: (String, Boolean) -> Unit,
+    onDelete: () -> Unit,
+) {
+    val f = File(e.path)
+    val exists = f.exists()
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text((if (e.audio) "🎵 " else "🎬 ") + e.title.ifBlank { f.name },
+                style = MaterialTheme.typography.titleSmall, maxLines = 2)
+            Text(formatTime(e.timestamp) + "  ·  " + humanSize(e.sizeBytes) +
+                (if (!exists) "  ·  (file moved/deleted)" else ""),
+                style = MaterialTheme.typography.bodySmall)
+            Text(Storage.displayPath(f.parentFile ?: f),
+                fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (exists) {
+                    OutlinedButton(onClick = { Storage.viewFile(ctx, f) },
+                        modifier = Modifier.weight(1f), contentPadding = PaddingValues(4.dp)) { Text("▶ Play") }
+                    OutlinedButton(onClick = { Storage.shareFile(ctx, f) },
+                        modifier = Modifier.weight(1f), contentPadding = PaddingValues(4.dp)) { Text("↗ Share") }
+                }
+                OutlinedButton(onClick = { onRedownload(e.url, e.audio) },
+                    modifier = Modifier.weight(1f), contentPadding = PaddingValues(4.dp)) { Text("↻ Again") }
+                OutlinedButton(onClick = onDelete,
+                    modifier = Modifier.weight(1f), contentPadding = PaddingValues(4.dp)) { Text("🗑 Remove") }
+            }
+        }
+    }
+}
+
+private fun formatTime(ts: Long): String =
+    if (ts <= 0) "" else SimpleDateFormat("MMM d, yyyy HH:mm", Locale.US).format(Date(ts))
+
+private fun humanSize(bytes: Long): String = when {
+    bytes <= 0 -> "—"
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "%.0f KB".format(bytes / 1024.0)
+    bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
+    else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
 }
 
 @Composable
