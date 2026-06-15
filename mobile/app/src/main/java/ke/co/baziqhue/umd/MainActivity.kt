@@ -60,6 +60,10 @@ class DownloadUi {
     var progress by mutableStateOf(0f)
     var log by mutableStateOf("")
     var done by mutableStateOf<Downloader.Outcome?>(null)
+    // AI error-helper state
+    var failure by mutableStateOf<String?>(null)
+    var aiBusy by mutableStateOf(false)
+    var aiExplanation by mutableStateOf<String?>(null)
 }
 
 @Composable
@@ -171,6 +175,7 @@ fun LicenseGate(lm: LicenseManager, onActivated: () -> Unit) {
 fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, onDeactivated: () -> Unit) {
     val ctx = LocalContext.current
     var engineStatus by remember { mutableStateOf("") }
+    var showAiKey by remember { mutableStateOf(false) }
 
     // Auto-refresh the (bundled, fast-stale) yt-dlp engine on launch so YouTube/
     // TikTok work without the user racing the "Update engine" button.
@@ -256,6 +261,7 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
         Button(
             onClick = {
                 ui.busy = true; ui.progress = 0f; ui.log = "Starting…"; ui.done = null
+                ui.failure = null; ui.aiExplanation = null
                 val reqUrl = ui.url.trim(); val reqAudio = ui.audio; val reqQ = ui.quality
                 scope.launch {
                     val res = Downloader.download(ctx, reqUrl, reqAudio, reqQ) { p, line ->
@@ -265,7 +271,7 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
                     ui.busy = false
                     res.fold(
                         onSuccess = { out ->
-                            ui.done = out; ui.log = out.message
+                            ui.done = out; ui.log = out.message; ui.failure = null
                             out.file?.let { f ->
                                 History.add(HistoryEntry(
                                     title = f.nameWithoutExtension, url = reqUrl, audio = reqAudio,
@@ -274,7 +280,11 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
                                 ))
                             }
                         },
-                        onFailure = { ui.done = null; ui.log = "Failed: ${it.message}" }
+                        onFailure = {
+                            ui.done = null
+                            ui.failure = it.message ?: "Download failed."
+                            ui.log = "Failed: ${it.message}"
+                        }
                     )
                 }
             },
@@ -283,9 +293,14 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
         ) { Text(if (ui.busy) "Downloading…" else "⬇️ Download") }
 
         if (ui.busy) LinearProgressIndicator(progress = { ui.progress }, modifier = Modifier.fillMaxWidth())
-        if (ui.log.isNotBlank() && ui.done == null) Text(ui.log, style = MaterialTheme.typography.bodySmall)
+        if (ui.log.isNotBlank() && ui.done == null && ui.failure == null)
+            Text(ui.log, style = MaterialTheme.typography.bodySmall)
 
         ui.done?.let { DownloadDoneCard(ctx, it) }
+
+        if (ui.failure != null && !ui.busy) {
+            DownloadFailedCard(ctx, ui, scope) { showAiKey = true }
+        }
 
         Spacer(Modifier.height(8.dp))
         Text("Saves to: ${Storage.displayPath(Downloader.targetDir(ui.audio))}",
@@ -300,12 +315,16 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
             enabled = !ui.busy, modifier = Modifier.fillMaxWidth()
         ) { Text("Update download engine (yt-dlp)") }
 
+        TextButton(onClick = { showAiKey = true }) { Text("🤖 AI assistant settings") }
+
         HorizontalDivider()
         ContactLinks(ctx)
         TextButton(onClick = { lm.deactivate(); onDeactivated() }) {
             Text("Remove license from this device")
         }
     }
+
+    if (showAiKey) AiKeyDialog(ctx) { showAiKey = false }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -402,6 +421,113 @@ private fun humanSize(bytes: Long): String = when {
     bytes < 1024 * 1024 -> "%.0f KB".format(bytes / 1024.0)
     bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
     else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
+}
+
+@Composable
+fun DownloadFailedCard(
+    ctx: android.content.Context,
+    ui: DownloadUi,
+    scope: CoroutineScope,
+    onNeedKey: () -> Unit,
+) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("❌ Download failed", style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.error)
+            ui.failure?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            Button(
+                onClick = {
+                    if (!Ai.isConfigured(ctx)) {
+                        onNeedKey()
+                    } else {
+                        ui.aiBusy = true; ui.aiExplanation = null
+                        val err = ui.failure.orEmpty()
+                        val title = ui.url.trim()
+                        scope.launch {
+                            val r = Ai.explainError(ctx, title, err)
+                            ui.aiBusy = false
+                            ui.aiExplanation = r.getOrElse { "Couldn't reach the AI: ${it.message}" }
+                        }
+                    }
+                },
+                enabled = !ui.aiBusy, modifier = Modifier.fillMaxWidth()
+            ) { Text(if (ui.aiBusy) "Thinking…" else "💡 Explain & fix (AI)") }
+
+            if (ui.aiBusy) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("Asking the assistant…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            ui.aiExplanation?.let {
+                HorizontalDivider()
+                Text("🤖 $it", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+@Composable
+fun AiKeyDialog(ctx: android.content.Context, onDismiss: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var key by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val existing = remember { Ai.maskedKey(ctx) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("AI assistant") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Paste your NVIDIA API key (starts with nvapi-). It's stored " +
+                    "encrypted on this device and only used to explain download " +
+                    "errors — never your files. Get a free key at build.nvidia.com.",
+                    style = MaterialTheme.typography.bodySmall)
+                if (existing.isNotBlank()) {
+                    Text("Current key: $existing", fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedTextField(
+                    value = key, onValueChange = { key = it },
+                    label = { Text("nvapi-…") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                msg?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy && key.isNotBlank(),
+                onClick = {
+                    busy = true; msg = "Checking key…"
+                    val k = key.trim()
+                    scope.launch {
+                        val r = Ai.validateKey(k)
+                        busy = false
+                        r.fold(
+                            onSuccess = { Ai.saveKey(ctx, k); onDismiss() },
+                            onFailure = { msg = it.message }
+                        )
+                    }
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (existing.isNotBlank()) {
+                    TextButton(onClick = { Ai.clearKey(ctx); onDismiss() }) { Text("Remove") }
+                }
+                TextButton(onClick = onDismiss) { Text("Close") }
+            }
+        }
+    )
 }
 
 @Composable

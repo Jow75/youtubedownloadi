@@ -31,6 +31,10 @@ side).
   doubles as the permanent archive).
 - **Auto-updating engine** — yt-dlp refreshes itself on launch (throttled), so
   YouTube/TikTok keep working without manually pressing *Update engine*.
+- **AI error helper** — when a download fails, *Explain & fix (AI)* turns the
+  cryptic yt-dlp error into a plain-language reason + fix, using the same NVIDIA
+  BYO key as the desktop. The key is entered in *AI assistant settings* and
+  stored encrypted (Android Keystore); only the error text is ever sent.
 - **Storage-access gate** — one-tap prompt to grant the access needed to write to
   the public folder (All-files access on Android 11+, storage permission on 8–10).
 - **Update engine** button (keeps yt-dlp current).

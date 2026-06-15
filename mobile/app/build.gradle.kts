@@ -22,8 +22,8 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
 
         // Baked into BuildConfig at build time (not in the repo).
         buildConfigField("String", "UMD_SECRET", "\"$umdSecret\"")
@@ -75,4 +75,7 @@ dependencies {
     implementation("io.github.junkfood02.youtubedl-android:aria2c:0.17.2")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+
+    // Encrypted-at-rest storage for the user's AI API key (Android Keystore).
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }
