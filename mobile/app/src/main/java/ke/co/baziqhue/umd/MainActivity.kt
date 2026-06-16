@@ -10,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,8 +28,17 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,11 +49,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.media3.common.Player
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -139,7 +154,16 @@ fun App() {
     val assistant = remember { AssistantUi() }
     var tab by remember { mutableStateOf(0) }
     var showAbout by remember { mutableStateOf(false) }
+    var showPlayer by remember { mutableStateOf(false) }
     val sections = listOf("Download", "Channel", "History", "Library", "Assistant")
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(Unit) {
+        Playback.init(ctx)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -163,7 +187,9 @@ fun App() {
             )
         },
         bottomBar = {
-            NavigationBar {
+            Column {
+                MiniPlayer { showPlayer = true }
+                NavigationBar {
                 NavigationBarItem(
                     selected = tab == 0, onClick = { tab = 0 },
                     icon = { Icon(Icons.Filled.Download, contentDescription = null) },
@@ -184,6 +210,7 @@ fun App() {
                     selected = tab == 4, onClick = { tab = 4 },
                     icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
                     label = { Text("Assistant") })
+                }
             }
         }
     ) { pad ->
@@ -201,6 +228,7 @@ fun App() {
     }
 
     if (showAbout) AboutDialog(ctx, lm) { showAbout = false }
+    if (showPlayer && Playback.hasItem) PlayerScreen { showPlayer = false }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -456,12 +484,13 @@ fun HistoryScreen(onRedownload: (url: String, audio: Boolean) -> Unit) {
             TextButton(onClick = { History.clear(); refresh() }) { Text("Clear all") }
         }
 
+        val playQueue = filtered.map { File(it.path) }
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.weight(1f).fillMaxWidth()
         ) {
             items(filtered) { e ->
-                HistoryRow(ctx, e, onRedownload) { History.remove(e); refresh() }
+                HistoryRow(ctx, e, playQueue, onRedownload) { History.remove(e); refresh() }
             }
         }
     }
@@ -471,6 +500,7 @@ fun HistoryScreen(onRedownload: (url: String, audio: Boolean) -> Unit) {
 fun HistoryRow(
     ctx: android.content.Context,
     e: HistoryEntry,
+    queue: List<File>,
     onRedownload: (String, Boolean) -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -487,7 +517,7 @@ fun HistoryRow(
                 fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (exists) {
-                    OutlinedButton(onClick = { Storage.viewFile(ctx, f) },
+                    OutlinedButton(onClick = { playInApp(ctx, queue, f) },
                         modifier = Modifier.weight(1f), contentPadding = PaddingValues(4.dp)) { Text("▶ Play") }
                     OutlinedButton(onClick = { Storage.shareFile(ctx, f) },
                         modifier = Modifier.weight(1f), contentPadding = PaddingValues(4.dp)) { Text("↗ Share") }
@@ -623,6 +653,7 @@ private fun SmartSearchSection(
                 Text(status, style = MaterialTheme.typography.bodySmall)
             }
 
+            val resultFiles = results.map { File(it.first.path) }
             results.forEach { (e, score) ->
                 val f = File(e.path)
                 Column {
@@ -631,7 +662,7 @@ private fun SmartSearchSection(
                         style = MaterialTheme.typography.bodyMedium, maxLines = 2)
                     if (f.exists()) {
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            TextButton(onClick = { Storage.viewFile(ctx, f) }) { Text("▶ Play") }
+                            TextButton(onClick = { playInApp(ctx, resultFiles, f) }) { Text("▶ Play") }
                             TextButton(onClick = { Storage.shareFile(ctx, f) }) { Text("↗ Share") }
                         }
                     }
@@ -1243,6 +1274,128 @@ private fun AboutRow(label: String, value: String) {
     }
 }
 
+private val AUDIO_EXTS = setOf("mp3", "m4a", "aac", "opus", "ogg", "wav", "flac")
+private fun isAudioFile(f: File) = f.extension.lowercase() in AUDIO_EXTS
+
+/** Audio -> built-in player (with the rest of [queue] for next/prev); video -> external app. */
+private fun playInApp(ctx: android.content.Context, queue: List<File>, f: File) {
+    if (isAudioFile(f)) {
+        val audio = queue.filter { isAudioFile(it) }.ifEmpty { listOf(f) }
+        Playback.play(audio, audio.indexOf(f).coerceAtLeast(0))
+    } else {
+        Storage.viewFile(ctx, f)
+    }
+}
+
+private fun fmtTime(ms: Long): String {
+    if (ms <= 0) return "0:00"
+    val s = ms / 1000
+    return "%d:%02d".format(s / 60, s % 60)
+}
+
+@Composable
+fun MiniPlayer(onExpand: () -> Unit) {
+    if (!Playback.hasItem) return
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 3.dp,
+        modifier = Modifier.fillMaxWidth().clickable { onExpand() }
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.MusicNote, contentDescription = null)
+            Spacer(Modifier.width(10.dp))
+            Text(Playback.title.ifBlank { "Now playing" },
+                style = MaterialTheme.typography.bodyMedium, maxLines = 1,
+                modifier = Modifier.weight(1f))
+            IconButton(onClick = { Playback.playPause() }) {
+                Icon(if (Playback.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = "Play/Pause")
+            }
+            IconButton(onClick = { Playback.next() }) {
+                Icon(Icons.Filled.SkipNext, contentDescription = "Next")
+            }
+        }
+    }
+}
+
+@Composable
+fun PlayerScreen(onClose: () -> Unit) {
+    Dialog(onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        var pos by remember { mutableStateOf(0L) }
+        LaunchedEffect(Playback.isPlaying, Playback.title) {
+            while (true) { pos = Playback.position(); delay(500) }
+        }
+        val dur = Playback.duration()
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(
+                Modifier.fillMaxSize().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(Modifier.fillMaxWidth()) {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Close")
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                Icon(Icons.Filled.MusicNote, contentDescription = null,
+                    modifier = Modifier.size(96.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(28.dp))
+                Text(Playback.title.ifBlank { "Now playing" },
+                    style = MaterialTheme.typography.titleLarge,
+                    textAlign = TextAlign.Center, maxLines = 3)
+                Spacer(Modifier.height(28.dp))
+                Slider(
+                    value = if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f,
+                    onValueChange = { if (dur > 0) Playback.seekTo((it * dur).toLong()) },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(fmtTime(pos), style = MaterialTheme.typography.bodySmall)
+                    Text(fmtTime(dur), style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(onClick = { Playback.toggleShuffle() }) {
+                        Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle",
+                            tint = if (Playback.shuffle) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(onClick = { Playback.prev() }, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Filled.SkipPrevious, contentDescription = "Previous",
+                            modifier = Modifier.size(36.dp))
+                    }
+                    FilledIconButton(onClick = { Playback.playPause() },
+                        modifier = Modifier.size(72.dp)) {
+                        Icon(if (Playback.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = "Play/Pause", modifier = Modifier.size(40.dp))
+                    }
+                    IconButton(onClick = { Playback.next() }, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Filled.SkipNext, contentDescription = "Next",
+                            modifier = Modifier.size(36.dp))
+                    }
+                    IconButton(onClick = { Playback.cycleRepeat() }) {
+                        Icon(
+                            if (Playback.repeatMode == Player.REPEAT_MODE_ONE) Icons.Filled.RepeatOne
+                            else Icons.Filled.Repeat,
+                            contentDescription = "Repeat",
+                            tint = if (Playback.repeatMode != Player.REPEAT_MODE_OFF)
+                                MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
 @Composable
 fun DownloadDoneCard(ctx: android.content.Context, out: Downloader.Outcome) {
     ElevatedCard(Modifier.fillMaxWidth()) {
@@ -1260,7 +1413,7 @@ fun DownloadDoneCard(ctx: android.content.Context, out: Downloader.Outcome) {
             ) { Text("📂 Open folder") }
             out.file?.let { f ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { Storage.viewFile(ctx, f) },
+                    OutlinedButton(onClick = { playInApp(ctx, listOf(f), f) },
                         modifier = Modifier.weight(1f)) { Text("▶ Play") }
                     OutlinedButton(onClick = { Storage.shareFile(ctx, f) },
                         modifier = Modifier.weight(1f)) { Text("↗ Share") }
