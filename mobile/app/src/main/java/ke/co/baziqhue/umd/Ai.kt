@@ -26,7 +26,8 @@ import java.util.concurrent.TimeUnit
  */
 object Ai {
     private const val BASE_URL = "https://integrate.api.nvidia.com/v1"
-    private const val CHAT_MODEL = "meta/llama-3.3-70b-instruct"
+    private const val CHAT_MODEL = "meta/llama-3.3-70b-instruct"   // smart, for chat/errors
+    private const val FAST_MODEL = "meta/llama-3.1-8b-instruct"    // ~8x faster, for bulk jobs
     private const val EMBED_MODEL = "nvidia/nv-embedqa-e5-v5"
     const val KEY_PREFIX = "nvapi-"
     const val GET_KEY_URL = "https://build.nvidia.com/"
@@ -36,9 +37,9 @@ object Ai {
     private val http: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(90, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
-            .callTimeout(120, TimeUnit.SECONDS)
+            .callTimeout(180, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build()
     }
@@ -108,9 +109,9 @@ object Ai {
         }
     }
 
-    private fun chat(key: String, prompt: String, maxTokens: Int): String {
+    private fun chat(key: String, prompt: String, maxTokens: Int, model: String = CHAT_MODEL): String {
         val payload = JSONObject()
-            .put("model", CHAT_MODEL)
+            .put("model", model)
             .put("messages", JSONArray().put(
                 JSONObject().put("role", "user").put("content", prompt)))
             .put("temperature", 0.1)
@@ -181,13 +182,27 @@ object Ai {
         val official: Boolean?,
     )
 
-    /** Clean up messy download titles -> {original: TitleInfo}. Same as desktop. */
-    suspend fun analyzeTitles(ctx: Context, titles: List<String>): Result<Map<String, TitleInfo>> =
-        withContext(Dispatchers.IO) {
-            val key = storedKey(ctx)
-            if (key.isBlank()) return@withContext Result.failure(IOException("No AI key configured."))
-            val uniq = titles.filter { it.isNotBlank() }.distinct().take(40)
-            if (uniq.isEmpty()) return@withContext Result.success(emptyMap())
+    /**
+     * Clean up messy download titles -> {original: TitleInfo}. Batched in small
+     * chunks on the FAST model so it returns quickly and never times out (the
+     * 70B model took ~45s for 12 titles; the 8B does ~8 in ~6s). [onProgress]
+     * reports done/total as batches complete.
+     */
+    suspend fun analyzeTitles(
+        ctx: Context,
+        titles: List<String>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): Result<Map<String, TitleInfo>> = withContext(Dispatchers.IO) {
+        val key = storedKey(ctx)
+        if (key.isBlank()) return@withContext Result.failure(IOException("No AI key configured."))
+        val uniq = titles.filter { it.isNotBlank() }.distinct()
+        if (uniq.isEmpty()) return@withContext Result.success(emptyMap())
+
+        val result = LinkedHashMap<String, TitleInfo>()
+        val batch = 10
+        var i = 0
+        while (i < uniq.size) {
+            val chunk = uniq.subList(i, minOf(i + batch, uniq.size))
             val prompt =
                 "You clean up media download titles for a library. For EACH title " +
                 "return one JSON object, in the SAME ORDER, with fields: " +
@@ -196,27 +211,31 @@ object Ai {
                 "category (exactly one of $CATEGORIES), " +
                 "is_official (true if it looks like an official release, else false). " +
                 "Return ONLY a JSON array, nothing else.\n\nTitles:\n" +
-                uniq.mapIndexed { i, t -> "${i + 1}. $t" }.joinToString("\n")
+                chunk.mapIndexed { j, t -> "${j + 1}. $t" }.joinToString("\n")
             try {
-                val arr = extractJsonArray(chat(key, prompt, maxTokens = 1600))
-                    ?: return@withContext Result.failure(IOException("AI returned an unexpected response."))
-                val map = LinkedHashMap<String, TitleInfo>()
-                for (i in uniq.indices) {
-                    val o = arr.optJSONObject(i) ?: continue
-                    val cat = o.optString("category")
-                    map[uniq[i]] = TitleInfo(
-                        artist = o.optString("artist").ifBlank { null }
-                            ?.takeUnless { it.equals("null", true) },
-                        cleanTitle = o.optString("clean_title").ifBlank { uniq[i] },
-                        category = if (cat in CATEGORIES) cat else "Other",
-                        official = if (o.has("is_official")) o.optBoolean("is_official") else null,
-                    )
+                val arr = extractJsonArray(chat(key, prompt, maxTokens = 900, model = FAST_MODEL))
+                if (arr != null) {
+                    for (j in chunk.indices) {
+                        val o = arr.optJSONObject(j) ?: continue
+                        val cat = o.optString("category")
+                        result[chunk[j]] = TitleInfo(
+                            artist = o.optString("artist").ifBlank { null }
+                                ?.takeUnless { it.equals("null", true) },
+                            cleanTitle = o.optString("clean_title").ifBlank { chunk[j] },
+                            category = if (cat in CATEGORIES) cat else "Other",
+                            official = if (o.has("is_official")) o.optBoolean("is_official") else null,
+                        )
+                    }
                 }
-                Result.success(map)
-            } catch (e: Exception) {
-                Result.failure(e)
+            } catch (_: Exception) {
+                // Skip a bad batch, keep going (partial results are still useful).
             }
+            i += batch
+            onProgress(minOf(i, uniq.size), uniq.size)
         }
+        if (result.isEmpty()) Result.failure(IOException("Couldn't analyze titles — try again."))
+        else Result.success(result)
+    }
 
     /** Pull a JSON array out of a model reply (handles ```json fences / extra text). */
     private fun extractJsonArray(text: String): JSONArray? {
@@ -240,22 +259,39 @@ object Ai {
         val answer: String?,      // a reply when action == help
     )
 
+    /** What the assistant knows about the product (observations 4 & 5). */
+    private const val PRODUCT_BRIEF =
+        "ABOUT THIS APP — use this to answer questions about it. Universal Media " +
+        "Downloader is a media downloader, organizer and AI library for Android and " +
+        "Windows, created by George Muraguri Muthoni under the BAZIQ HUE project. " +
+        "It downloads audio (MP3) or video (MP4) from YouTube, TikTok, X and many " +
+        "more — single links, or whole channels/playlists/profiles (the Channel tab). " +
+        "Files save to the public Download/Universal Media Downloader folder " +
+        "(Music/MP3, Videos/MP4). It has: a Download tab, a Channel/bulk tab, a " +
+        "History tab (search + re-download, kept in a file so it survives reinstalls), " +
+        "and a Library tab with semantic Smart Search (find by meaning), byte-identical " +
+        "Duplicate cleanup (safe — it keeps one copy), and AI Title clean-up/rename. " +
+        "It's unlocked by an offline, per-device license key that expires; AI features " +
+        "use the user's own NVIDIA API key. A built-in media player is on the roadmap. " +
+        "When asked who built it, credit George Muraguri Muthoni / BAZIQ HUE."
+
     /** Turn a plain-language request into an action plan — ports desktop agent_plan. */
     suspend fun agentPlan(ctx: Context, instruction: String): Result<AgentPlan> =
         withContext(Dispatchers.IO) {
             val key = storedKey(ctx)
             if (key.isBlank()) return@withContext Result.failure(IOException("No AI key configured."))
             val prompt =
-                "You are the built-in assistant of a media downloader app (YouTube, X, " +
-                "TikTok, etc.). Convert the user's request into a JSON action plan. " +
-                "Fields: action ('download' if they gave a specific media URL; 'channel' " +
-                "if they gave a channel/profile URL or want a whole channel/artist; " +
-                "'search' to find something by name; 'help' to answer a question about " +
-                "using the app); url (string or null); query (search/artist text or " +
-                "null); fmt ('mp3' for songs/audio — the default — or 'mp4' for video); " +
-                "quality ('Best Available' default, or '720p'/'480p'); count (1-10, how " +
-                "many search results, default 1); answer (a short helpful reply when " +
-                "action is 'help', else null). Return ONLY the JSON object.\n\n" +
+                PRODUCT_BRIEF + "\n\n" +
+                "You are the built-in assistant of this app. Convert the user's request " +
+                "into a JSON action plan. Fields: action ('download' if they gave a " +
+                "specific media URL; 'channel' if they gave a channel/profile URL or want " +
+                "a whole channel/artist; 'search' to find something by name; 'help' to " +
+                "answer ANY question — about the app (use the ABOUT info above) or general " +
+                "knowledge); url (string or null); query (search/artist text or null); " +
+                "fmt ('mp3' for songs/audio — the default — or 'mp4' for video); quality " +
+                "('Best Available' default, or '720p'/'480p'); count (1-10, default 1); " +
+                "answer (a helpful reply when action is 'help', else null). For 'help' " +
+                "give a friendly, specific answer. Return ONLY the JSON object.\n\n" +
                 "User: $instruction"
             try {
                 val o = extractJsonObject(chat(key, prompt, maxTokens = 500))

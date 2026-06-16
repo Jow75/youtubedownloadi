@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Subscriptions
@@ -137,6 +138,7 @@ fun App() {
     val ui = remember { DownloadUi() }
     val assistant = remember { AssistantUi() }
     var tab by remember { mutableStateOf(0) }
+    var showAbout by remember { mutableStateOf(false) }
     val sections = listOf("Download", "Channel", "History", "Library", "Assistant")
 
     Scaffold(
@@ -148,6 +150,11 @@ fun App() {
                             style = MaterialTheme.typography.titleMedium)
                         Text(sections[tab], style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary)
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showAbout = true }) {
+                        Icon(Icons.Filled.Info, contentDescription = "About")
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
@@ -192,6 +199,8 @@ fun App() {
             }
         }
     }
+
+    if (showAbout) AboutDialog(ctx, lm) { showAbout = false }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -703,7 +712,9 @@ private fun TitleCleanupSection(
                     if (!aiOn) onNeedKey() else {
                         busy = true; status = "Analyzing titles…"
                         scope.launch {
-                            val r = Ai.analyzeTitles(ctx, entries.map { it.title })
+                            val r = Ai.analyzeTitles(ctx, entries.map { it.title }) { done, total ->
+                                status = "Analyzing $done / $total…"
+                            }
                             busy = false
                             r.fold(
                                 onSuccess = { m ->
@@ -1184,6 +1195,52 @@ fun AiKeyDialog(ctx: android.content.Context, onDismiss: () -> Unit) {
             }
         }
     )
+}
+
+@Composable
+fun AboutDialog(ctx: android.content.Context, lm: LicenseManager, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = { Text("Universal Media Downloader") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("Download, organize, play and manage media — powered by AI.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                AboutRow("Version", "v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})")
+                AboutRow("Developer", "George Muraguri Muthoni")
+                AboutRow("Publisher", "BAZIQ HUE")
+                AboutRow("License", lm.status())
+                AboutRow("Package", ctx.packageName)
+
+                HorizontalDivider()
+                Text("What's new", style = MaterialTheme.typography.labelLarge)
+                Text("• Channel / playlist / profile bulk download\n" +
+                    "• Multi-chat AI assistant (saved chats)\n" +
+                    "• AI: error helper, smart search, duplicate cleanup, title clean-up\n" +
+                    "• Public-folder saves, history, selectable text",
+                    style = MaterialTheme.typography.bodySmall)
+
+                HorizontalDivider()
+                Text("Support & links", style = MaterialTheme.typography.labelLarge)
+                ContactLinks(ctx)
+            }
+        }
+    )
+}
+
+@Composable
+private fun AboutRow(label: String, value: String) {
+    Column {
+        Text(label, style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary)
+        Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
 }
 
 @Composable
