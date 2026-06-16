@@ -40,10 +40,15 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Subscriptions
+import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -51,11 +56,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -155,15 +163,62 @@ fun App() {
     var tab by remember { mutableStateOf(0) }
     var showAbout by remember { mutableStateOf(false) }
     var showPlayer by remember { mutableStateOf(false) }
+    var showAiKey by remember { mutableStateOf(false) }
     val sections = listOf("Download", "Channel", "History", "Library", "Assistant")
+    val drawer = rememberDrawerState(DrawerValue.Closed)
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(Unit) {
         Playback.init(ctx)
+        Favorites.ensureLoaded()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
+    fun go(i: Int) { tab = i; scope.launch { drawer.close() } }
+
+    ModalNavigationDrawer(
+        drawerState = drawer,
+        drawerContent = {
+            ModalDrawerSheet {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text("Universal Media Downloader",
+                        style = MaterialTheme.typography.titleLarge)
+                    Text(lm.status(), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                val drawerIcons = listOf(Icons.Filled.Download, Icons.Filled.Subscriptions,
+                    Icons.Filled.Schedule, Icons.Filled.AutoAwesome)
+                sections.forEachIndexed { i, name ->
+                    NavigationDrawerItem(
+                        label = { Text(name) }, selected = tab == i,
+                        icon = {
+                            Icon(if (i < drawerIcons.size) drawerIcons[i]
+                                else Icons.AutoMirrored.Filled.Chat, contentDescription = null)
+                        },
+                        onClick = { go(i) },
+                        modifier = Modifier.padding(horizontal = 12.dp)
+                    )
+                }
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                NavigationDrawerItem(
+                    label = { Text("AI assistant settings") }, selected = false,
+                    icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
+                    onClick = { showAiKey = true; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                NavigationDrawerItem(
+                    label = { Text("About") }, selected = false,
+                    icon = { Icon(Icons.Filled.Info, contentDescription = null) },
+                    onClick = { showAbout = true; scope.launch { drawer.close() } },
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+            }
+        }
+    ) {
 
     Scaffold(
         topBar = {
@@ -176,9 +231,9 @@ fun App() {
                             color = MaterialTheme.colorScheme.primary)
                     }
                 },
-                actions = {
-                    IconButton(onClick = { showAbout = true }) {
-                        Icon(Icons.Filled.Info, contentDescription = "About")
+                navigationIcon = {
+                    IconButton(onClick = { scope.launch { drawer.open() } }) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Menu")
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
@@ -188,7 +243,7 @@ fun App() {
         },
         bottomBar = {
             Column {
-                MiniPlayer { showPlayer = true }
+                MiniPlayer { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true }
                 NavigationBar {
                 NavigationBarItem(
                     selected = tab == 0, onClick = { tab = 0 },
@@ -226,9 +281,12 @@ fun App() {
             }
         }
     }
+    }
 
     if (showAbout) AboutDialog(ctx, lm) { showAbout = false }
-    if (showPlayer && Playback.hasItem) PlayerScreen { showPlayer = false }
+    if (showAiKey) AiKeyDialog(ctx) { showAiKey = false }
+    if (showPlayer && Playback.hasItem && !Playback.isVideo) PlayerScreen { showPlayer = false }
+    if (Playback.showVideo && Playback.hasItem) VideoPlayerScreen { Playback.showVideo = false }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -570,6 +628,15 @@ fun LibraryScreen() {
             }
         }
 
+        val favs = Favorites.all().map { File(it) }.filter { it.exists() }
+        if (favs.isNotEmpty()) {
+            Button(onClick = { Playback.play(favs, 0) }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Filled.Favorite, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Play favorites (${favs.size})")
+            }
+        }
+
         SmartSearchSection(ctx, scope, entries, aiOn) { showAiKey = true }
         DuplicatesSection(ctx, scope)
         TitleCleanupSection(ctx, scope, entries, aiOn, { showAiKey = true }) { reload() }
@@ -807,6 +874,7 @@ fun AssistantScreen(ui: AssistantUi, scope: CoroutineScope) {
 
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = false,
         drawerContent = {
             ModalDrawerSheet {
                 Column(Modifier.fillMaxSize().padding(12.dp)) {
@@ -1277,14 +1345,10 @@ private fun AboutRow(label: String, value: String) {
 private val AUDIO_EXTS = setOf("mp3", "m4a", "aac", "opus", "ogg", "wav", "flac")
 private fun isAudioFile(f: File) = f.extension.lowercase() in AUDIO_EXTS
 
-/** Audio -> built-in player (with the rest of [queue] for next/prev); video -> external app. */
+/** Built-in player for both audio and video; queued with same-type siblings. */
 private fun playInApp(ctx: android.content.Context, queue: List<File>, f: File) {
-    if (isAudioFile(f)) {
-        val audio = queue.filter { isAudioFile(it) }.ifEmpty { listOf(f) }
-        Playback.play(audio, audio.indexOf(f).coerceAtLeast(0))
-    } else {
-        Storage.viewFile(ctx, f)
-    }
+    val sameType = queue.filter { isAudioFile(it) == isAudioFile(f) }.ifEmpty { listOf(f) }
+    Playback.play(sameType, sameType.indexOf(f).coerceAtLeast(0))
 }
 
 private fun fmtTime(ms: Long): String {
@@ -1326,6 +1390,7 @@ fun PlayerScreen(onClose: () -> Unit) {
     Dialog(onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false)) {
         var pos by remember { mutableStateOf(0L) }
+        var sleepMenu by remember { mutableStateOf(false) }
         LaunchedEffect(Playback.isPlaying, Playback.title) {
             while (true) { pos = Playback.position(); delay(500) }
         }
@@ -1357,7 +1422,37 @@ fun PlayerScreen(onClose: () -> Unit) {
                     Text(fmtTime(pos), style = MaterialTheme.typography.bodySmall)
                     Text(fmtTime(dur), style = MaterialTheme.typography.bodySmall)
                 }
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(10.dp))
+                // Extras: favorite · speed · sleep timer
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val fav = Favorites.isFavorite(Playback.currentPath)
+                    IconButton(onClick = { Favorites.toggle(Playback.currentPath) }) {
+                        Icon(if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                            contentDescription = "Favorite",
+                            tint = if (fav) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextButton(onClick = { Playback.cycleSpeed() }) { Text("${Playback.speed}x") }
+                    Box {
+                        TextButton(onClick = { sleepMenu = true }) {
+                            Icon(Icons.Filled.Bedtime, contentDescription = "Sleep timer")
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (Playback.sleepMinutes > 0) "${Playback.sleepMinutes}m" else "Off")
+                        }
+                        DropdownMenu(expanded = sleepMenu, onDismissRequest = { sleepMenu = false }) {
+                            listOf(0, 15, 30, 60).forEach { m ->
+                                DropdownMenuItem(
+                                    text = { Text(if (m == 0) "Sleep off" else "$m minutes") },
+                                    onClick = { Playback.scheduleSleep(m); sleepMenu = false })
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1391,6 +1486,43 @@ fun PlayerScreen(onClose: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@OptIn(UnstableApi::class)
+@Composable
+fun VideoPlayerScreen(onClose: () -> Unit) {
+    Dialog(onDismissRequest = onClose,
+        properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = Color.Black) {
+            Box(Modifier.fillMaxSize()) {
+                AndroidView(
+                    factory = { c ->
+                        PlayerView(c).apply {
+                            player = Playback.player()
+                            setShowSubtitleButton(true)
+                            setShowNextButton(true)
+                            setShowPreviousButton(true)
+                        }
+                    },
+                    update = { it.player = Playback.player() },
+                    modifier = Modifier.fillMaxSize()
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Close",
+                            tint = Color.White)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { Playback.cycleSpeed() }) {
+                        Text("${Playback.speed}x", color = Color.White)
+                    }
+                }
             }
         }
     }

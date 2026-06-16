@@ -22,8 +22,8 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.12"
+        versionCode = 14
+        versionName = "1.13"
 
         // Baked into BuildConfig at build time (not in the repo).
         buildConfigField("String", "UMD_SECRET", "\"$umdSecret\"")
@@ -82,7 +82,8 @@ dependencies {
     // Reliable HTTP for the AI calls (dead-connection detection / HTTP-2 / retries).
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // Built-in media player (ExoPlayer + a background MediaSession service).
+    // Built-in media player (ExoPlayer + a background MediaSession service + UI).
     implementation("androidx.media3:media3-exoplayer:1.3.1")
     implementation("androidx.media3:media3-session:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
 }
