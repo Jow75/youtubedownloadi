@@ -63,6 +63,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -493,10 +494,8 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
             enabled = !ui.busy, modifier = Modifier.fillMaxWidth()
         ) { Text("Update download engine (yt-dlp)") }
 
-        TextButton(onClick = { showAiKey = true }) { Text("🤖 AI assistant settings") }
-
         HorizontalDivider()
-        ContactLinks(ctx)
+        ContactLinks(ctx, websiteOnly = true)
         TextButton(onClick = { lm.deactivate(); onDeactivated() }) {
             Text("Remove license from this device")
         }
@@ -539,8 +538,11 @@ fun HistoryScreen(onRedownload: (url: String, audio: Boolean) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("${filtered.size} of ${entries.size}", style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.weight(1f))
-            TextButton(onClick = { History.clear(); refresh() }) { Text("Clear all") }
+            TextButton(onClick = { History.clear(); refresh() }) { Text("Clear log") }
         }
+        Text("Download log — clearing it keeps your media safe in the Library.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         val playQueue = filtered.map { File(it.path) }
         LazyColumn(
@@ -605,53 +607,121 @@ private fun humanSize(bytes: Long): String = when {
 fun LibraryScreen() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var entries by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
+    var refreshKey by remember { mutableStateOf(0) }
     var aiOn by remember { mutableStateOf(false) }
     var showAiKey by remember { mutableStateOf(false) }
-    fun reload() { entries = History.all(); aiOn = Ai.isConfigured(ctx) }
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { reload() }
-    LaunchedEffect(Unit) { reload() }
+    var tab by remember { mutableStateOf(0) }       // 0 = Audio, 1 = Video
+    var query by remember { mutableStateOf("") }
 
-    Column(
-        Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        if (!aiOn) {
-            ElevatedCard(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Smart search and title clean-up use the AI assistant.",
-                        style = MaterialTheme.typography.bodyMedium)
-                    Button(onClick = { showAiKey = true }, modifier = Modifier.fillMaxWidth()) {
-                        Text("🤖 Set up AI key")
-                    }
-                }
-            }
+    // The library IS the filesystem — independent of the History log. Clearing
+    // History never removes media here; it's scanned fresh from disk.
+    val allFiles = remember(refreshKey) {
+        Library.mediaFiles().sortedByDescending { it.lastModified() }
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refreshKey++; aiOn = Ai.isConfigured(ctx) }
+    LaunchedEffect(Unit) { aiOn = Ai.isConfigured(ctx) }
+
+    val audio = allFiles.filter { isAudioFile(it) }
+    val video = allFiles.filter { !isAudioFile(it) }
+    val queue = if (tab == 0) audio else video
+    val shown = queue.filter { query.isBlank() || it.nameWithoutExtension.contains(query, true) }
+    val favs = Favorites.all().map { File(it) }.filter { it.exists() }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(8.dp))
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            SegmentedButton(selected = tab == 0, onClick = { tab = 0 },
+                shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 Audio (${audio.size})") }
+            SegmentedButton(selected = tab == 1, onClick = { tab = 1 },
+                shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 Video (${video.size})") }
         }
-
-        val favs = Favorites.all().map { File(it) }.filter { it.exists() }
-        if (favs.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = query, onValueChange = { query = it },
+            label = { Text("Search your library") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (favs.isNotEmpty() && tab == 0) {
+            Spacer(Modifier.height(8.dp))
             Button(onClick = { Playback.play(favs, 0) }, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Filled.Favorite, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Play favorites (${favs.size})")
+                Spacer(Modifier.width(8.dp)); Text("Play favorites (${favs.size})")
             }
         }
-
-        SmartSearchSection(ctx, scope, entries, aiOn) { showAiKey = true }
-        DuplicatesSection(ctx, scope)
-        TitleCleanupSection(ctx, scope, entries, aiOn, { showAiKey = true }) { reload() }
-
         Spacer(Modifier.height(8.dp))
+
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth()
+        ) {
+            if (shown.isEmpty()) {
+                item {
+                    Text("No ${if (tab == 0) "audio" else "video"} here yet. Downloads stay " +
+                        "in your library permanently — clearing History won't remove them.",
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            items(shown, key = { it.absolutePath }) { f -> LibraryRow(ctx, f, queue) }
+
+            item {
+                Spacer(Modifier.height(14.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                Text("Tools", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(8.dp))
+                if (!aiOn) {
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Smart search and title clean-up use the AI assistant.",
+                                style = MaterialTheme.typography.bodyMedium)
+                            Button(onClick = { showAiKey = true }, modifier = Modifier.fillMaxWidth()) {
+                                Text("🤖 Set up AI key")
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+                SmartSearchSection(ctx, scope, allFiles, aiOn) { showAiKey = true }
+                Spacer(Modifier.height(8.dp))
+                DuplicatesSection(ctx, scope)
+                Spacer(Modifier.height(8.dp))
+                TitleCleanupSection(ctx, scope, allFiles, aiOn, { showAiKey = true }) { refreshKey++ }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
     }
 
     if (showAiKey) AiKeyDialog(ctx) { showAiKey = false }
 }
 
 @Composable
+private fun LibraryRow(ctx: android.content.Context, f: File, queue: List<File>) {
+    val fav = Favorites.isFavorite(f.absolutePath)
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.padding(start = 14.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(f.nameWithoutExtension, style = MaterialTheme.typography.bodyMedium,
+                maxLines = 2, modifier = Modifier.weight(1f))
+            IconButton(onClick = { Favorites.toggle(f.absolutePath) }) {
+                Icon(if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    contentDescription = "Favorite",
+                    tint = if (fav) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            FilledIconButton(onClick = { playInApp(ctx, queue, f) }) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
+            }
+        }
+    }
+}
+
+@Composable
 private fun SmartSearchSection(
     ctx: android.content.Context,
     scope: CoroutineScope,
-    entries: List<HistoryEntry>,
+    files: List<File>,
     aiOn: Boolean,
     onNeedKey: () -> Unit,
 ) {
@@ -659,22 +729,23 @@ private fun SmartSearchSection(
     var status by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<Pair<HistoryEntry, Float>>>(emptyList()) }
-    LaunchedEffect(entries.size) { indexed = SearchIndex.indexedCount() }
+    var results by remember { mutableStateOf<List<File>>(emptyList()) }
+    LaunchedEffect(files.size) { indexed = SearchIndex.indexedCount() }
+    val names = files.map { it.nameWithoutExtension }
 
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("🔎 Smart search", style = MaterialTheme.typography.titleMedium)
-            Text("Find downloads by meaning, not exact words — e.g. \"that calm " +
+            Text("Find media by meaning, not exact words — e.g. \"that calm " +
                 "piano study music\".", style = MaterialTheme.typography.bodySmall)
-            Text("Indexed: $indexed / ${entries.size}", style = MaterialTheme.typography.bodySmall)
+            Text("Indexed: $indexed / ${files.size}", style = MaterialTheme.typography.bodySmall)
 
             OutlinedButton(
                 onClick = {
                     if (!aiOn) onNeedKey() else {
                         busy = true; status = "Indexing…"
                         scope.launch {
-                            val r = SearchIndex.build(ctx, entries.map { it.title }) { d, t ->
+                            val r = SearchIndex.build(ctx, names) { d, t ->
                                 status = "Indexing $d / $t…"
                             }
                             indexed = SearchIndex.indexedCount()
@@ -683,7 +754,7 @@ private fun SmartSearchSection(
                         }
                     }
                 },
-                enabled = !busy && entries.isNotEmpty(), modifier = Modifier.fillMaxWidth()
+                enabled = !busy && files.isNotEmpty(), modifier = Modifier.fillMaxWidth()
             ) { Text("Build / refresh search index") }
 
             OutlinedTextField(
@@ -696,9 +767,9 @@ private fun SmartSearchSection(
                     if (!aiOn) onNeedKey() else {
                         busy = true; status = "Searching…"
                         scope.launch {
-                            val r = SearchIndex.search(ctx, query.trim(), entries.map { it.title })
-                            results = r.getOrDefault(emptyList()).mapNotNull { (title, score) ->
-                                entries.firstOrNull { it.title == title }?.let { it to score }
+                            val r = SearchIndex.search(ctx, query.trim(), names)
+                            results = r.getOrDefault(emptyList()).mapNotNull { (name, _) ->
+                                files.firstOrNull { it.nameWithoutExtension == name }
                             }
                             busy = false
                             status = r.fold(
@@ -720,19 +791,12 @@ private fun SmartSearchSection(
                 Text(status, style = MaterialTheme.typography.bodySmall)
             }
 
-            val resultFiles = results.map { File(it.first.path) }
-            results.forEach { (e, score) ->
-                val f = File(e.path)
-                Column {
-                    Text((if (e.audio) "🎵 " else "🎬 ") + e.title +
-                        "  ·  ${(score * 100).toInt()}%",
-                        style = MaterialTheme.typography.bodyMedium, maxLines = 2)
-                    if (f.exists()) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            TextButton(onClick = { playInApp(ctx, resultFiles, f) }) { Text("▶ Play") }
-                            TextButton(onClick = { Storage.shareFile(ctx, f) }) { Text("↗ Share") }
-                        }
-                    }
+            results.forEach { f ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text((if (isAudioFile(f)) "🎵 " else "🎬 ") + f.nameWithoutExtension,
+                        style = MaterialTheme.typography.bodyMedium, maxLines = 2,
+                        modifier = Modifier.weight(1f))
+                    TextButton(onClick = { playInApp(ctx, results, f) }) { Text("▶ Play") }
                 }
             }
         }
@@ -791,32 +855,33 @@ private fun DuplicatesSection(ctx: android.content.Context, scope: CoroutineScop
 private fun TitleCleanupSection(
     ctx: android.content.Context,
     scope: CoroutineScope,
-    entries: List<HistoryEntry>,
+    files: List<File>,
     aiOn: Boolean,
     onNeedKey: () -> Unit,
     onChanged: () -> Unit,
 ) {
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("") }
-    var cleaned by remember { mutableStateOf<List<Pair<HistoryEntry, Ai.TitleInfo>>>(emptyList()) }
+    var cleaned by remember { mutableStateOf<List<Pair<File, Ai.TitleInfo>>>(emptyList()) }
 
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("🏷️ Title clean-up", style = MaterialTheme.typography.titleMedium)
-            Text("AI suggests a clean artist · title · category for your downloads. " +
-                "Rename a file to tidy your library.", style = MaterialTheme.typography.bodySmall)
+            Text("AI suggests a clean artist · title · category for your files. " +
+                "Rename to tidy your library.", style = MaterialTheme.typography.bodySmall)
             Button(
                 onClick = {
                     if (!aiOn) onNeedKey() else {
                         busy = true; status = "Analyzing titles…"
                         scope.launch {
-                            val r = Ai.analyzeTitles(ctx, entries.map { it.title }) { done, total ->
+                            val names = files.map { it.nameWithoutExtension }
+                            val r = Ai.analyzeTitles(ctx, names) { done, total ->
                                 status = "Analyzing $done / $total…"
                             }
                             busy = false
                             r.fold(
                                 onSuccess = { m ->
-                                    cleaned = entries.mapNotNull { e -> m[e.title]?.let { e to it } }
+                                    cleaned = files.mapNotNull { f -> m[f.nameWithoutExtension]?.let { f to it } }
                                     status = if (cleaned.isEmpty()) "Nothing to clean." else ""
                                 },
                                 onFailure = { status = "Failed: ${it.message}" }
@@ -824,26 +889,24 @@ private fun TitleCleanupSection(
                         }
                     }
                 },
-                enabled = !busy && entries.isNotEmpty(), modifier = Modifier.fillMaxWidth()
+                enabled = !busy && files.isNotEmpty(), modifier = Modifier.fillMaxWidth()
             ) { Text(if (busy) "Analyzing…" else "Analyze titles (AI)") }
 
             if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
 
-            cleaned.forEach { (e, info) ->
+            cleaned.forEach { (f, info) ->
                 HorizontalDivider()
                 val suggested = listOfNotNull(info.artist, info.cleanTitle)
                     .joinToString(" — ").ifBlank { info.cleanTitle }
                 Column {
-                    Text("From: ${e.title}", style = MaterialTheme.typography.bodySmall)
+                    Text("From: ${f.nameWithoutExtension}", style = MaterialTheme.typography.bodySmall)
                     Text("→ $suggested  ·  ${info.category}",
                         style = MaterialTheme.typography.bodyMedium)
-                    val f = File(e.path)
                     if (f.exists()) {
                         TextButton(onClick = {
                             val nf = Library.rename(f, suggested)
                             if (nf != null) {
                                 Storage.scan(ctx, f); Storage.scan(ctx, nf)
-                                History.updatePath(e, nf.absolutePath, nf.nameWithoutExtension)
                                 onChanged()
                             }
                         }) { Text("Rename file to this") }
@@ -1494,6 +1557,17 @@ fun PlayerScreen(onClose: () -> Unit) {
 @OptIn(UnstableApi::class)
 @Composable
 fun VideoPlayerScreen(onClose: () -> Unit) {
+    // Default Fit preserves the source aspect ratio (fixes stretching); the user
+    // can switch like VLC. Stretch = fill, Crop = zoom-to-fill.
+    val modes = remember {
+        listOf(
+            "Fit" to AspectRatioFrameLayout.RESIZE_MODE_FIT,
+            "Stretch" to AspectRatioFrameLayout.RESIZE_MODE_FILL,
+            "Crop" to AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
+        )
+    }
+    var mode by remember { mutableStateOf(0) }
+
     Dialog(onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
@@ -1502,12 +1576,16 @@ fun VideoPlayerScreen(onClose: () -> Unit) {
                     factory = { c ->
                         PlayerView(c).apply {
                             player = Playback.player()
+                            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                             setShowSubtitleButton(true)
                             setShowNextButton(true)
                             setShowPreviousButton(true)
                         }
                     },
-                    update = { it.player = Playback.player() },
+                    update = {
+                        it.player = Playback.player()
+                        it.resizeMode = modes[mode].second
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
                 Row(
@@ -1519,6 +1597,9 @@ fun VideoPlayerScreen(onClose: () -> Unit) {
                             tint = Color.White)
                     }
                     Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { mode = (mode + 1) % modes.size }) {
+                        Text(modes[mode].first, color = Color.White)
+                    }
                     TextButton(onClick = { Playback.cycleSpeed() }) {
                         Text("${Playback.speed}x", color = Color.White)
                     }
@@ -1556,17 +1637,19 @@ fun DownloadDoneCard(ctx: android.content.Context, out: Downloader.Outcome) {
 }
 
 @Composable
-fun ContactLinks(ctx: android.content.Context) {
+fun ContactLinks(ctx: android.content.Context, websiteOnly: Boolean = false) {
     fun open(uri: String) = ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)))
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        TextButton(onClick = { open("mailto:phantomtyper.review@gmail.com") }) {
-            Text("📧 phantomtyper.review@gmail.com")
-        }
-        TextButton(onClick = { open("https://wa.me/254799553292") }) {
-            Text("💬 WhatsApp +254 799 553292")
-        }
-        TextButton(onClick = { open("https://wa.me/12103296074") }) {
-            Text("💬 WhatsApp +1 210 329 6074")
+        if (!websiteOnly) {
+            TextButton(onClick = { open("mailto:phantomtyper.review@gmail.com") }) {
+                Text("📧 phantomtyper.review@gmail.com")
+            }
+            TextButton(onClick = { open("https://wa.me/254799553292") }) {
+                Text("💬 WhatsApp +254 799 553292")
+            }
+            TextButton(onClick = { open("https://wa.me/12103296074") }) {
+                Text("💬 WhatsApp +1 210 329 6074")
+            }
         }
         TextButton(onClick = { open("https://baziqhue.co.ke/") }) {
             Text("🌐 baziqhue.co.ke")
