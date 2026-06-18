@@ -611,19 +611,13 @@ private fun humanSize(bytes: Long): String = when {
     else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
 }
 
-private fun artistOf(f: File): String {
-    val n = f.nameWithoutExtension
-    val i = n.indexOf(" - ")
-    return if (i > 0) n.substring(0, i).trim().ifBlank { "Unknown" } else "Unknown"
-}
-
 private val LIB_SORTS =
     listOf("Newest", "Oldest", "A–Z", "Artist", "Largest", "Recently played", "Most played")
 
 private fun sortLibrary(list: List<File>, sort: Int): List<File> = when (sort) {
     1 -> list.sortedBy { it.lastModified() }
     2 -> list.sortedBy { it.nameWithoutExtension.lowercase() }
-    3 -> list.sortedBy { artistOf(it).lowercase() }
+    3 -> list.sortedBy { MediaMeta.artist(it).lowercase() }
     4 -> list.sortedByDescending { it.length() }
     5 -> list.sortedByDescending { PlayStats.lastPlayed(it.absolutePath) }
     6 -> list.sortedByDescending { PlayStats.count(it.absolutePath) }
@@ -652,6 +646,10 @@ fun LibraryScreen() {
     val allFiles = remember(refreshKey) { Library.mediaFiles() }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refreshKey++; aiOn = Ai.isConfigured(ctx) }
     LaunchedEffect(Unit) { aiOn = Ai.isConfigured(ctx); Playlists.ensureLoaded(); PlayStats.ensureLoaded() }
+    // Warm the artist cache off the main thread (MediaMetadataRetriever is slow).
+    LaunchedEffect(allFiles) {
+        withContext(Dispatchers.IO) { allFiles.forEach { if (isAudioFile(it)) MediaMeta.artist(it) } }
+    }
 
     fun exitSelect() { selecting = false; selected.clear() }
 
@@ -695,7 +693,7 @@ fun LibraryScreen() {
             category == 4 && openArtist == null -> ArtistsList(allFiles) { openArtist = it }
             else -> Column(Modifier.fillMaxSize()) {
                 val source = when {
-                    category == 4 -> allFiles.filter { isAudioFile(it) && artistOf(it).equals(openArtist, true) }
+                    category == 4 -> allFiles.filter { isAudioFile(it) && MediaMeta.artist(it).equals(openArtist, true) }
                     category == 1 -> allFiles.filter { !isAudioFile(it) }
                     category == 2 -> { val fav = Favorites.all().toHashSet(); allFiles.filter { it.absolutePath in fav } }
                     else -> allFiles.filter { isAudioFile(it) }
@@ -930,21 +928,35 @@ private fun PlaylistDetail(id: String, onBack: () -> Unit) {
 
 @Composable
 private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
-    val artists = remember(allFiles) {
-        allFiles.filter { isAudioFile(it) }.groupBy { artistOf(it) }
-            .map { it.key to it.value.size }.sortedBy { it.first.lowercase() }
+    var artists by remember { mutableStateOf<List<Pair<String, Int>>?>(null) }
+    LaunchedEffect(allFiles) {
+        artists = withContext(Dispatchers.IO) {
+            allFiles.filter { isAudioFile(it) }.groupBy { MediaMeta.artist(it) }
+                .map { it.key to it.value.size }
+                .sortedWith(compareByDescending<Pair<String, Int>> { it.second }
+                    .thenBy { it.first.lowercase() })
+        }
     }
-    if (artists.isEmpty()) {
-        Text("No songs yet.", style = MaterialTheme.typography.bodyMedium)
-        return
-    }
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
-        items(artists, key = { it.first }) { (name, count) ->
-            ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(name) }) {
-                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(name, style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.weight(1f), maxLines = 1)
-                    Text("$count", style = MaterialTheme.typography.bodySmall)
+    when (val a = artists) {
+        null -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Text("Reading artist tags…", style = MaterialTheme.typography.bodySmall)
+        }
+        else -> if (a.isEmpty()) {
+            Text("No songs yet.", style = MaterialTheme.typography.bodyMedium)
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
+                items(a, key = { it.first }) { (name, count) ->
+                    ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(name) }) {
+                        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(name, style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.weight(1f), maxLines = 1)
+                            Text("$count song(s)", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }

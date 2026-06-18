@@ -32,6 +32,12 @@ object Downloader {
         "mp4", "mkv", "webm", "mov", "avi", "m4v",
     )
 
+    // yt-dlp prints the file it actually writes — parse it so we report the REAL
+    // download, not a guess from the folder (which could be a previous file).
+    private val DEST_RE = Regex("""Destination:\s*(.+)""")
+    private val MERGE_RE = Regex("""Merging formats into "(.+)"""")
+    private val ALREADY_RE = Regex("""\[download]\s+(.+?) has already been downloaded""")
+
     @Volatile private var ready = false
     @Volatile private var enginePrepared = false
     private val engineLock = Mutex()
@@ -148,12 +154,18 @@ object Downloader {
             // to keep re-tapping. Skip retries for clearly-permanent failures.
             var lastError: String? = null
             var succeeded = false
+            var destLine: String? = null   // last "Destination:" path yt-dlp printed
+            var mergeLine: String? = null  // "Merging formats into" path (video)
             val maxAttempts = 3
             for (attempt in 1..maxAttempts) {
                 try {
                     if (attempt > 1) onProgress(0f, "Site was flaky — retrying ($attempt/$maxAttempts)…")
                     YoutubeDL.getInstance().execute(req) { progress, _, line ->
-                        onProgress(if (progress < 0) 0f else progress, line.orEmpty())
+                        val l = line.orEmpty()
+                        DEST_RE.find(l)?.let { destLine = it.groupValues[1].trim() }
+                        MERGE_RE.find(l)?.let { mergeLine = it.groupValues[1].trim() }
+                        ALREADY_RE.find(l)?.let { destLine = it.groupValues[1].trim() }
+                        onProgress(if (progress < 0) 0f else progress, l)
                     }
                     succeeded = true
                     break
@@ -164,22 +176,25 @@ object Downloader {
             }
             if (!succeeded) return@withContext Result.failure(Exception(lastError ?: "Download failed"))
 
-            // Identify what actually landed: a new (or freshly rewritten) media
-            // file, biggest first (the final merged file dwarfs leftover parts).
+            // Prefer the file yt-dlp itself reported writing (authoritative).
+            val reported = (mergeLine ?: destLine)?.let { File(it) }?.takeIf {
+                it.exists() && it.extension.lowercase() in MEDIA_EXT
+            }
+            // Otherwise diff the folder for a genuinely NEW/changed media file.
+            // No stale fallback: if nothing was produced, this is a failure — we
+            // must never report a previously-downloaded file as the result.
             val after = dir.listFiles()?.toList() ?: emptyList()
-            val saved = after
-                .filter { f ->
-                    val prev = before[f.name]
-                    (prev == null || f.lastModified() > prev) &&
-                        f.extension.lowercase() in MEDIA_EXT
-                }
-                .maxByOrNull { it.length() }
-                ?: after.filter { it.extension.lowercase() in MEDIA_EXT }
-                    .maxByOrNull { it.lastModified() }
+            val saved = reported ?: after.filter { f ->
+                val prev = before[f.name]
+                (prev == null || f.lastModified() > prev) && f.extension.lowercase() in MEDIA_EXT
+            }.maxByOrNull { it.length() }
 
-            saved?.let { Storage.scan(context, it) }
+            if (saved == null) {
+                return@withContext Result.failure(
+                    Exception("Nothing was downloaded (the source may have failed, or it already exists)."))
+            }
+            Storage.scan(context, saved)
             Storage.scan(context, dir)
-
             Result.success(Outcome(saved, dir, "Saved to ${Storage.displayPath(dir)}"))
         } catch (e: Exception) {
             Result.failure(e)
