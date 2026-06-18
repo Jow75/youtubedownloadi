@@ -72,6 +72,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import coil.compose.AsyncImage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -253,6 +254,7 @@ fun App() {
         },
         bottomBar = {
             Column {
+                DownloadsBar { tab = 0 }
                 MiniPlayer { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true }
                 NavigationBar {
                 NavigationBarItem(
@@ -448,47 +450,18 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
 
         Button(
             onClick = {
-                ui.busy = true; ui.progress = 0f; ui.log = "Starting…"; ui.done = null
-                ui.failure = null; ui.aiExplanation = null
-                val reqUrl = ui.url.trim(); val reqAudio = ui.audio; val reqQ = ui.quality
-                scope.launch {
-                    val res = Downloader.download(ctx, reqUrl, reqAudio, reqQ) { p, line ->
-                        ui.progress = p / 100f
-                        if (line.isNotBlank()) ui.log = line
-                    }
-                    ui.busy = false
-                    res.fold(
-                        onSuccess = { out ->
-                            ui.done = out; ui.log = out.message; ui.failure = null
-                            out.file?.let { f ->
-                                History.add(HistoryEntry(
-                                    title = f.nameWithoutExtension, url = reqUrl, audio = reqAudio,
-                                    path = f.absolutePath, sizeBytes = f.length(),
-                                    timestamp = System.currentTimeMillis()
-                                ))
-                            }
-                        },
-                        onFailure = {
-                            ui.done = null
-                            ui.failure = it.message ?: "Download failed."
-                            ui.log = "Failed: ${it.message}"
-                        }
-                    )
+                val reqUrl = ui.url.trim()
+                if (reqUrl.isNotBlank()) {
+                    Downloads.enqueue(ctx, reqUrl, ui.audio, ui.quality, reqUrl)
+                    ui.url = ""
                 }
             },
-            enabled = ui.url.isNotBlank() && !ui.busy && hasStorage,
+            enabled = ui.url.isNotBlank() && hasStorage,
             modifier = Modifier.fillMaxWidth()
-        ) { Text(if (ui.busy) "Downloading…" else "⬇️ Download") }
+        ) { Text("⬇️ Download") }
 
-        if (ui.busy) LinearProgressIndicator(progress = { ui.progress }, modifier = Modifier.fillMaxWidth())
-        if (ui.log.isNotBlank() && ui.done == null && ui.failure == null)
-            Text(ui.log, style = MaterialTheme.typography.bodySmall)
-
-        ui.done?.let { DownloadDoneCard(ctx, it) }
-
-        if (ui.failure != null && !ui.busy) {
-            DownloadFailedCard(ctx, ui, scope) { showAiKey = true }
-        }
+        // Live downloads — they keep running in the background on every tab.
+        DownloadsList(ctx, scope) { showAiKey = true }
 
         Spacer(Modifier.height(8.dp))
         Text("Saves to: ${Storage.displayPath(Downloader.targetDir(ui.audio))}",
@@ -499,8 +472,8 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
         ) { Text("📂 Open downloads folder") }
 
         OutlinedButton(
-            onClick = { scope.launch { ui.log = Downloader.updateEngine(ctx); ui.done = null } },
-            enabled = !ui.busy, modifier = Modifier.fillMaxWidth()
+            onClick = { scope.launch { Downloader.updateEngine(ctx) } },
+            modifier = Modifier.fillMaxWidth()
         ) { Text("Update download engine (yt-dlp)") }
 
         HorizontalDivider()
@@ -1438,6 +1411,12 @@ private suspend fun runPlan(
     )
 }
 
+private fun fmtDur(s: Int): String {
+    if (s <= 0) return ""
+    val h = s / 3600; val m = (s % 3600) / 60; val sec = s % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChannelScreen() {
@@ -1446,111 +1425,207 @@ fun ChannelScreen() {
     var url by remember { mutableStateOf("") }
     var audio by remember { mutableStateOf(true) }
     var quality by remember { mutableStateOf("Best") }
-    var limit by remember { mutableStateOf("All") }
     var scanning by remember { mutableStateOf(false) }
     var entries by remember { mutableStateOf<List<Downloader.Entry>>(emptyList()) }
-    var busy by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf(0f) }
-    var log by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }
+    var page by remember { mutableStateOf(0) }
+    val selected = remember { mutableStateListOf<String>() }   // urls
     var hasStorage by remember { mutableStateOf(Storage.hasAccess(ctx)) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { hasStorage = Storage.hasAccess(ctx) }
 
-    Column(
-        Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("Download a whole channel, playlist or profile.",
-            style = MaterialTheme.typography.bodyMedium)
+    val perPage = 20
+    val filtered = entries.filter { query.isBlank() || it.title.contains(query, true) }
+    val pages = if (filtered.isEmpty()) 1 else (filtered.size + perPage - 1) / perPage
+    val pageClamped = page.coerceIn(0, pages - 1)
+    val pageItems = filtered.drop(pageClamped * perPage).take(perPage)
 
-        OutlinedTextField(
-            value = url, onValueChange = { url = it },
-            label = { Text("Channel / playlist / profile URL") },
-            singleLine = true, modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-        )
+    fun enqueueAll(list: List<Downloader.Entry>) {
+        list.forEach { Downloads.enqueue(ctx, it.url, audio, quality, it.title) }
+    }
 
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            SegmentedButton(selected = audio, onClick = { audio = true },
-                shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 Audio (MP3)") }
-            SegmentedButton(selected = !audio, onClick = { audio = false },
-                shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 Video (MP4)") }
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(url, { url = it },
+            label = { Text("Channel / playlist / profile URL") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = {
+                scanning = true; status = "Scanning…"; entries = emptyList(); selected.clear(); page = 0
+                scope.launch {
+                    val r = Downloader.scanEntries(ctx, url.trim())
+                    scanning = false
+                    r.fold(
+                        onSuccess = { entries = it; status = "Found ${it.size} item(s)." },
+                        onFailure = { status = "Scan failed: ${it.message}" })
+                }
+            },
+            enabled = url.isNotBlank() && !scanning, modifier = Modifier.fillMaxWidth()
+        ) { Text(if (scanning) "Scanning…" else "Scan channel / playlist") }
+
+        if (scanning) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        if (status.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(status, style = MaterialTheme.typography.bodySmall) }
+        if (!hasStorage && entries.isNotEmpty()) {
+            Text("Grant storage access on the Download tab first.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
-        if (!audio) {
+
+        if (entries.isEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Paste a channel, playlist or profile link and Scan. You'll get the full " +
+                "list — search, select items, choose MP3/MP4, and download. Downloads keep " +
+                "running while you browse other tabs.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            Spacer(Modifier.height(8.dp))
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                SegmentedButton(selected = audio, onClick = { audio = true },
+                    shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
+                SegmentedButton(selected = !audio, onClick = { audio = false },
+                    shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
+            }
+            if (!audio) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Best", "720p", "480p").forEach {
+                        FilterChip(selected = quality == it, onClick = { quality = it }, label = { Text(it) })
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(query, { query = it; page = 0 },
+                label = { Text("Search items") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    val pageUrls = pageItems.map { it.url }
+                    if (pageUrls.all { it in selected }) selected.removeAll(pageUrls.toSet())
+                    else pageUrls.forEach { if (it !in selected) selected.add(it) }
+                }) { Text("Select page") }
+                Text("${selected.size} selected", style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f))
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Best", "720p", "480p").forEach {
-                    FilterChip(selected = quality == it, onClick = { quality = it }, label = { Text(it) })
+                Button(enabled = hasStorage && selected.isNotEmpty(),
+                    onClick = {
+                        enqueueAll(entries.filter { it.url in selected }); status = "Queued ${selected.size}."
+                    },
+                    modifier = Modifier.weight(1f)) { Text("Download selected (${selected.size})") }
+                OutlinedButton(enabled = hasStorage && filtered.isNotEmpty(),
+                    onClick = { enqueueAll(filtered); status = "Queued ${filtered.size}." },
+                    modifier = Modifier.weight(1f)) { Text("All (${filtered.size})") }
+            }
+            Spacer(Modifier.height(8.dp))
+
+            LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(pageItems, key = { it.url }) { e ->
+                    val sel = e.url in selected
+                    ElevatedCard(Modifier.fillMaxWidth().clickable {
+                        if (sel) selected.remove(e.url) else selected.add(e.url)
+                    }) {
+                        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = sel, onCheckedChange = {
+                                if (sel) selected.remove(e.url) else selected.add(e.url)
+                            })
+                            if (e.thumb.isNotBlank()) {
+                                AsyncImage(model = e.thumb, contentDescription = null,
+                                    modifier = Modifier.size(width = 64.dp, height = 40.dp))
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Column(Modifier.weight(1f)) {
+                                Text(e.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                                if (e.durationSec > 0) Text(fmtDur(e.durationSec),
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            IconButton(enabled = hasStorage, onClick = {
+                                Downloads.enqueue(ctx, e.url, audio, quality, e.title)
+                                status = "Queued \"${e.title}\"."
+                            }) { Icon(Icons.Filled.Download, contentDescription = "Download this") }
+                        }
+                    }
+                }
+            }
+
+            if (pages > 1) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(enabled = pageClamped > 0, onClick = { page = pageClamped - 1 }) { Text("‹ Prev") }
+                    Text("Page ${pageClamped + 1} / $pages", textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    OutlinedButton(enabled = pageClamped < pages - 1, onClick = { page = pageClamped + 1 }) { Text("Next ›") }
                 }
             }
         }
+    }
+}
 
-        Text("How many?", style = MaterialTheme.typography.labelMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("All", "10", "25", "50").forEach {
-                FilterChip(selected = limit == it, onClick = { limit = it }, label = { Text(it) })
-            }
+@Composable
+fun DownloadsBar(onTap: () -> Unit) {
+    val active = Downloads.activeCount
+    if (active == 0) return
+    val cur = Downloads.tasks.firstOrNull { it.status == "running" }
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth().clickable { onTap() }
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+            Text("$active downloading…", style = MaterialTheme.typography.bodySmall,
+                maxLines = 1, modifier = Modifier.weight(1f))
+            cur?.let { Text("${(it.progress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall) }
         }
+    }
+}
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = {
-                    scanning = true; log = ""; entries = emptyList()
-                    scope.launch {
-                        val r = Downloader.scanEntries(ctx, url.trim())
-                        scanning = false
-                        r.fold(
-                            onSuccess = { entries = it; log = "Found ${it.size} item(s)." },
-                            onFailure = { log = "Scan failed: ${it.message}" }
-                        )
+@Composable
+fun DownloadsList(ctx: android.content.Context, scope: CoroutineScope, onNeedKey: () -> Unit) {
+    if (Downloads.tasks.isEmpty()) return
+    Spacer(Modifier.height(8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Downloads", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        TextButton(onClick = { Downloads.clearFinished() }) { Text("Clear finished") }
+    }
+    Downloads.tasks.forEach { t ->
+        key(t.id) {
+            var explanation by remember { mutableStateOf<String?>(null) }
+            var aiBusy by remember { mutableStateOf(false) }
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    val icon = when (t.status) {
+                        "done" -> "✅"; "failed" -> "❌"; "running" -> "⬇️"; else -> "⏳"
                     }
-                },
-                enabled = url.isNotBlank() && !scanning && !busy,
-                modifier = Modifier.weight(1f)
-            ) { Text(if (scanning) "Scanning…" else "Scan") }
-
-            Button(
-                onClick = {
-                    busy = true; progress = 0f; log = "Starting…"
-                    scope.launch {
-                        val r = Downloader.downloadAll(ctx, url.trim(), audio, quality, limit.toIntOrNull()) { p, line ->
-                            progress = p / 100f
-                            if (line.isNotBlank()) log = line
-                        }
-                        busy = false
-                        log = r.fold(
-                            { "✅ Downloaded $it file(s) to ${Storage.displayPath(Downloader.targetDir(audio))}" },
-                            { "❌ Failed: ${it.message}" })
+                    Text("$icon ${t.label}", style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                    if (t.status == "running") {
+                        LinearProgressIndicator(progress = { t.progress }, modifier = Modifier.fillMaxWidth())
                     }
-                },
-                enabled = url.isNotBlank() && hasStorage && !busy,
-                modifier = Modifier.weight(1f)
-            ) { Text(if (busy) "Downloading…" else "Download all") }
-        }
-
-        if (!hasStorage) {
-            Text("Grant storage access on the Download tab first.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error)
-        }
-
-        if (scanning) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        if (busy) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-        if (log.isNotBlank()) Text(log, style = MaterialTheme.typography.bodySmall)
-
-        if (entries.isNotEmpty()) {
-            HorizontalDivider()
-            Text("In this link:", style = MaterialTheme.typography.titleSmall)
-            entries.take(50).forEachIndexed { i, e ->
-                Text("${i + 1}. ${e.title}", style = MaterialTheme.typography.bodySmall, maxLines = 2)
-            }
-            if (entries.size > 50) {
-                Text("…and ${entries.size - 50} more",
-                    style = MaterialTheme.typography.bodySmall)
+                    if (t.detail.isNotBlank()) {
+                        Text(t.detail, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                    }
+                    if (t.status == "failed") {
+                        Button(
+                            onClick = {
+                                if (!Ai.isConfigured(ctx)) onNeedKey() else {
+                                    aiBusy = true
+                                    scope.launch {
+                                        explanation = Ai.explainError(ctx, t.label, t.detail)
+                                            .getOrElse { "Couldn't reach the AI: ${it.message}" }
+                                        aiBusy = false
+                                    }
+                                }
+                            },
+                            enabled = !aiBusy
+                        ) { Text(if (aiBusy) "Thinking…" else "💡 Explain & fix (AI)") }
+                        explanation?.let { Text("🤖 $it", style = MaterialTheme.typography.bodyMedium) }
+                    }
+                }
             }
         }
-
-        Spacer(Modifier.height(8.dp))
-        Text("Saves to: ${Storage.displayPath(Downloader.targetDir(audio))}",
-            style = MaterialTheme.typography.bodySmall)
     }
 }
 

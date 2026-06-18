@@ -202,7 +202,12 @@ object Downloader {
     }
 
     /** One item in a channel/playlist/profile. */
-    data class Entry(val title: String, val url: String)
+    data class Entry(
+        val title: String,
+        val url: String,
+        val durationSec: Int = 0,
+        val thumb: String = "",
+    )
 
     /**
      * List everything in a channel / playlist / profile URL without downloading
@@ -223,10 +228,23 @@ object Downloader {
                 if (arr != null) {
                     for (i in 0 until arr.length()) {
                         val e = arr.optJSONObject(i) ?: continue
+                        val id = e.optString("id")
                         val u = e.optString("url").ifBlank {
-                            e.optString("webpage_url").ifBlank { e.optString("id") }
+                            e.optString("webpage_url").ifBlank { id }
                         }
-                        if (u.isNotBlank()) list.add(Entry(e.optString("title").ifBlank { u }, u))
+                        if (u.isBlank()) continue
+                        val dur = e.optDouble("duration", 0.0).toInt()
+                        val thumb = run {
+                            val ta = e.optJSONArray("thumbnails")
+                            val fromArr = if (ta != null && ta.length() > 0)
+                                ta.optJSONObject(ta.length() - 1)?.optString("url").orEmpty() else ""
+                            when {
+                                fromArr.isNotBlank() -> fromArr
+                                id.length == 11 -> "https://i.ytimg.com/vi/$id/mqdefault.jpg"
+                                else -> ""
+                            }
+                        }
+                        list.add(Entry(e.optString("title").ifBlank { u }, u, dur, thumb))
                     }
                 } else {
                     val u = root.optString("webpage_url").ifBlank { url }

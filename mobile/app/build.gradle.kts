@@ -22,8 +22,8 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 18
-        versionName = "1.17"
+        versionCode = 19
+        versionName = "1.18"
 
         // Baked into BuildConfig at build time (not in the repo).
         buildConfigField("String", "UMD_SECRET", "\"$umdSecret\"")
@@ -86,4 +86,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.3.1")
     implementation("androidx.media3:media3-session:1.3.1")
     implementation("androidx.media3:media3-ui:1.3.1")
+
+    // Async image loading (channel thumbnails).
+    implementation("io.coil-kt:coil-compose:2.6.0")
 }
