@@ -661,7 +661,8 @@ fun LibraryScreen() {
                     Spacer(Modifier.height(16.dp))
                 }
             }
-            category == 3 && openPlaylist == null -> PlaylistsList { openPlaylist = it }
+            category == 3 && openPlaylist == null -> PlaylistsList(ctx, scope,
+                allFiles.filter { isAudioFile(it) }, aiOn, { showAiKey = true }) { openPlaylist = it }
             category == 3 -> PlaylistDetail(openPlaylist!!) { openPlaylist = null }
             category == 4 && openArtist == null -> ArtistsList(allFiles) { openArtist = it }
             else -> Column(Modifier.fillMaxSize()) {
@@ -799,19 +800,88 @@ private fun LibraryFileRow(
 }
 
 @Composable
-private fun PlaylistsList(onOpen: (String) -> Unit) {
+private fun PlaylistsList(
+    ctx: android.content.Context,
+    scope: CoroutineScope,
+    audioFiles: List<File>,
+    aiOn: Boolean,
+    onNeedKey: () -> Unit,
+    onOpen: (String) -> Unit,
+) {
     var newDialog by remember { mutableStateOf(false) }
     var renameId by remember { mutableStateOf<String?>(null) }
+    var aiBusy by remember { mutableStateOf(false) }
+    var aiStatus by remember { mutableStateOf("") }
     val lists = Playlists.all()
 
     Column(Modifier.fillMaxSize()) {
-        Button(onClick = { newDialog = true }, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Filled.Add, contentDescription = null)
-            Spacer(Modifier.width(8.dp)); Text("New playlist")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { newDialog = true }, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(8.dp)); Text("New")
+            }
+            OutlinedButton(
+                onClick = {
+                    when {
+                        !aiOn -> onNeedKey()
+                        audioFiles.isEmpty() -> aiStatus = "No songs to group yet."
+                        else -> {
+                            aiBusy = true; aiStatus = "Analyzing your library…"
+                            scope.launch {
+                                val r = Ai.classifyTracks(ctx, audioFiles.map { it.nameWithoutExtension }) { d, t ->
+                                    aiStatus = "Analyzing $d / $t…"
+                                }
+                                aiBusy = false
+                                r.fold(
+                                    onSuccess = { map ->
+                                        val groups = LinkedHashMap<String, MutableList<String>>()
+                                        fun add(name: String, path: String) {
+                                            groups.getOrPut(name) { mutableListOf() }.add(path)
+                                        }
+                                        audioFiles.forEach { f ->
+                                            val tg = map[f.nameWithoutExtension] ?: return@forEach
+                                            if (tg.genre.isNotBlank() && !tg.genre.equals("other", true))
+                                                add("🎵 ${tg.genre}", f.absolutePath)
+                                            if (tg.language.isNotBlank() && !tg.language.equals("unknown", true))
+                                                add("🗣 ${tg.language}", f.absolutePath)
+                                            if (tg.mood.isNotBlank() && !tg.mood.equals("unknown", true))
+                                                add("💫 ${tg.mood}", f.absolutePath)
+                                        }
+                                        var n = 0
+                                        groups.forEach { (name, paths) ->
+                                            if (paths.size >= 2) {
+                                                val pl = Playlists.all().firstOrNull { it.name == name }
+                                                    ?: Playlists.create(name)
+                                                Playlists.addPaths(pl.id, paths); n++
+                                            }
+                                        }
+                                        aiStatus = if (n == 0) "Not enough songs to group yet."
+                                        else "Built $n smart playlists by genre, language & mood."
+                                    },
+                                    onFailure = { aiStatus = "Failed: ${it.message}" }
+                                )
+                            }
+                        }
+                    }
+                },
+                enabled = !aiBusy, modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Filled.AutoAwesome, contentDescription = null)
+                Spacer(Modifier.width(6.dp)); Text(if (aiBusy) "Working…" else "Auto (AI)")
+            }
+        }
+        if (aiStatus.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (aiBusy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(aiStatus, style = MaterialTheme.typography.bodySmall)
+            }
         }
         Spacer(Modifier.height(8.dp))
         if (lists.isEmpty()) {
-            Text("No playlists yet. Create one, then add songs from any list (Select → +).",
+            Text("No playlists yet. Create one, add songs from any list (Select → +), or " +
+                "tap Auto (AI) to group your library by genre, language and mood.",
                 style = MaterialTheme.typography.bodyMedium)
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {

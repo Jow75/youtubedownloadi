@@ -248,6 +248,53 @@ object Ai {
         return null
     }
 
+    // ---- auto-playlists: classify by genre / language / mood --------------- #
+    data class TrackTags(val genre: String, val language: String, val mood: String)
+
+    suspend fun classifyTracks(
+        ctx: Context,
+        titles: List<String>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): Result<Map<String, TrackTags>> = withContext(Dispatchers.IO) {
+        val key = storedKey(ctx)
+        if (key.isBlank()) return@withContext Result.failure(IOException("No AI key configured."))
+        val uniq = titles.filter { it.isNotBlank() }.distinct()
+        if (uniq.isEmpty()) return@withContext Result.success(emptyMap())
+
+        val result = LinkedHashMap<String, TrackTags>()
+        val batch = 10
+        var i = 0
+        while (i < uniq.size) {
+            val chunk = uniq.subList(i, minOf(i + batch, uniq.size))
+            val prompt =
+                "Classify each media title. For EACH, return one JSON object IN THE SAME " +
+                "ORDER with: genre (1-2 words, e.g. Afrobeat, Bongo Flava, Amapiano, Gospel, " +
+                "Hip-Hop, R&B, Pop, Reggae, Drill, Dancehall, Country, Classical, or Other), " +
+                "language (main language: Swahili, English, French, Spanish, Hindi, Nigerian, " +
+                "Mixed, or Unknown), mood (one word: Chill, Hype, Happy, Sad, Romantic, Party, " +
+                "Workout, Focus). Return ONLY a JSON array.\n\nTitles:\n" +
+                chunk.mapIndexed { j, t -> "${j + 1}. $t" }.joinToString("\n")
+            try {
+                val arr = extractJsonArray(chat(key, prompt, maxTokens = 900, model = FAST_MODEL))
+                if (arr != null) {
+                    for (j in chunk.indices) {
+                        val o = arr.optJSONObject(j) ?: continue
+                        result[chunk[j]] = TrackTags(
+                            genre = o.optString("genre").trim(),
+                            language = o.optString("language").trim(),
+                            mood = o.optString("mood").trim(),
+                        )
+                    }
+                }
+            } catch (_: Exception) {
+            }
+            i += batch
+            onProgress(minOf(i, uniq.size), uniq.size)
+        }
+        if (result.isEmpty()) Result.failure(IOException("Couldn't classify — try again."))
+        else Result.success(result)
+    }
+
     // ---- chat assistant (natural language -> action) ----------------------- #
     data class AgentPlan(
         val action: String,       // download | search | channel | help
