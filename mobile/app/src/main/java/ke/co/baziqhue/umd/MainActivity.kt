@@ -11,17 +11,23 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
@@ -173,6 +179,8 @@ fun App() {
     LaunchedEffect(Unit) {
         Playback.init(ctx)
         Favorites.ensureLoaded()
+        Playlists.ensureLoaded()
+        PlayStats.ensureLoaded()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -603,6 +611,25 @@ private fun humanSize(bytes: Long): String = when {
     else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
 }
 
+private fun artistOf(f: File): String {
+    val n = f.nameWithoutExtension
+    val i = n.indexOf(" - ")
+    return if (i > 0) n.substring(0, i).trim().ifBlank { "Unknown" } else "Unknown"
+}
+
+private val LIB_SORTS =
+    listOf("Newest", "Oldest", "A–Z", "Artist", "Largest", "Recently played", "Most played")
+
+private fun sortLibrary(list: List<File>, sort: Int): List<File> = when (sort) {
+    1 -> list.sortedBy { it.lastModified() }
+    2 -> list.sortedBy { it.nameWithoutExtension.lowercase() }
+    3 -> list.sortedBy { artistOf(it).lowercase() }
+    4 -> list.sortedByDescending { it.length() }
+    5 -> list.sortedByDescending { PlayStats.lastPlayed(it.absolutePath) }
+    6 -> list.sortedByDescending { PlayStats.count(it.absolutePath) }
+    else -> list.sortedByDescending { it.lastModified() }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen() {
@@ -611,123 +638,367 @@ fun LibraryScreen() {
     var refreshKey by remember { mutableStateOf(0) }
     var aiOn by remember { mutableStateOf(false) }
     var showAiKey by remember { mutableStateOf(false) }
-    var tab by remember { mutableStateOf(0) }       // 0 = Audio, 1 = Video
+    var category by remember { mutableStateOf(0) }  // 0 Songs,1 Videos,2 Favorites,3 Playlists,4 Artists,5 Tools
     var query by remember { mutableStateOf("") }
-    var sort by remember { mutableStateOf(0) }      // 0 = Newest, 1 = Oldest, 2 = A–Z
+    var sort by remember { mutableStateOf(0) }
+    var sortMenu by remember { mutableStateOf(false) }
+    var openPlaylist by remember { mutableStateOf<String?>(null) }
+    var openArtist by remember { mutableStateOf<String?>(null) }
+    var selecting by remember { mutableStateOf(false) }
+    val selected = remember { mutableStateListOf<String>() }
+    var addTarget by remember { mutableStateOf<List<String>?>(null) }
 
-    // The library IS the filesystem — independent of the History log. Clearing
-    // History never removes media here; it's scanned fresh from disk.
-    val allFiles = remember(refreshKey) {
-        Library.mediaFiles().sortedByDescending { it.lastModified() }
-    }
+    // The library IS the filesystem — independent of the History log.
+    val allFiles = remember(refreshKey) { Library.mediaFiles() }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refreshKey++; aiOn = Ai.isConfigured(ctx) }
-    LaunchedEffect(Unit) { aiOn = Ai.isConfigured(ctx) }
+    LaunchedEffect(Unit) { aiOn = Ai.isConfigured(ctx); Playlists.ensureLoaded(); PlayStats.ensureLoaded() }
 
-    val audio = allFiles.filter { isAudioFile(it) }
-    val video = allFiles.filter { !isAudioFile(it) }
-    val base = if (tab == 0) audio else video
-    val queue = when (sort) {
-        1 -> base.sortedBy { it.lastModified() }                       // Oldest
-        2 -> base.sortedBy { it.nameWithoutExtension.lowercase() }     // A–Z
-        else -> base                                                   // Newest
-    }
-    val shown = queue.filter { query.isBlank() || it.nameWithoutExtension.contains(query, true) }
-    val favs = Favorites.all().map { File(it) }.filter { it.exists() }
+    fun exitSelect() { selecting = false; selected.clear() }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(8.dp))
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            SegmentedButton(selected = tab == 0, onClick = { tab = 0 },
-                shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 Audio (${audio.size})") }
-            SegmentedButton(selected = tab == 1, onClick = { tab = 1 },
-                shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 Video (${video.size})") }
-        }
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = query, onValueChange = { query = it },
-            label = { Text("Search your library") }, singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Newest", "Oldest", "A–Z").forEachIndexed { i, lbl ->
-                FilterChip(selected = sort == i, onClick = { sort = i }, label = { Text(lbl) })
-            }
-        }
-        if (favs.isNotEmpty() && tab == 0) {
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = { Playback.play(favs, 0) }, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Filled.Favorite, contentDescription = null)
-                Spacer(Modifier.width(8.dp)); Text("Play favorites (${favs.size})")
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.weight(1f).fillMaxWidth()
-        ) {
-            if (shown.isEmpty()) {
-                item {
-                    Text("No ${if (tab == 0) "audio" else "video"} here yet. Downloads stay " +
-                        "in your library permanently — clearing History won't remove them.",
-                        style = MaterialTheme.typography.bodyMedium)
+        Row(Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("All Songs", "Videos", "Favorites", "Playlists", "Artists", "Tools")
+                .forEachIndexed { i, lbl ->
+                    FilterChip(selected = category == i, onClick = {
+                        category = i; openPlaylist = null; openArtist = null; exitSelect()
+                    }, label = { Text(lbl) })
                 }
-            }
-            items(shown, key = { it.absolutePath }) { f -> LibraryRow(ctx, f, queue) }
+        }
+        Spacer(Modifier.height(8.dp))
 
-            item {
-                Spacer(Modifier.height(14.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(8.dp))
-                Text("Tools", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(8.dp))
-                if (!aiOn) {
-                    ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("Smart search and title clean-up use the AI assistant.",
-                                style = MaterialTheme.typography.bodyMedium)
-                            Button(onClick = { showAiKey = true }, modifier = Modifier.fillMaxWidth()) {
-                                Text("🤖 Set up AI key")
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+        when {
+            category == 5 -> {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!aiOn) {
+                        ElevatedCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Smart search and title clean-up use the AI assistant.",
+                                    style = MaterialTheme.typography.bodyMedium)
+                                Button(onClick = { showAiKey = true }, modifier = Modifier.fillMaxWidth()) {
+                                    Text("🤖 Set up AI key")
+                                }
                             }
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    SmartSearchSection(ctx, scope, allFiles, aiOn) { showAiKey = true }
+                    DuplicatesSection(ctx, scope)
+                    TitleCleanupSection(ctx, scope, allFiles, aiOn, { showAiKey = true }) { refreshKey++ }
+                    Spacer(Modifier.height(16.dp))
                 }
-                SmartSearchSection(ctx, scope, allFiles, aiOn) { showAiKey = true }
-                Spacer(Modifier.height(8.dp))
-                DuplicatesSection(ctx, scope)
-                Spacer(Modifier.height(8.dp))
-                TitleCleanupSection(ctx, scope, allFiles, aiOn, { showAiKey = true }) { refreshKey++ }
-                Spacer(Modifier.height(16.dp))
             }
+            category == 3 && openPlaylist == null -> PlaylistsList { openPlaylist = it }
+            category == 3 -> PlaylistDetail(openPlaylist!!) { openPlaylist = null }
+            category == 4 && openArtist == null -> ArtistsList(allFiles) { openArtist = it }
+            else -> Column(Modifier.fillMaxSize()) {
+                val source = when {
+                    category == 4 -> allFiles.filter { isAudioFile(it) && artistOf(it).equals(openArtist, true) }
+                    category == 1 -> allFiles.filter { !isAudioFile(it) }
+                    category == 2 -> { val fav = Favorites.all().toHashSet(); allFiles.filter { it.absolutePath in fav } }
+                    else -> allFiles.filter { isAudioFile(it) }
+                }
+                val files = sortLibrary(source, sort)
+                    .filter { query.isBlank() || it.nameWithoutExtension.contains(query, true) }
+
+                if (category == 4 && openArtist != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { openArtist = null; exitSelect() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                        Text(openArtist!!, style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f), maxLines = 1)
+                    }
+                }
+
+                OutlinedTextField(query, { query = it }, label = { Text("Search") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box {
+                        OutlinedButton(onClick = { sortMenu = true }) { Text("Sort: ${LIB_SORTS[sort]}") }
+                        DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                            LIB_SORTS.forEachIndexed { i, n ->
+                                DropdownMenuItem(text = { Text(n) }, onClick = { sort = i; sortMenu = false })
+                            }
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (files.isNotEmpty()) {
+                        TextButton(onClick = { selecting = !selecting; if (!selecting) selected.clear() }) {
+                            Text(if (selecting) "Done" else "Select")
+                        }
+                    }
+                }
+
+                if (selecting) {
+                    val selFiles = files.filter { it.absolutePath in selected }
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        TextButton(onClick = {
+                            if (selected.size == files.size) selected.clear()
+                            else { selected.clear(); selected.addAll(files.map { it.absolutePath }) }
+                        }) { Text("All") }
+                        Text("${selected.size}", style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f))
+                        IconButton(enabled = selFiles.isNotEmpty(), onClick = { Playback.play(selFiles, 0) }) {
+                            Icon(Icons.Filled.PlayArrow, "Play")
+                        }
+                        IconButton(enabled = selFiles.isNotEmpty(), onClick = { addTarget = selected.toList() }) {
+                            Icon(Icons.Filled.Add, "Add to playlist")
+                        }
+                        IconButton(enabled = selFiles.isNotEmpty(), onClick = { Storage.shareFiles(ctx, selFiles) }) {
+                            Icon(Icons.Filled.Share, "Share")
+                        }
+                        IconButton(enabled = selFiles.isNotEmpty(), onClick = {
+                            selFiles.forEach { if (it.delete()) Storage.scan(ctx, it) }
+                            exitSelect(); refreshKey++
+                        }) { Icon(Icons.Filled.Delete, "Delete") }
+                    }
+                } else if (files.isNotEmpty()) {
+                    Button(onClick = { Playback.play(files, 0) }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                        Spacer(Modifier.width(8.dp)); Text("Play all (${files.size})")
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+
+                if (files.isEmpty()) {
+                    Text("Nothing here yet. Downloads stay in your library permanently — " +
+                        "clearing History won't remove them.",
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+                LazyColumn(Modifier.weight(1f).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(files, key = { it.absolutePath }) { f ->
+                        LibraryFileRow(ctx, f, files, selecting,
+                            isSelected = f.absolutePath in selected,
+                            onToggle = {
+                                if (f.absolutePath in selected) selected.remove(f.absolutePath)
+                                else selected.add(f.absolutePath)
+                            })
+                    }
+                }
+            }
+        }
         }
     }
 
+    addTarget?.let { paths -> AddToPlaylistDialog(paths) { addTarget = null; exitSelect() } }
     if (showAiKey) AiKeyDialog(ctx) { showAiKey = false }
 }
 
 @Composable
-private fun LibraryRow(ctx: android.content.Context, f: File, queue: List<File>) {
+private fun LibraryFileRow(
+    ctx: android.content.Context,
+    f: File,
+    queue: List<File>,
+    selecting: Boolean,
+    isSelected: Boolean,
+    onToggle: () -> Unit,
+) {
     val fav = Favorites.isFavorite(f.absolutePath)
-    ElevatedCard(Modifier.fillMaxWidth()) {
+    ElevatedCard(
+        Modifier.fillMaxWidth().clickable {
+            if (selecting) onToggle() else playInApp(ctx, queue, f)
+        }
+    ) {
         Row(
-            Modifier.padding(start = 14.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+            Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (selecting) Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
             Text(f.nameWithoutExtension, style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2, modifier = Modifier.weight(1f))
-            IconButton(onClick = { Favorites.toggle(f.absolutePath) }) {
-                Icon(if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                    contentDescription = "Favorite",
-                    tint = if (fav) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            FilledIconButton(onClick = { playInApp(ctx, queue, f) }) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
+                maxLines = 2, modifier = Modifier.weight(1f).padding(vertical = 6.dp))
+            if (!selecting) {
+                IconButton(onClick = { Favorites.toggle(f.absolutePath) }) {
+                    Icon(if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = "Favorite",
+                        tint = if (fav) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                FilledIconButton(onClick = { playInApp(ctx, queue, f) }) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
+                }
             }
         }
     }
+}
+
+@Composable
+private fun PlaylistsList(onOpen: (String) -> Unit) {
+    var newDialog by remember { mutableStateOf(false) }
+    var renameId by remember { mutableStateOf<String?>(null) }
+    val lists = Playlists.all()
+
+    Column(Modifier.fillMaxSize()) {
+        Button(onClick = { newDialog = true }, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.Add, contentDescription = null)
+            Spacer(Modifier.width(8.dp)); Text("New playlist")
+        }
+        Spacer(Modifier.height(8.dp))
+        if (lists.isEmpty()) {
+            Text("No playlists yet. Create one, then add songs from any list (Select → +).",
+                style = MaterialTheme.typography.bodyMedium)
+        }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+            items(lists, key = { it.id }) { pl ->
+                var menu by remember { mutableStateOf(false) }
+                ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(pl.id) }) {
+                    Row(Modifier.padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).padding(vertical = 10.dp)) {
+                            Text(pl.name, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                            Text("${pl.paths.size} song(s)", style = MaterialTheme.typography.bodySmall)
+                        }
+                        IconButton(onClick = {
+                            val files = pl.paths.map { File(it) }.filter { it.exists() }
+                            if (files.isNotEmpty()) Playback.play(files, 0)
+                        }) { Icon(Icons.Filled.PlayArrow, "Play") }
+                        Box {
+                            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(text = { Text("Rename") },
+                                    onClick = { menu = false; renameId = pl.id })
+                                DropdownMenuItem(text = { Text("Delete") },
+                                    onClick = { menu = false; Playlists.delete(pl.id) })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (newDialog) {
+        PlaylistNameDialog("New playlist", "") { name ->
+            if (name != null) Playlists.create(name); newDialog = false
+        }
+    }
+    renameId?.let { id ->
+        PlaylistNameDialog("Rename playlist", Playlists.get(id)?.name ?: "") { name ->
+            if (name != null) Playlists.rename(id, name); renameId = null
+        }
+    }
+}
+
+@Composable
+private fun PlaylistDetail(id: String, onBack: () -> Unit) {
+    val pl = Playlists.get(id)
+    val paths = pl?.paths?.toList() ?: emptyList()
+    val existing = paths.map { File(it) }.filter { it.exists() }
+    Column(Modifier.fillMaxSize()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+            Text(pl?.name ?: "Playlist", style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f), maxLines = 1)
+            if (existing.isNotEmpty()) {
+                TextButton(onClick = { Playback.play(existing, 0) }) {
+                    Icon(Icons.Filled.PlayArrow, null); Spacer(Modifier.width(4.dp)); Text("Play")
+                }
+            }
+        }
+        if (paths.isEmpty()) {
+            Text("Empty. Add songs from any list: tap Select, pick songs, then +.",
+                style = MaterialTheme.typography.bodyMedium)
+        }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+            itemsIndexed(paths, key = { _, p -> p }) { i, p ->
+                val f = File(p); val ok = f.exists()
+                ElevatedCard(Modifier.fillMaxWidth().clickable {
+                    if (ok) Playback.play(existing, existing.indexOf(f).coerceAtLeast(0))
+                }) {
+                    Row(Modifier.padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(f.nameWithoutExtension + (if (!ok) "  (missing)" else ""),
+                            style = MaterialTheme.typography.bodyMedium, maxLines = 2,
+                            modifier = Modifier.weight(1f).padding(vertical = 6.dp))
+                        IconButton(enabled = i > 0, onClick = { Playlists.move(id, i, i - 1) }) {
+                            Icon(Icons.Filled.KeyboardArrowUp, "Up")
+                        }
+                        IconButton(enabled = i < paths.lastIndex, onClick = { Playlists.move(id, i, i + 1) }) {
+                            Icon(Icons.Filled.KeyboardArrowDown, "Down")
+                        }
+                        IconButton(onClick = { Playlists.removePath(id, p) }) {
+                            Icon(Icons.Filled.Close, "Remove")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
+    val artists = remember(allFiles) {
+        allFiles.filter { isAudioFile(it) }.groupBy { artistOf(it) }
+            .map { it.key to it.value.size }.sortedBy { it.first.lowercase() }
+    }
+    if (artists.isEmpty()) {
+        Text("No songs yet.", style = MaterialTheme.typography.bodyMedium)
+        return
+    }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
+        items(artists, key = { it.first }) { (name, count) ->
+            ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(name) }) {
+                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(name, style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier.weight(1f), maxLines = 1)
+                    Text("$count", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddToPlaylistDialog(paths: List<String>, onDone: () -> Unit) {
+    var newName by remember { mutableStateOf("") }
+    val lists = Playlists.all()
+    AlertDialog(
+        onDismissRequest = onDone,
+        confirmButton = {
+            TextButton(onClick = {
+                if (newName.isNotBlank()) {
+                    val p = Playlists.create(newName); Playlists.addPaths(p.id, paths)
+                }
+                onDone()
+            }) { Text("Done") }
+        },
+        title = { Text("Add ${paths.size} to playlist") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                lists.forEach { pl ->
+                    TextButton(onClick = { Playlists.addPaths(pl.id, paths); onDone() },
+                        modifier = Modifier.fillMaxWidth()) {
+                        Text("${pl.name}  (${pl.paths.size})", modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                HorizontalDivider()
+                OutlinedTextField(newName, { newName = it },
+                    label = { Text("…or new playlist name") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth())
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlaylistNameDialog(title: String, initial: String, onResult: (String?) -> Unit) {
+    var name by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = { onResult(null) },
+        confirmButton = { TextButton(onClick = { onResult(name) }, enabled = name.isNotBlank()) { Text("Save") } },
+        dismissButton = { TextButton(onClick = { onResult(null) }) { Text("Cancel") } },
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(name, { name = it }, label = { Text("Name") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth())
+        }
+    )
 }
 
 @Composable

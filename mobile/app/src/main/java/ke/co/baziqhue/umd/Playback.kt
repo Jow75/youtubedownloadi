@@ -30,6 +30,7 @@ object Playback {
     private var controller: MediaController? = null
     private val handler = Handler(Looper.getMainLooper())
     private var sleepRunnable: Runnable? = null
+    private var lastStatPath = ""
 
     var ready by mutableStateOf(false); private set
     var hasItem by mutableStateOf(false); private set
@@ -75,6 +76,11 @@ object Playback {
         shuffle = c.shuffleModeEnabled
         repeatMode = c.repeatMode
         speed = c.playbackParameters.speed
+        // Count a play when a new track becomes current.
+        if (currentPath.isNotBlank() && currentPath != lastStatPath) {
+            lastStatPath = currentPath
+            PlayStats.record(currentPath)
+        }
     }
 
     /** Replace the queue with [files] and start at [startIndex]. */

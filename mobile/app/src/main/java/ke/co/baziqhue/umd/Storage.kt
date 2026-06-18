@@ -138,6 +138,24 @@ object Storage {
         }
     }
 
+    /** Share several files at once (bulk). */
+    fun shareFiles(ctx: Context, files: List<File>) {
+        if (files.isEmpty()) return
+        if (files.size == 1) { shareFile(ctx, files[0]); return }
+        try {
+            val uris = ArrayList<android.os.Parcelable>(files.size)
+            files.forEach { uris.add(uriFor(ctx, it)) }
+            val i = Intent(Intent.ACTION_SEND_MULTIPLE)
+                .setType("*/*")
+                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            ctx.startActivity(Intent.createChooser(i, "Share")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            toast(ctx, "Can't share: ${e.message}")
+        }
+    }
+
     /**
      * Best-effort "show me the folder". Android has no universal open-folder
      * intent, so we try the system Downloads UI (our files live under Download/…)
