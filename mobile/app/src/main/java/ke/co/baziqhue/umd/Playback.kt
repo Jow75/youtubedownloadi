@@ -102,6 +102,16 @@ object Playback {
         if (c.isPlaying) c.pause() else c.play()
     }
 
+    /** Fully close the session: stop, clear the queue, drop the notification + UI. */
+    fun stop() {
+        val c = controller ?: return
+        scheduleSleep(0)
+        c.stop()
+        c.clearMediaItems()
+        showVideo = false
+        sync()
+    }
+
     fun next() { controller?.seekToNextMediaItem() }
     fun prev() { controller?.seekToPreviousMediaItem() }
     fun seekTo(ms: Long) { controller?.seekTo(ms.coerceAtLeast(0)) }

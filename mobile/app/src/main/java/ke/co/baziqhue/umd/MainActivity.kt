@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -612,6 +613,7 @@ fun LibraryScreen() {
     var showAiKey by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }       // 0 = Audio, 1 = Video
     var query by remember { mutableStateOf("") }
+    var sort by remember { mutableStateOf(0) }      // 0 = Newest, 1 = Oldest, 2 = A–Z
 
     // The library IS the filesystem — independent of the History log. Clearing
     // History never removes media here; it's scanned fresh from disk.
@@ -623,7 +625,12 @@ fun LibraryScreen() {
 
     val audio = allFiles.filter { isAudioFile(it) }
     val video = allFiles.filter { !isAudioFile(it) }
-    val queue = if (tab == 0) audio else video
+    val base = if (tab == 0) audio else video
+    val queue = when (sort) {
+        1 -> base.sortedBy { it.lastModified() }                       // Oldest
+        2 -> base.sortedBy { it.nameWithoutExtension.lowercase() }     // A–Z
+        else -> base                                                   // Newest
+    }
     val shown = queue.filter { query.isBlank() || it.nameWithoutExtension.contains(query, true) }
     val favs = Favorites.all().map { File(it) }.filter { it.exists() }
 
@@ -641,6 +648,12 @@ fun LibraryScreen() {
             label = { Text("Search your library") }, singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Newest", "Oldest", "A–Z").forEachIndexed { i, lbl ->
+                FilterChip(selected = sort == i, onClick = { sort = i }, label = { Text(lbl) })
+            }
+        }
         if (favs.isNotEmpty() && tab == 0) {
             Spacer(Modifier.height(8.dp))
             Button(onClick = { Playback.play(favs, 0) }, modifier = Modifier.fillMaxWidth()) {
@@ -1086,7 +1099,7 @@ private fun assistantSend(ctx: Context, scope: CoroutineScope, ui: AssistantUi, 
                 "I need an AI key first — go to Download → \"AI assistant settings\" and paste your NVIDIA key."))
         } else {
             Ai.agentPlan(ctx, text).fold(
-                onSuccess = { plan -> runPlan(ctx, session, plan) },
+                onSuccess = { plan -> runPlan(ctx, session, text, plan) },
                 onFailure = { session.messages.add(ChatMsg(false, "Sorry — ${it.message}")) }
             )
         }
@@ -1095,7 +1108,9 @@ private fun assistantSend(ctx: Context, scope: CoroutineScope, ui: AssistantUi, 
     }
 }
 
-private suspend fun runPlan(ctx: Context, session: ChatSession, plan: Ai.AgentPlan) {
+private suspend fun runPlan(
+    ctx: Context, session: ChatSession, instruction: String, plan: Ai.AgentPlan,
+) {
     if (plan.action == "help") {
         session.messages.add(ChatMsg(false, plan.answer ?: "How can I help with your downloads?"))
         return
@@ -1105,14 +1120,17 @@ private suspend fun runPlan(ctx: Context, session: ChatSession, plan: Ai.AgentPl
             "I need storage access first — open the Download tab and tap \"Grant storage access\"."))
         return
     }
-    val url = when {
-        !plan.url.isNullOrBlank() -> plan.url
-        !plan.query.isNullOrBlank() -> "ytsearch1:${plan.query}"
-        else -> null
-    }
-    if (url == null) {
+    // Always act on THIS message: use a link the user actually pasted; otherwise
+    // search the user's own words. Never reuse a model-recalled/hallucinated URL.
+    val pastedUrl = Regex("""https?://\S+""").find(instruction)?.value
+    val searchText = plan.query?.takeIf { it.isNotBlank() }
+        ?: instruction.replace(
+            Regex("(?i)\\b(please|download|get me|get|grab|play|find|the|a|an|song|track|video|by|for me)\\b"),
+            " ").replace(Regex("\\s+"), " ").trim()
+    val target = pastedUrl ?: if (searchText.isNotBlank()) "ytsearch1:$searchText" else null
+    if (target == null) {
         session.messages.add(ChatMsg(false,
-            plan.answer ?: "I couldn't find anything to download — give me a link or a song/video name."))
+            plan.answer ?: "I couldn't tell what to download — give me a link or a song/video name."))
         return
     }
     val audio = !plan.fmt.equals("mp4", ignoreCase = true)
@@ -1121,16 +1139,17 @@ private suspend fun runPlan(ctx: Context, session: ChatSession, plan: Ai.AgentPl
         plan.quality.contains("480") -> "480p"
         else -> "Best"
     }
+    val label = pastedUrl ?: searchText
     session.messages.add(ChatMsg(false,
-        "On it — downloading ${if (audio) "audio (MP3)" else "video (MP4)"}…"))
-    Downloader.download(ctx, url, audio, quality) { _, _ -> }.fold(
+        "On it — downloading \"$label\" as ${if (audio) "MP3" else "MP4"}…"))
+    Downloader.download(ctx, target, audio, quality) { _, _ -> }.fold(
         onSuccess = { out ->
             out.file?.let { f ->
-                History.add(HistoryEntry(f.nameWithoutExtension, url, audio,
+                History.add(HistoryEntry(f.nameWithoutExtension, target, audio,
                     f.absolutePath, f.length(), System.currentTimeMillis()))
             }
-            session.messages.add(ChatMsg(false, "✅ Done — saved to ${Storage.displayPath(out.dir)}" +
-                (out.file?.let { "\n${it.name}" } ?: "")))
+            session.messages.add(ChatMsg(false,
+                "✅ Done — ${out.file?.nameWithoutExtension ?: "saved"}  →  ${Storage.displayPath(out.dir)}"))
         },
         onFailure = { session.messages.add(ChatMsg(false, "❌ Couldn't download it: ${it.message}")) }
     )
@@ -1444,6 +1463,9 @@ fun MiniPlayer(onExpand: () -> Unit) {
             IconButton(onClick = { Playback.next() }) {
                 Icon(Icons.Filled.SkipNext, contentDescription = "Next")
             }
+            IconButton(onClick = { Playback.stop() }) {
+                Icon(Icons.Filled.Close, contentDescription = "Close player")
+            }
         }
     }
 }
@@ -1463,9 +1485,14 @@ fun PlayerScreen(onClose: () -> Unit) {
                 Modifier.fillMaxSize().padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onClose) {
-                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Close")
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Minimize")
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { Playback.stop(); onClose() }) {
+                        Icon(Icons.Filled.Close, contentDescription = null)
+                        Spacer(Modifier.width(4.dp)); Text("Stop")
                     }
                 }
                 Spacer(Modifier.weight(1f))

@@ -287,7 +287,10 @@ object Ai {
                 "specific media URL; 'channel' if they gave a channel/profile URL or want " +
                 "a whole channel/artist; 'search' to find something by name; 'help' to " +
                 "answer ANY question — about the app (use the ABOUT info above) or general " +
-                "knowledge); url (string or null); query (search/artist text or null); " +
+                "knowledge); url (set this ONLY if the user literally pasted a web link in " +
+                "THIS message; otherwise it MUST be null — never invent or recall a link); " +
+                "query (the exact song/video/artist name to search for — always fill this " +
+                "for a request by name, copied from THIS message); " +
                 "fmt ('mp3' for songs/audio — the default — or 'mp4' for video); quality " +
                 "('Best Available' default, or '720p'/'480p'); count (1-10, default 1); " +
                 "answer (a helpful reply when action is 'help', else null). For 'help' " +
