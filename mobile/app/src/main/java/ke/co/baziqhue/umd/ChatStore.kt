@@ -26,7 +26,8 @@ object ChatStore {
                 val ma = o.optJSONArray("messages") ?: JSONArray()
                 for (j in 0 until ma.length()) {
                     val m = ma.optJSONObject(j) ?: continue
-                    msgs.add(ChatMsg(m.optBoolean("u"), m.optString("t")))
+                    msgs.add(ChatMsg(m.optBoolean("u"), m.optString("t"),
+                        m.optString("f").ifBlank { null }))
                 }
                 list.add(ChatSession(o.optString("id"), o.optString("title", "New chat"), msgs))
             }
@@ -45,7 +46,9 @@ object ChatStore {
                 // Copy to a plain list first to avoid concurrent-modification on the
                 // live snapshot list.
                 for (m in s.messages.toList()) {
-                    ma.put(JSONObject().put("u", m.fromUser).put("t", m.text))
+                    val mo = JSONObject().put("u", m.fromUser).put("t", m.text)
+                    m.filePath?.let { mo.put("f", it) }
+                    ma.put(mo)
                 }
                 o.put("messages", ma)
                 arr.put(o)

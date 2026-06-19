@@ -22,8 +22,8 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 20
-        versionName = "1.19"
+        versionCode = 21
+        versionName = "1.20"
 
         // Baked into BuildConfig at build time (not in the repo).
         buildConfigField("String", "UMD_SECRET", "\"$umdSecret\"")

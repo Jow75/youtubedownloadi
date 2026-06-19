@@ -2,7 +2,9 @@ package ke.co.baziqhue.umd
 
 import android.app.Activity
 import android.os.Build
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
@@ -11,7 +13,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+
+/** Softer, rounder corners across the app — cards, sheets, buttons, chips — for a
+ * modern streaming-app feel rather than boxy utility. */
+private val UmdShapes = Shapes(
+    extraSmall = RoundedCornerShape(10.dp),
+    small = RoundedCornerShape(14.dp),
+    medium = RoundedCornerShape(18.dp),
+    large = RoundedCornerShape(22.dp),
+    extraLarge = RoundedCornerShape(28.dp),
+)
 
 /**
  * App theme. Stays dark (the product's look), but modernised:
@@ -55,5 +68,5 @@ fun UmdTheme(content: @Composable () -> Unit) {
         }
     }
 
-    MaterialTheme(colorScheme = scheme, content = content)
+    MaterialTheme(colorScheme = scheme, shapes = UmdShapes, content = content)
 }

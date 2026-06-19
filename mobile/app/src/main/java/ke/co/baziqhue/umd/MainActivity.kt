@@ -10,6 +10,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -40,6 +42,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Schedule
@@ -55,6 +58,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -113,8 +117,34 @@ class DownloadUi {
     var aiExplanation by mutableStateOf<String?>(null)
 }
 
-/** One line in the assistant chat. */
-data class ChatMsg(val fromUser: Boolean, val text: String)
+/** Channel / Bulk tab state, hoisted so a scan or AI sort survives tab switches. */
+class ChannelUi {
+    var mode by mutableStateOf(0)            // 0 = Channel/Profile, 1 = Bulk
+    var url by mutableStateOf("")
+    var audio by mutableStateOf(true)
+    var quality by mutableStateOf("Best")
+    var scanning by mutableStateOf(false)
+    var status by mutableStateOf("")
+    val entries = mutableStateListOf<Downloader.Entry>()
+    var query by mutableStateOf("")
+    var page by mutableStateOf(0)
+    val selected = mutableStateListOf<String>()   // selected entry urls
+    var categoryFilter by mutableStateOf("All")
+}
+
+/** Bulk paste-and-go state, hoisted so the queued list survives tab switches. */
+class BulkUi {
+    var videoLinks by mutableStateOf("")
+    var audioLinks by mutableStateOf("")
+    var quality by mutableStateOf("Best")
+    var status by mutableStateOf("")
+}
+
+/**
+ * One line in the assistant chat. [filePath] is set on a completed download so the
+ * bubble becomes tappable — opens it in the Library and starts playing.
+ */
+data class ChatMsg(val fromUser: Boolean, val text: String, val filePath: String? = null)
 
 /** One conversation. Each artist/topic can have its own, ChatGPT-style. */
 class ChatSession(val id: String, title: String, messages: List<ChatMsg> = emptyList()) {
@@ -168,12 +198,14 @@ fun App() {
     // across tab switches (a download or chat reply keeps running).
     val scope = rememberCoroutineScope()
     val ui = remember { DownloadUi() }
+    val channel = remember { ChannelUi() }
+    val bulk = remember { BulkUi() }
     val assistant = remember { AssistantUi() }
     var tab by remember { mutableStateOf(0) }
     var showAbout by remember { mutableStateOf(false) }
     var showPlayer by remember { mutableStateOf(false) }
     var showAiKey by remember { mutableStateOf(false) }
-    val sections = listOf("Download", "Channel", "History", "Library", "Assistant")
+    val sections = listOf("Download", "Channel / Bulk", "History", "Library", "Assistant")
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()) {}
@@ -254,6 +286,7 @@ fun App() {
         },
         bottomBar = {
             Column {
+                AiJobsBar { tab = 3 }
                 DownloadsBar { tab = 0 }
                 MiniPlayer { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true }
                 NavigationBar {
@@ -281,15 +314,21 @@ fun App() {
             }
         }
     ) { pad ->
-        Box(Modifier.fillMaxSize().padding(pad)) {
-            when (tab) {
-                0 -> DownloadScreen(lm, ui, scope) { licensed = false }
-                1 -> ChannelScreen()
-                2 -> HistoryScreen { url, audio ->
-                    ui.url = url; ui.audio = audio; ui.done = null; tab = 0
+        Crossfade(targetState = tab, animationSpec = tween(260), label = "tab",
+            modifier = Modifier.fillMaxSize().padding(pad)) { t ->
+            Box(Modifier.fillMaxSize()) {
+                when (t) {
+                    0 -> DownloadScreen(lm, ui, scope) { licensed = false }
+                    1 -> ChannelBulkScreen(channel, bulk)
+                    2 -> HistoryScreen { url, audio ->
+                        ui.url = url; ui.audio = audio; ui.done = null; tab = 0
+                    }
+                    3 -> LibraryScreen()
+                    else -> AssistantScreen(assistant, scope) { path ->
+                        val f = File(path)
+                        if (f.exists()) { playInApp(ctx, listOf(f), f); tab = 3 }
+                    }
                 }
-                3 -> LibraryScreen()
-                else -> AssistantScreen(assistant, scope)
             }
         }
     }
@@ -810,13 +849,12 @@ private fun PlaylistsList(
 ) {
     var newDialog by remember { mutableStateOf(false) }
     var renameId by remember { mutableStateOf<String?>(null) }
-    var aiBusy by remember { mutableStateOf(false) }
-    var aiStatus by remember { mutableStateOf("") }
     val lists = Playlists.all()
 
     Column(Modifier.fillMaxSize()) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { newDialog = true }, modifier = Modifier.weight(1f)) {
+            Button(onClick = { newDialog = true }, modifier = Modifier.weight(1f),
+                shape = MaterialTheme.shapes.large) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(8.dp)); Text("New")
             }
@@ -824,15 +862,16 @@ private fun PlaylistsList(
                 onClick = {
                     when {
                         !aiOn -> onNeedKey()
-                        audioFiles.isEmpty() -> aiStatus = "No songs to group yet."
+                        audioFiles.isEmpty() -> AutoPlaylistJob.status = "No songs to group yet."
                         else -> {
-                            aiBusy = true; aiStatus = "Analyzing your library…"
-                            scope.launch {
-                                val r = Ai.classifyTracks(ctx, audioFiles.map { it.nameWithoutExtension }) { d, t ->
-                                    aiStatus = "Analyzing $d / $t…"
-                                }
-                                aiBusy = false
-                                r.fold(
+                            AutoPlaylistJob.running = true
+                            AutoPlaylistJob.status = "Analyzing your library…"
+                            // App-scope: keeps grouping even if you leave the Library tab.
+                            Jobs.launch("Smart playlists") {
+                                val names = audioFiles.map { it.nameWithoutExtension }
+                                Ai.classifyTracks(ctx, names) { d, t ->
+                                    AutoPlaylistJob.status = "Analyzing $d / $t…"
+                                }.fold(
                                     onSuccess = { map ->
                                         val groups = LinkedHashMap<String, MutableList<String>>()
                                         fun add(name: String, path: String) {
@@ -855,27 +894,29 @@ private fun PlaylistsList(
                                                 Playlists.addPaths(pl.id, paths); n++
                                             }
                                         }
-                                        aiStatus = if (n == 0) "Not enough songs to group yet."
+                                        AutoPlaylistJob.status = if (n == 0) "Not enough songs to group yet."
                                         else "Built $n smart playlists by genre, language & mood."
                                     },
-                                    onFailure = { aiStatus = "Failed: ${it.message}" }
+                                    onFailure = { AutoPlaylistJob.status = "Failed: ${it.message}" }
                                 )
+                                AutoPlaylistJob.running = false
                             }
                         }
                     }
                 },
-                enabled = !aiBusy, modifier = Modifier.weight(1f)
+                enabled = !AutoPlaylistJob.running, modifier = Modifier.weight(1f),
+                shape = MaterialTheme.shapes.large
             ) {
                 Icon(Icons.Filled.AutoAwesome, contentDescription = null)
-                Spacer(Modifier.width(6.dp)); Text(if (aiBusy) "Working…" else "Auto (AI)")
+                Spacer(Modifier.width(6.dp)); Text(if (AutoPlaylistJob.running) "Working…" else "Auto (AI)")
             }
         }
-        if (aiStatus.isNotBlank()) {
+        if (AutoPlaylistJob.status.isNotBlank()) {
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (aiBusy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                Text(aiStatus, style = MaterialTheme.typography.bodySmall)
+                if (AutoPlaylistJob.running) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(AutoPlaylistJob.status, style = MaterialTheme.typography.bodySmall)
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -1144,34 +1185,45 @@ private fun SmartSearchSection(
 
 @Composable
 private fun DuplicatesSection(ctx: android.content.Context, scope: CoroutineScope) {
-    var busy by remember { mutableStateOf(false) }
-    var scanned by remember { mutableStateOf(false) }
-    var groups by remember { mutableStateOf<List<List<File>>>(emptyList()) }
-
     ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("🧹 Duplicate cleanup", style = MaterialTheme.typography.titleMedium)
-            Text("Finds byte-identical files in your Music/Video folders so you can " +
-                "free up space.", style = MaterialTheme.typography.bodySmall)
+            Text("Finds repeats in your library — both byte-identical copies and the " +
+                "same song saved twice (e.g. an MP3 and an MP4, or a re-download). " +
+                "Keeps one, you delete the rest.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button(
                 onClick = {
-                    busy = true
-                    scope.launch {
-                        groups = withContext(Dispatchers.IO) { Library.findDuplicates() }
-                        scanned = true; busy = false
+                    DedupJob.running = true; DedupJob.status = "Scanning your library…"
+                    DedupJob.groups.clear()
+                    Jobs.launch("Duplicate scan") {
+                        val found = Library.findDuplicates()
+                        DedupJob.groups.clear(); DedupJob.groups.addAll(found)
+                        DedupJob.scanned = true; DedupJob.running = false
+                        DedupJob.status = if (found.isEmpty()) "No duplicates found 🎉"
+                        else "Found ${found.size} group(s) of duplicates."
                     }
                 },
-                enabled = !busy, modifier = Modifier.fillMaxWidth()
-            ) { Text(if (busy) "Scanning…" else "Scan for duplicates") }
-
-            if (scanned && groups.isEmpty()) {
-                Text("No duplicates found 🎉", style = MaterialTheme.typography.bodyMedium)
+                enabled = !DedupJob.running, modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large
+            ) {
+                if (DedupJob.running) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(if (DedupJob.running) "Scanning…" else "Scan for duplicates")
             }
-            groups.forEachIndexed { gi, group ->
+
+            if (DedupJob.status.isNotBlank()) {
+                Text(DedupJob.status, style = MaterialTheme.typography.bodyMedium)
+            }
+            DedupJob.groups.forEachIndexed { gi, group ->
                 HorizontalDivider()
-                Text("Group ${gi + 1} — ${group.size} copies of \"${group.first().name}\"",
-                    style = MaterialTheme.typography.bodySmall)
-                group.forEachIndexed { i, f ->
+                Text("${group.reason} — ${group.files.size}× \"${group.files.first().nameWithoutExtension}\"",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary)
+                group.files.forEachIndexed { i, f ->
                     var deleted by remember(f.absolutePath) { mutableStateOf(!f.exists()) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text((if (i == 0) "✓ keep  " else "• ") + f.name +
@@ -1199,56 +1251,139 @@ private fun TitleCleanupSection(
     onNeedKey: () -> Unit,
     onChanged: () -> Unit,
 ) {
-    var busy by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("") }
-    var cleaned by remember { mutableStateOf<List<Pair<File, Ai.TitleInfo>>>(emptyList()) }
+    // Rename a single suggestion; records it so it won't be suggested again.
+    fun applyOne(s: CleanupSuggestion) {
+        if (s.done) return
+        val old = File(s.path)
+        if (!old.exists()) { s.done = true; return }
+        val nf = Library.rename(old, s.suggested)
+        if (nf != null) {
+            Storage.scan(ctx, old); Storage.scan(ctx, nf)
+            CleanState.markRenamed(old, nf)
+            s.done = true
+        }
+    }
 
     ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("🏷️ Title clean-up", style = MaterialTheme.typography.titleMedium)
-            Text("AI suggests a clean artist · title · category for your files. " +
-                "Rename to tidy your library.", style = MaterialTheme.typography.bodySmall)
+            Text("AI suggests a clean \"Artist — Title\" for messy filenames. Rename them " +
+                "all in one tap, or pick which. Files you've already cleaned won't be " +
+                "suggested again.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+
             Button(
-                onClick = {
-                    if (!aiOn) onNeedKey() else {
-                        busy = true; status = "Analyzing titles…"
-                        scope.launch {
-                            val names = files.map { it.nameWithoutExtension }
-                            val r = Ai.analyzeTitles(ctx, names) { done, total ->
-                                status = "Analyzing $done / $total…"
-                            }
-                            busy = false
-                            r.fold(
-                                onSuccess = { m ->
-                                    cleaned = files.mapNotNull { f -> m[f.nameWithoutExtension]?.let { f to it } }
-                                    status = if (cleaned.isEmpty()) "Nothing to clean." else ""
-                                },
-                                onFailure = { status = "Failed: ${it.message}" }
-                            )
+                onClick = onClick@{
+                    if (!aiOn) { onNeedKey(); return@onClick }
+                    CleanupJob.reset(); CleanupJob.running = true
+                    CleanupJob.status = "Analyzing titles…"
+                    Jobs.launch("Title clean-up") {
+                        CleanState.ensureLoaded()
+                        // Skip files already cleaned/ignored (and unchanged since).
+                        val todo = files.filter { !CleanState.isHandled(it) }
+                        if (todo.isEmpty()) {
+                            CleanupJob.status = "Everything's already tidy 🎉"
+                            CleanupJob.running = false; return@launch
                         }
+                        val names = todo.map { it.nameWithoutExtension }
+                        Ai.analyzeTitles(ctx, names) { d, t -> CleanupJob.status = "Analyzing $d / $t…" }
+                            .fold(
+                                onSuccess = { m ->
+                                    val out = todo.mapNotNull { f ->
+                                        val info = m[f.nameWithoutExtension] ?: return@mapNotNull null
+                                        val suggested = listOfNotNull(info.artist, info.cleanTitle)
+                                            .joinToString(" — ").ifBlank { info.cleanTitle }.trim()
+                                        // Only suggest a real change.
+                                        if (suggested.isBlank() || suggested == f.nameWithoutExtension)
+                                            null
+                                        else CleanupSuggestion(f.absolutePath, f.nameWithoutExtension,
+                                            suggested, info.category)
+                                    }
+                                    CleanupJob.results.clear(); CleanupJob.results.addAll(out)
+                                    CleanupJob.status = if (out.isEmpty()) "Nothing needs renaming 🎉"
+                                    else "${out.size} file(s) could be tidied."
+                                    CleanupJob.running = false
+                                },
+                                onFailure = {
+                                    CleanupJob.status = "Failed: ${it.message}"
+                                    CleanupJob.running = false
+                                }
+                            )
                     }
                 },
-                enabled = !busy && files.isNotEmpty(), modifier = Modifier.fillMaxWidth()
-            ) { Text(if (busy) "Analyzing…" else "Analyze titles (AI)") }
+                enabled = !CleanupJob.running && files.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large
+            ) {
+                if (CleanupJob.running) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary)
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(if (CleanupJob.running) "Analyzing…" else "Analyze titles (AI)")
+            }
 
-            if (status.isNotBlank()) Text(status, style = MaterialTheme.typography.bodySmall)
+            if (CleanupJob.status.isNotBlank())
+                Text(CleanupJob.status, style = MaterialTheme.typography.bodyMedium)
 
-            cleaned.forEach { (f, info) ->
-                HorizontalDivider()
-                val suggested = listOfNotNull(info.artist, info.cleanTitle)
-                    .joinToString(" — ").ifBlank { info.cleanTitle }
-                Column {
-                    Text("From: ${f.nameWithoutExtension}", style = MaterialTheme.typography.bodySmall)
-                    Text("→ $suggested  ·  ${info.category}",
-                        style = MaterialTheme.typography.bodyMedium)
-                    if (f.exists()) {
-                        TextButton(onClick = {
-                            val nf = Library.rename(f, suggested)
-                            if (nf != null) {
-                                Storage.scan(ctx, f); Storage.scan(ctx, nf)
+            val pending = CleanupJob.results.filter { !it.done }
+            if (pending.isNotEmpty()) {
+                // --- Bulk action bar -------------------------------------------- #
+                val selectedCount = pending.count { it.selected }
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            CleanupJob.running = true
+                            Jobs.launch("Rename files") {
+                                CleanupJob.results.filter { !it.done }.forEach { applyOne(it) }
+                                CleanupJob.running = false
+                                CleanupJob.status = "Renamed everything. Library updated."
                                 onChanged()
                             }
-                        }) { Text("Rename file to this") }
+                        },
+                        enabled = !CleanupJob.running, modifier = Modifier.weight(1f),
+                        shape = MaterialTheme.shapes.large
+                    ) { Text("Rename all (${pending.size})") }
+                    OutlinedButton(
+                        onClick = {
+                            CleanupJob.running = true
+                            Jobs.launch("Rename selected") {
+                                CleanupJob.results.filter { !it.done && it.selected }.forEach { applyOne(it) }
+                                CleanupJob.running = false
+                                CleanupJob.status = "Renamed your picks. Library updated."
+                                onChanged()
+                            }
+                        },
+                        enabled = !CleanupJob.running && selectedCount > 0,
+                        modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.large
+                    ) { Text("Selected ($selectedCount)") }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val allSel = pending.all { it.selected }
+                    TextButton(onClick = { pending.forEach { it.selected = !allSel } }) {
+                        Text(if (allSel) "Unselect all" else "Select all")
+                    }
+                }
+
+                // --- Per-file suggestions --------------------------------------- #
+                CleanupJob.results.forEach { s ->
+                    if (s.done) return@forEach
+                    HorizontalDivider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = s.selected, onCheckedChange = { s.selected = it })
+                        Column(Modifier.weight(1f)) {
+                            Text("From: ${s.from}", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("→ ${s.suggested}", style = MaterialTheme.typography.bodyMedium)
+                            Text(s.category, style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary)
+                        }
+                        TextButton(onClick = {
+                            applyOne(s); onChanged()
+                        }) { Text("Rename") }
+                        TextButton(onClick = {
+                            CleanState.mark(File(s.path)); s.done = true
+                        }) { Text("Skip") }
                     }
                 }
             }
@@ -1258,7 +1393,7 @@ private fun TitleCleanupSection(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AssistantScreen(ui: AssistantUi, scope: CoroutineScope) {
+fun AssistantScreen(ui: AssistantUi, scope: CoroutineScope, onOpen: (String) -> Unit) {
     val ctx = LocalContext.current
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     fun persist() = scope.launch(Dispatchers.IO) { ChatStore.save(ui.sessions.toList(), ui.currentId) }
@@ -1356,7 +1491,7 @@ fun AssistantScreen(ui: AssistantUi, scope: CoroutineScope) {
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(msgs) { m -> ChatBubble(m) }
+                    items(msgs) { m -> ChatBubble(m, onOpen) }
                 }
             }
 
@@ -1392,20 +1527,39 @@ fun AssistantScreen(ui: AssistantUi, scope: CoroutineScope) {
 }
 
 @Composable
-private fun ChatBubble(m: ChatMsg) {
-    val bg = if (m.fromUser) MaterialTheme.colorScheme.primaryContainer
-    else MaterialTheme.colorScheme.surfaceVariant
-    val fg = if (m.fromUser) MaterialTheme.colorScheme.onPrimaryContainer
-    else MaterialTheme.colorScheme.onSurfaceVariant
+private fun ChatBubble(m: ChatMsg, onOpen: (String) -> Unit) {
+    // A finished download whose file still exists → a tappable "play it" card.
+    val playable = m.filePath?.takeIf { File(it).exists() }
+    val bg = when {
+        m.fromUser -> MaterialTheme.colorScheme.primaryContainer
+        playable != null -> MaterialTheme.colorScheme.tertiaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val fg = when {
+        m.fromUser -> MaterialTheme.colorScheme.onPrimaryContainer
+        playable != null -> MaterialTheme.colorScheme.onTertiaryContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Column(
         Modifier.fillMaxWidth(),
         horizontalAlignment = if (m.fromUser) Alignment.End else Alignment.Start
     ) {
-        Surface(color = bg, shape = MaterialTheme.shapes.large) {
-            Text(m.text, color = fg,
-                modifier = Modifier.widthIn(max = 300.dp)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                style = MaterialTheme.typography.bodyMedium)
+        Surface(
+            color = bg, shape = MaterialTheme.shapes.large,
+            modifier = if (playable != null) Modifier.clickable { onOpen(playable) } else Modifier
+        ) {
+            Row(
+                Modifier.widthIn(max = 300.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(m.text, color = fg, style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f, fill = false))
+                if (playable != null) {
+                    Icon(Icons.Filled.PlayCircle, contentDescription = "Play in Library",
+                        tint = fg, modifier = Modifier.size(28.dp))
+                }
+            }
         }
     }
 }
@@ -1475,7 +1629,8 @@ private suspend fun runPlan(
                     f.absolutePath, f.length(), System.currentTimeMillis()))
             }
             session.messages.add(ChatMsg(false,
-                "✅ Done — ${out.file?.nameWithoutExtension ?: "saved"}  →  ${Storage.displayPath(out.dir)}"))
+                "✅ Done — ${out.file?.nameWithoutExtension ?: "saved"}\n▶ Tap to play it in your Library",
+                filePath = out.file?.absolutePath))
         },
         onFailure = { session.messages.add(ChatMsg(false, "❌ Couldn't download it: ${it.message}")) }
     )
@@ -1489,130 +1644,208 @@ private fun fmtDur(s: Int): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChannelScreen() {
+fun ChannelBulkScreen(ui: ChannelUi, bulk: BulkUi) {
+    Column(Modifier.fillMaxSize()) {
+        Spacer(Modifier.height(8.dp))
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            SegmentedButton(selected = ui.mode == 0, onClick = { ui.mode = 0 },
+                shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("📺 Channel / Profile") }
+            SegmentedButton(selected = ui.mode == 1, onClick = { ui.mode = 1 },
+                shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("📚 Bulk") }
+        }
+        if (ui.mode == 0) ChannelBody(ui) else BulkBody(bulk)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChannelBody(ui: ChannelUi) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var url by remember { mutableStateOf("") }
-    var audio by remember { mutableStateOf(true) }
-    var quality by remember { mutableStateOf("Best") }
-    var scanning by remember { mutableStateOf(false) }
-    var entries by remember { mutableStateOf<List<Downloader.Entry>>(emptyList()) }
-    var status by remember { mutableStateOf("") }
-    var query by remember { mutableStateOf("") }
-    var page by remember { mutableStateOf(0) }
-    val selected = remember { mutableStateListOf<String>() }   // urls
     var hasStorage by remember { mutableStateOf(Storage.hasAccess(ctx)) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { hasStorage = Storage.hasAccess(ctx) }
 
     val perPage = 20
-    val filtered = entries.filter { query.isBlank() || it.title.contains(query, true) }
+    val filtered = ui.entries.filter {
+        (ui.query.isBlank() || it.title.contains(ui.query, true)) &&
+            (ui.categoryFilter == "All" || ChannelTriage.categories[it.title] == ui.categoryFilter)
+    }
     val pages = if (filtered.isEmpty()) 1 else (filtered.size + perPage - 1) / perPage
-    val pageClamped = page.coerceIn(0, pages - 1)
+    val pageClamped = ui.page.coerceIn(0, pages - 1)
     val pageItems = filtered.drop(pageClamped * perPage).take(perPage)
 
     fun enqueueAll(list: List<Downloader.Entry>) {
-        list.forEach { Downloads.enqueue(ctx, it.url, audio, quality, it.title) }
+        list.forEach { Downloads.enqueue(ctx, it.url, ui.audio, ui.quality, it.title) }
     }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(url, { url = it },
+        OutlinedTextField(ui.url, { ui.url = it },
             label = { Text("Channel / playlist / profile URL") }, singleLine = true,
             modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
         Spacer(Modifier.height(8.dp))
         Button(
             onClick = {
-                scanning = true; status = "Scanning…"; entries = emptyList(); selected.clear(); page = 0
-                scope.launch {
-                    val r = Downloader.scanEntries(ctx, url.trim())
-                    scanning = false
-                    r.fold(
-                        onSuccess = { entries = it; status = "Found ${it.size} item(s)." },
-                        onFailure = { status = "Scan failed: ${it.message}" })
+                ui.scanning = true; ui.status = "Scanning…"; ui.entries.clear()
+                ui.selected.clear(); ui.page = 0; ui.categoryFilter = "All"; ChannelTriage.reset()
+                // App-scope scan: keeps reading the channel even if you switch tabs.
+                Jobs.launch("Scan channel") {
+                    Downloader.scanEntries(ctx, ui.url.trim()).fold(
+                        onSuccess = {
+                            ui.entries.clear(); ui.entries.addAll(it)
+                            ui.status = "Found ${it.size} item(s)."
+                        },
+                        onFailure = { ui.status = "Scan failed: ${it.message}" })
+                    ui.scanning = false
                 }
             },
-            enabled = url.isNotBlank() && !scanning, modifier = Modifier.fillMaxWidth()
-        ) { Text(if (scanning) "Scanning…" else "Scan channel / playlist") }
+            enabled = ui.url.isNotBlank() && !ui.scanning, modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.large
+        ) { Text(if (ui.scanning) "Scanning…" else "Scan channel / playlist") }
 
-        if (scanning) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(Modifier.fillMaxWidth()) }
-        if (status.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(status, style = MaterialTheme.typography.bodySmall) }
-        if (!hasStorage && entries.isNotEmpty()) {
+        if (ui.scanning) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        if (ui.status.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(ui.status, style = MaterialTheme.typography.bodySmall) }
+        if (!hasStorage && ui.entries.isNotEmpty()) {
             Text("Grant storage access on the Download tab first.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
 
-        if (entries.isEmpty()) {
+        if (ui.entries.isEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text("Paste a channel, playlist or profile link and Scan. You'll get the full " +
-                "list — search, select items, choose MP3/MP4, and download. Downloads keep " +
-                "running while you browse other tabs.",
+                "list — search, sort by type with AI (Music / Live / Interview / …), select " +
+                "items, choose MP3/MP4, and download. It all keeps running while you browse " +
+                "other tabs.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             Spacer(Modifier.height(8.dp))
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                SegmentedButton(selected = audio, onClick = { audio = true },
+                SegmentedButton(selected = ui.audio, onClick = { ui.audio = true },
                     shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
-                SegmentedButton(selected = !audio, onClick = { audio = false },
+                SegmentedButton(selected = !ui.audio, onClick = { ui.audio = false },
                     shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
             }
-            if (!audio) {
+            if (!ui.audio) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("Best", "720p", "480p").forEach {
-                        FilterChip(selected = quality == it, onClick = { quality = it }, label = { Text(it) })
+                        FilterChip(selected = ui.quality == it, onClick = { ui.quality = it }, label = { Text(it) })
                     }
                 }
             }
+
+            // --- AI category sort (desktop "AI Triage" parity) ------------------ #
             Spacer(Modifier.height(8.dp))
-            OutlinedTextField(query, { query = it; page = 0 },
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        if (!Ai.isConfigured(ctx)) {
+                            ChannelTriage.status = "Set an AI key first (menu → AI assistant settings)."
+                        } else {
+                            ChannelTriage.running = true; ChannelTriage.status = "Sorting by type…"
+                            Jobs.launch("Sort channel") {
+                                val titles = ui.entries.map { it.title }
+                                Ai.analyzeTitles(ctx, titles) { d, t -> ChannelTriage.status = "Sorting $d / $t…" }
+                                    .fold(
+                                        onSuccess = { m ->
+                                            ui.entries.forEach { e ->
+                                                m[e.title]?.let { ChannelTriage.categories[e.title] = it.category }
+                                            }
+                                            ChannelTriage.status = "Sorted — tap a category below."
+                                        },
+                                        onFailure = { ChannelTriage.status = "Sort failed: ${it.message}" }
+                                    )
+                                ChannelTriage.running = false
+                            }
+                        }
+                    },
+                    enabled = !ChannelTriage.running
+                ) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (ChannelTriage.running) "Sorting…" else "AI sort by type")
+                }
+                if (ChannelTriage.status.isNotBlank())
+                    Text(ChannelTriage.status, style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2, modifier = Modifier.weight(1f))
+            }
+            if (ChannelTriage.categories.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                val counts = ChannelTriage.categories.values.groupingBy { it }.eachCount()
+                val cats = listOf("All") + counts.keys.sortedByDescending { counts[it] }
+                Row(Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    cats.forEach { c ->
+                        FilterChip(selected = ui.categoryFilter == c,
+                            onClick = { ui.categoryFilter = c; ui.page = 0 },
+                            label = { Text(if (c == "All") "All (${ui.entries.size})" else "$c (${counts[c]})") })
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(ui.query, { ui.query = it; ui.page = 0 },
                 label = { Text("Search items") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             Spacer(Modifier.height(8.dp))
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = {
                     val pageUrls = pageItems.map { it.url }
-                    if (pageUrls.all { it in selected }) selected.removeAll(pageUrls.toSet())
-                    else pageUrls.forEach { if (it !in selected) selected.add(it) }
+                    if (pageUrls.all { it in ui.selected }) ui.selected.removeAll(pageUrls.toSet())
+                    else pageUrls.forEach { if (it !in ui.selected) ui.selected.add(it) }
                 }) { Text("Select page") }
-                Text("${selected.size} selected", style = MaterialTheme.typography.bodySmall,
+                Text("${ui.selected.size} selected", style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.weight(1f))
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = hasStorage && selected.isNotEmpty(),
+                Button(enabled = hasStorage && ui.selected.isNotEmpty(),
                     onClick = {
-                        enqueueAll(entries.filter { it.url in selected }); status = "Queued ${selected.size}."
+                        enqueueAll(ui.entries.filter { it.url in ui.selected })
+                        ui.status = "Queued ${ui.selected.size}."
                     },
-                    modifier = Modifier.weight(1f)) { Text("Download selected (${selected.size})") }
+                    modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.large) {
+                    Text("Download selected (${ui.selected.size})")
+                }
                 OutlinedButton(enabled = hasStorage && filtered.isNotEmpty(),
-                    onClick = { enqueueAll(filtered); status = "Queued ${filtered.size}." },
-                    modifier = Modifier.weight(1f)) { Text("All (${filtered.size})") }
+                    onClick = { enqueueAll(filtered); ui.status = "Queued ${filtered.size}." },
+                    modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.large) {
+                    Text("All (${filtered.size})")
+                }
             }
             Spacer(Modifier.height(8.dp))
 
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(pageItems, key = { it.url }) { e ->
-                    val sel = e.url in selected
+                    val sel = e.url in ui.selected
                     ElevatedCard(Modifier.fillMaxWidth().clickable {
-                        if (sel) selected.remove(e.url) else selected.add(e.url)
+                        if (sel) ui.selected.remove(e.url) else ui.selected.add(e.url)
                     }) {
                         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(checked = sel, onCheckedChange = {
-                                if (sel) selected.remove(e.url) else selected.add(e.url)
+                                if (sel) ui.selected.remove(e.url) else ui.selected.add(e.url)
                             })
                             if (e.thumb.isNotBlank()) {
                                 AsyncImage(model = e.thumb, contentDescription = null,
-                                    modifier = Modifier.size(width = 64.dp, height = 40.dp))
+                                    modifier = Modifier.size(width = 64.dp, height = 40.dp)
+                                        .clip(MaterialTheme.shapes.small))
                                 Spacer(Modifier.width(8.dp))
                             }
                             Column(Modifier.weight(1f)) {
                                 Text(e.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
-                                if (e.durationSec > 0) Text(fmtDur(e.durationSec),
-                                    style = MaterialTheme.typography.bodySmall)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (e.durationSec > 0) Text(fmtDur(e.durationSec),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    ChannelTriage.categories[e.title]?.let {
+                                        Text(it, style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
                             }
                             IconButton(enabled = hasStorage, onClick = {
-                                Downloads.enqueue(ctx, e.url, audio, quality, e.title)
-                                status = "Queued \"${e.title}\"."
+                                Downloads.enqueue(ctx, e.url, ui.audio, ui.quality, e.title)
+                                ui.status = "Queued \"${e.title}\"."
                             }) { Icon(Icons.Filled.Download, contentDescription = "Download this") }
                         }
                     }
@@ -1621,12 +1854,95 @@ fun ChannelScreen() {
 
             if (pages > 1) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(enabled = pageClamped > 0, onClick = { page = pageClamped - 1 }) { Text("‹ Prev") }
+                    OutlinedButton(enabled = pageClamped > 0, onClick = { ui.page = pageClamped - 1 }) { Text("‹ Prev") }
                     Text("Page ${pageClamped + 1} / $pages", textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    OutlinedButton(enabled = pageClamped < pages - 1, onClick = { page = pageClamped + 1 }) { Text("Next ›") }
+                    OutlinedButton(enabled = pageClamped < pages - 1, onClick = { ui.page = pageClamped + 1 }) { Text("Next ›") }
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BulkBody(ui: BulkUi) {
+    val ctx = LocalContext.current
+    var hasStorage by remember { mutableStateOf(Storage.hasAccess(ctx)) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { hasStorage = Storage.hasAccess(ctx) }
+
+    fun parse(s: String) = s.split("\n").map { it.trim() }.filter { it.isNotBlank() }
+    val vCount = parse(ui.videoLinks).size
+    val aCount = parse(ui.audioLinks).size
+    val total = vCount + aCount
+
+    Column(
+        Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("Paste links — one per line — into the format you want, then Download all. " +
+            "Everything queues into Downloads and keeps running while you use the app.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        Text("🎬 Video → MP4", style = MaterialTheme.typography.titleSmall)
+        OutlinedTextField(ui.videoLinks, { ui.videoLinks = it },
+            placeholder = { Text("https://…\nhttps://…") },
+            modifier = Modifier.fillMaxWidth().height(150.dp),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Best", "720p", "480p").forEach {
+                FilterChip(selected = ui.quality == it, onClick = { ui.quality = it }, label = { Text(it) })
+            }
+        }
+
+        Text("🎵 Audio → MP3", style = MaterialTheme.typography.titleSmall)
+        OutlinedTextField(ui.audioLinks, { ui.audioLinks = it },
+            placeholder = { Text("https://…\nhttps://…") },
+            modifier = Modifier.fillMaxWidth().height(150.dp),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+
+        Button(
+            onClick = {
+                parse(ui.videoLinks).forEach { Downloads.enqueue(ctx, it, false, ui.quality, it) }
+                parse(ui.audioLinks).forEach { Downloads.enqueue(ctx, it, true, "Best", it) }
+                ui.status = "Queued $total item(s) — they're downloading in the background " +
+                    "(see Downloads on the Download tab)."
+                ui.videoLinks = ""; ui.audioLinks = ""
+            },
+            enabled = hasStorage && total > 0, modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.large
+        ) { Text("⬇️ Download all ($total)") }
+
+        if (!hasStorage) Text("Grant storage access on the Download tab first.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        if (ui.status.isNotBlank()) Text(ui.status, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+fun AiJobsBar(onTap: () -> Unit) {
+    val active = Jobs.activeCount
+    if (active == 0) return
+    val cur = Jobs.items.firstOrNull { it.status == JobStatus.RUNNING }
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        modifier = Modifier.fillMaxWidth().clickable { onTap() }
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.onTertiaryContainer)
+            Text("🤖 ${cur?.label ?: "AI working"}…  ${cur?.detail.orEmpty()}".trim(),
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                modifier = Modifier.weight(1f))
+            if (active > 1) Text("$active",
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                style = MaterialTheme.typography.bodySmall)
         }
     }
 }
