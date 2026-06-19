@@ -17,6 +17,7 @@ class DlTask(val id: Long, val label: String, val audio: Boolean) {
     var status by mutableStateOf("queued")   // queued | running | done | failed
     var progress by mutableStateOf(0f)
     var detail by mutableStateOf("")
+    var filePath by mutableStateOf<String?>(null)   // set on success → play/artwork
 }
 
 /**
@@ -52,6 +53,7 @@ object Downloads {
                             History.add(HistoryEntry(
                                 f.nameWithoutExtension, url, audio, f.absolutePath, f.length(),
                                 System.currentTimeMillis()))
+                            t.filePath = f.absolutePath
                         }
                         t.status = "done"; t.progress = 1f
                         t.detail = out.file?.nameWithoutExtension ?: "Saved"

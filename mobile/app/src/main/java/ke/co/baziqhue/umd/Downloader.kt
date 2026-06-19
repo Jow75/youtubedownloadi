@@ -138,10 +138,14 @@ object Downloader {
                 req.addOption("--audio-format", "mp3")
                 req.addOption("--audio-quality", "0")
             } else {
+                // Prefer H.264 video + AAC audio in an mp4 container. These are the
+                // formats Android's player decodes natively and keeps perfectly in
+                // sync; the old "bestvideo+bestaudio" could pick VP9/Opus, which the
+                // device struggles to A/V-sync (the audio-ahead / video-behind bug).
                 val sel = when (quality) {
-                    "720p" -> "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
-                    "480p" -> "bestvideo[height<=480]+bestaudio/best[height<=480]/best"
-                    else -> "bestvideo+bestaudio/best"
+                    "720p" -> "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best[height<=720]"
+                    "480p" -> "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]/best[height<=480]"
+                    else -> "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best"
                 }
                 req.addOption("-f", sel)
                 req.addOption("--merge-output-format", "mp4")
@@ -323,10 +327,14 @@ object Downloader {
                 req.addOption("--audio-format", "mp3")
                 req.addOption("--audio-quality", "0")
             } else {
+                // Prefer H.264 video + AAC audio in an mp4 container. These are the
+                // formats Android's player decodes natively and keeps perfectly in
+                // sync; the old "bestvideo+bestaudio" could pick VP9/Opus, which the
+                // device struggles to A/V-sync (the audio-ahead / video-behind bug).
                 val sel = when (quality) {
-                    "720p" -> "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
-                    "480p" -> "bestvideo[height<=480]+bestaudio/best[height<=480]/best"
-                    else -> "bestvideo+bestaudio/best"
+                    "720p" -> "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best[height<=720]"
+                    "480p" -> "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]/best[height<=480]"
+                    else -> "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best"
                 }
                 req.addOption("-f", sel)
                 req.addOption("--merge-output-format", "mp4")

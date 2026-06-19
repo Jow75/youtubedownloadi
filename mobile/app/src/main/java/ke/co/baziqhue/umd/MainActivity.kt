@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -222,6 +223,7 @@ fun App() {
     var showPlayer by remember { mutableStateOf(false) }
     var showAiKey by remember { mutableStateOf(false) }
     var showQuickDl by remember { mutableStateOf(false) }
+    var libJump by remember { mutableStateOf<Int?>(null) }   // Home shortcut → Library category
     // tab map: 0 Home · 1 Download · 2 Channel/Bulk · 3 Library · 4 Assistant · 5 History (drawer)
     val sections = listOf("Home", "Download", "Channel / Bulk", "Library", "Assistant", "History")
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -328,19 +330,29 @@ fun App() {
         },
         containerColor = Color.Transparent
     ) { pad ->
-        Crossfade(targetState = tab, animationSpec = tween(260), label = "tab",
+        Crossfade(targetState = tab, animationSpec = tween(150), label = "tab",
             modifier = Modifier.fillMaxSize().padding(pad)) { t ->
             Box(Modifier.fillMaxSize()) {
                 when (t) {
                     0 -> HomeScreen(
                         onGo = { tab = it },
+                        onOpenLibrary = { cat -> libJump = cat; tab = 3 },
                         onOpenPlayer = { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true })
                     1 -> DownloadScreen(lm, ui, scope) { licensed = false }
                     2 -> ChannelBulkScreen(channel, bulk)
-                    3 -> LibraryScreen()
+                    3 -> LibraryScreen(libJump) { libJump = null }
                     4 -> AssistantScreen(assistant, scope) { path ->
-                        val f = File(path)
-                        if (f.exists()) { playInApp(ctx, listOf(f), f); tab = 3 }
+                        // Resolve robustly: exact path, else by filename in the Library
+                        // (so renames/moves don't break older chat results).
+                        scope.launch {
+                            val f = withContext(Dispatchers.IO) {
+                                File(path).takeIf { it.exists() }
+                                    ?: Library.mediaFiles().firstOrNull { it.name == File(path).name }
+                            }
+                            if (f != null) { playInApp(ctx, listOf(f), f); tab = 3 }
+                            else Toast.makeText(ctx, "That file isn't in your library anymore.",
+                                Toast.LENGTH_SHORT).show()
+                        }
                     }
                     else -> HistoryScreen { url, audio ->
                         ui.url = url; ui.audio = audio; ui.done = null; tab = 1
@@ -364,7 +376,7 @@ fun App() {
  * dashboard. [onGo] navigates to a tab index; [onOpenPlayer] expands the player.
  */
 @Composable
-fun HomeScreen(onGo: (Int) -> Unit, onOpenPlayer: () -> Unit) {
+fun HomeScreen(onGo: (Int) -> Unit, onOpenLibrary: (Int) -> Unit, onOpenPlayer: () -> Unit) {
     val ctx = LocalContext.current
     var refresh by remember { mutableStateOf(0) }
     var recent by remember { mutableStateOf<List<File>>(emptyList()) }
@@ -404,7 +416,7 @@ fun HomeScreen(onGo: (Int) -> Unit, onOpenPlayer: () -> Unit) {
             QuickTile("Channel / Bulk", Icons.Filled.Subscriptions, Modifier.weight(1f)) { onGo(2) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            QuickTile("Library", Icons.Filled.LibraryMusic, Modifier.weight(1f)) { onGo(3) }
+            QuickTile("Library", Icons.Filled.LibraryMusic, Modifier.weight(1f)) { onOpenLibrary(0) }
             QuickTile("Assistant", Icons.AutoMirrored.Filled.Chat, Modifier.weight(1f)) { onGo(4) }
         }
 
@@ -462,14 +474,14 @@ fun HomeScreen(onGo: (Int) -> Unit, onOpenPlayer: () -> Unit) {
             }
         }
 
-        SectionHeader("Your library", "Open") { onGo(3) }
+        SectionHeader("Your library", "Open") { onOpenLibrary(0) }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile("$songs", "Songs", Icons.Filled.MusicNote, { onGo(3) }, Modifier.weight(1f))
-            StatTile("$videos", "Videos", Icons.Filled.Movie, { onGo(3) }, Modifier.weight(1f))
+            StatTile("$songs", "Songs", Icons.Filled.MusicNote, { onOpenLibrary(0) }, Modifier.weight(1f))
+            StatTile("$videos", "Videos", Icons.Filled.Movie, { onOpenLibrary(1) }, Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile("$artists", "Artists", Icons.Filled.Person, { onGo(3) }, Modifier.weight(1f))
-            StatTile("$playlists", "Playlists", Icons.AutoMirrored.Filled.QueueMusic, { onGo(3) }, Modifier.weight(1f))
+            StatTile("$artists", "Artists", Icons.Filled.Person, { onOpenLibrary(4) }, Modifier.weight(1f))
+            StatTile("$playlists", "Playlists", Icons.AutoMirrored.Filled.QueueMusic, { onOpenLibrary(3) }, Modifier.weight(1f))
         }
         Spacer(Modifier.height(96.dp))
     }
@@ -852,13 +864,15 @@ private fun sortLibrary(list: List<File>, sort: Int): List<File> = when (sort) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LibraryScreen() {
+fun LibraryScreen(jumpTo: Int? = null, onConsumed: () -> Unit = {}) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var refreshKey by remember { mutableStateOf(0) }
     var aiOn by remember { mutableStateOf(false) }
     var showAiKey by remember { mutableStateOf(false) }
-    var category by remember { mutableStateOf(0) }  // 0 Songs,1 Videos,2 Favorites,3 Playlists,4 Artists,5 Tools
+    var category by remember { mutableStateOf(jumpTo ?: 0) }  // 0 Songs,1 Videos,2 Favorites,3 Playlists,4 Artists,5 Tools
+    // A Home shortcut can request a specific category (Videos / Artists / Playlists).
+    LaunchedEffect(jumpTo) { if (jumpTo != null) { category = jumpTo; onConsumed() } }
     var query by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf(0) }
     var libPage by remember { mutableStateOf(0) }
@@ -1805,8 +1819,10 @@ fun AssistantScreen(ui: AssistantUi, scope: CoroutineScope, onOpen: (String) -> 
 
 @Composable
 private fun ChatBubble(m: ChatMsg, onOpen: (String) -> Unit) {
-    // A finished download whose file still exists → a tappable "play it" card.
-    val playable = m.filePath?.takeIf { File(it).exists() }
+    // A finished download is ALWAYS tappable (resolved on tap, so it never stops
+    // working after later downloads / renames). We key off the path being present,
+    // not File.exists() at compose time.
+    val playable = m.filePath?.takeIf { it.isNotBlank() }
     val bg = when {
         m.fromUser -> MaterialTheme.colorScheme.primaryContainer
         playable != null -> MaterialTheme.colorScheme.tertiaryContainer
@@ -1826,15 +1842,16 @@ private fun ChatBubble(m: ChatMsg, onOpen: (String) -> Unit) {
             modifier = if (playable != null) Modifier.clickable { onOpen(playable) } else Modifier
         ) {
             Row(
-                Modifier.widthIn(max = 300.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+                Modifier.widthIn(max = 310.dp).padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                if (playable != null) MediaArtwork(File(playable), size = 44.dp, corner = 9.dp)
                 Text(m.text, color = fg, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f, fill = false))
                 if (playable != null) {
                     Icon(Icons.Filled.PlayCircle, contentDescription = "Play in Library",
-                        tint = fg, modifier = Modifier.size(28.dp))
+                        tint = fg, modifier = Modifier.size(30.dp))
                 }
             }
         }
@@ -2343,7 +2360,19 @@ fun DownloadsList(ctx: android.content.Context, scope: CoroutineScope, onNeedKey
                     val icon = when (t.status) {
                         "done" -> "✅"; "failed" -> "❌"; "running" -> "⬇️"; else -> "⏳"
                     }
-                    Text("$icon ${t.label}", style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                    val fp = t.filePath
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (t.status == "done" && fp != null && File(fp).exists())
+                            MediaArtwork(File(fp), size = 40.dp, corner = 8.dp)
+                        Text("$icon ${t.label}", style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2, modifier = Modifier.weight(1f))
+                        if (t.status == "done" && fp != null) {
+                            IconButton(onClick = {
+                                val f = File(fp); if (f.exists()) Playback.play(listOf(f), 0)
+                            }) { Icon(Icons.Filled.PlayCircle, contentDescription = "Play") }
+                        }
+                    }
                     if (t.status == "running") {
                         LinearProgressIndicator(progress = { t.progress }, modifier = Modifier.fillMaxWidth())
                     }
@@ -2563,14 +2592,17 @@ fun MiniPlayer(onExpand: () -> Unit) {
             Text(Playback.title.ifBlank { "Now playing" },
                 style = MaterialTheme.typography.bodyMedium, maxLines = 1,
                 modifier = Modifier.weight(1f))
-            IconButton(onClick = { Playback.playPause() }) {
+            IconButton(onClick = { Playback.prev() }, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Filled.SkipPrevious, contentDescription = "Previous")
+            }
+            IconButton(onClick = { Playback.playPause() }, modifier = Modifier.size(40.dp)) {
                 Icon(if (Playback.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     contentDescription = "Play/Pause")
             }
-            IconButton(onClick = { Playback.next() }) {
+            IconButton(onClick = { Playback.next() }, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.Filled.SkipNext, contentDescription = "Next")
             }
-            IconButton(onClick = { Playback.stop() }) {
+            IconButton(onClick = { Playback.stop() }, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.Filled.Close, contentDescription = "Close player")
             }
         }

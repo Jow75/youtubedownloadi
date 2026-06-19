@@ -1,19 +1,18 @@
-Mobile v1.23: full premium UI/UX redesign (Home, FAB, glass, gradient wash)
+Mobile v1.24: assistant-bubble fix, mini-player prev, video A/V sync, Home->category nav, liveliness, snappier nav
 
-Phase I — the complete premium redesign George asked for ("do it all"):
-
-- New designed HOME screen (landing tab): greeting hero, quick-action glass tiles,
-  "Now playing" card, "Jump back in" artwork shelf (recently played), recent
-  downloads, and a library dashboard (Songs/Videos/Artists/Playlists stat tiles).
-- Gradient floating action button (BrandFab) on Home -> Quick Download dialog
-  (paste a link, MP3/MP4, go) without leaving the screen.
-- Navigation restructured to 5 premium tabs: Home · Download · Channel · Library ·
-  Assistant; History moved to the drawer (and surfaced on Home). Proper icons.
-- Signature gradient BACKGROUND WASH behind the whole app; transparent top bar +
-  Scaffold + translucent nav so the brand shows through (glassmorphism feel).
-- New design-system components (Components.kt): GlassCard (frosted translucent
-  card), SectionHeader, StatTile, BrandFab.
-- Top bar simplified (section title + AI-settings action); animated Crossfade tab
-  transitions; rounder shapes throughout (from v1.21 system).
+Phase J — pre-release polish & fixes:
+- Assistant: EVERY completed-download bubble stays tappable permanently (was only
+  the newest). Keyed off the saved path, not File.exists() at compose time; on tap
+  it resolves the file robustly (exact path, else by filename in the Library) so
+  renames/moves never break older results. Bubbles now show cover artwork too.
+- Mini-player: added the Previous button (Prev / Play-Pause / Next / Close). Full
+  player keeps all controls (speed/seek/repeat/shuffle/timer).
+- Video A/V sync: downloads now prefer H.264(mp4)+AAC(m4a) instead of letting yt-dlp
+  pick VP9/Opus, which the device couldn't keep in sync (audio-ahead/video-behind).
+  Fixes new MP4 downloads; existing VP9 files would need re-downloading.
+- Home shortcuts now open the EXACT Library category: Videos->Videos, Artists->
+  Artists, Playlists->Playlists (LibraryScreen gained a jumpTo param).
+- Liveliness: finished items in the Downloads list show cover art + a play button.
+- Performance: snappier tab transitions (Crossfade 260ms -> 150ms).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
