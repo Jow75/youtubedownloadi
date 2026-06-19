@@ -1,0 +1,17 @@
+Mobile v1.21: premium UI redesign pass (BAZIQ HUE design system)
+
+Dedicated UI/UX redesign (George's priority 8), built once:
+- Brand design system (Theme.kt): a deliberately-designed dark palette + a
+  signature violet -> cyan "HUE" gradient (BrandGradient / BrandWash). Replaces
+  wallpaper-derived dynamic colour, which read as dull/inconsistent. Rounder
+  shapes app-wide.
+- Album artwork everywhere (MediaMeta.artwork + MediaArtwork component): embedded
+  cover art on Library rows, mini-player and the full player; gradient tile with a
+  music/film glyph when a file has no cover. This is the big streaming-app uplift.
+- Library rows rebuilt: artwork + title + artist, lighter list styling (dropped
+  the heavy card chrome) for a Spotify/YT-Music feel.
+- BrandButton gradient CTAs on the primary actions (Download, Channel Scan,
+  Bulk Download all).
+- Full player: gradient-washed background + large 260dp cover.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

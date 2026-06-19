@@ -17,6 +17,7 @@ import java.io.File
 object MediaMeta {
 
     private val cache = HashMap<String, String>()
+    private val artCache = HashMap<String, ByteArray?>()
 
     @Synchronized
     fun artist(f: File): String {
@@ -24,6 +25,34 @@ object MediaMeta {
         val a = readEmbedded(f) ?: filenameArtist(f)
         cache[f.absolutePath] = a
         return a
+    }
+
+    /**
+     * Embedded album art (cover) as raw bytes, or null if the file has none.
+     * Cached per path (bounded) — decoding/reading is slow, so warm off the main
+     * thread. Powers the artwork thumbnails in the Library and player.
+     */
+    @Synchronized
+    fun artwork(f: File): ByteArray? {
+        val key = f.absolutePath
+        if (artCache.containsKey(key)) return artCache[key]
+        if (artCache.size > 250) artCache.clear()   // keep memory bounded on huge libraries
+        val bytes = readArt(f)
+        artCache[key] = bytes
+        return bytes
+    }
+
+    private fun readArt(f: File): ByteArray? {
+        if (!f.exists()) return null
+        val r = MediaMetadataRetriever()
+        return try {
+            r.setDataSource(f.absolutePath)
+            r.embeddedPicture
+        } catch (_: Exception) {
+            null
+        } finally {
+            try { r.release() } catch (_: Exception) {}
+        }
     }
 
     private fun readEmbedded(f: File): String? {

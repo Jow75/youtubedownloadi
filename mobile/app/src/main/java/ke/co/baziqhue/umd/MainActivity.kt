@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -487,7 +488,7 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
             }
         }
 
-        Button(
+        BrandButton(
             onClick = {
                 val reqUrl = ui.url.trim()
                 if (reqUrl.isNotBlank()) {
@@ -497,7 +498,11 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
             },
             enabled = ui.url.isNotBlank() && hasStorage,
             modifier = Modifier.fillMaxWidth()
-        ) { Text("⬇️ Download") }
+        ) {
+            Icon(Icons.Filled.Download, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Download")
+        }
 
         // Live downloads — they keep running in the background on every tab.
         DownloadsList(ctx, scope) { showAiKey = true }
@@ -811,28 +816,34 @@ private fun LibraryFileRow(
     onToggle: () -> Unit,
 ) {
     val fav = Favorites.isFavorite(f.absolutePath)
-    ElevatedCard(
-        Modifier.fillMaxWidth().clickable {
-            if (selecting) onToggle() else playInApp(ctx, queue, f)
-        }
+    val audio = isAudioFile(f)
+    Row(
+        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+            .clickable { if (selecting) onToggle() else playInApp(ctx, queue, f) }
+            .padding(horizontal = 6.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (selecting) Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
-            Text(f.nameWithoutExtension, style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2, modifier = Modifier.weight(1f).padding(vertical = 6.dp))
-            if (!selecting) {
-                IconButton(onClick = { Favorites.toggle(f.absolutePath) }) {
-                    Icon(if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                        contentDescription = "Favorite",
-                        tint = if (fav) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                FilledIconButton(onClick = { playInApp(ctx, queue, f) }) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
-                }
+        if (selecting) {
+            Checkbox(checked = isSelected, onCheckedChange = { onToggle() })
+            Spacer(Modifier.width(2.dp))
+        }
+        MediaArtwork(f, size = 52.dp, corner = 11.dp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(f.nameWithoutExtension, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+            Text(if (audio) MediaMeta.artist(f) else "Video",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+        }
+        if (!selecting) {
+            IconButton(onClick = { Favorites.toggle(f.absolutePath) }) {
+                Icon(if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    contentDescription = "Favorite",
+                    tint = if (fav) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            FilledIconButton(onClick = { playInApp(ctx, queue, f) }) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
             }
         }
     }
@@ -1684,7 +1695,7 @@ private fun ChannelBody(ui: ChannelUi) {
             modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
         Spacer(Modifier.height(8.dp))
-        Button(
+        BrandButton(
             onClick = {
                 ui.scanning = true; ui.status = "Scanning…"; ui.entries.clear()
                 ui.selected.clear(); ui.page = 0; ui.categoryFilter = "All"; ChannelTriage.reset()
@@ -1699,9 +1710,12 @@ private fun ChannelBody(ui: ChannelUi) {
                     ui.scanning = false
                 }
             },
-            enabled = ui.url.isNotBlank() && !ui.scanning, modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large
-        ) { Text(if (ui.scanning) "Scanning…" else "Scan channel / playlist") }
+            enabled = ui.url.isNotBlank() && !ui.scanning, modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Filled.Subscriptions, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(if (ui.scanning) "Scanning…" else "Scan channel / playlist")
+        }
 
         if (ui.scanning) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(Modifier.fillMaxWidth()) }
         if (ui.status.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(ui.status, style = MaterialTheme.typography.bodySmall) }
@@ -1902,7 +1916,7 @@ private fun BulkBody(ui: BulkUi) {
             modifier = Modifier.fillMaxWidth().height(150.dp),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
 
-        Button(
+        BrandButton(
             onClick = {
                 parse(ui.videoLinks).forEach { Downloads.enqueue(ctx, it, false, ui.quality, it) }
                 parse(ui.audioLinks).forEach { Downloads.enqueue(ctx, it, true, "Best", it) }
@@ -1910,9 +1924,12 @@ private fun BulkBody(ui: BulkUi) {
                     "(see Downloads on the Download tab)."
                 ui.videoLinks = ""; ui.audioLinks = ""
             },
-            enabled = hasStorage && total > 0, modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.large
-        ) { Text("⬇️ Download all ($total)") }
+            enabled = hasStorage && total > 0, modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Filled.Download, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Download all ($total)")
+        }
 
         if (!hasStorage) Text("Grant storage access on the Download tab first.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -2192,10 +2209,12 @@ fun MiniPlayer(onExpand: () -> Unit) {
         modifier = Modifier.fillMaxWidth().clickable { onExpand() }
     ) {
         Row(
-            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Filled.MusicNote, contentDescription = null)
+            val path = Playback.currentPath
+            if (path.isNotBlank()) MediaArtwork(File(path), size = 40.dp, corner = 9.dp)
+            else Icon(Icons.Filled.MusicNote, contentDescription = null)
             Spacer(Modifier.width(10.dp))
             Text(Playback.title.ifBlank { "Now playing" },
                 style = MaterialTheme.typography.bodyMedium, maxLines = 1,
@@ -2226,7 +2245,7 @@ fun PlayerScreen(onClose: () -> Unit) {
         val dur = Playback.duration()
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(
-                Modifier.fillMaxSize().padding(24.dp),
+                Modifier.fillMaxSize().background(BrandWash).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -2240,7 +2259,9 @@ fun PlayerScreen(onClose: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                Icon(Icons.Filled.MusicNote, contentDescription = null,
+                val path = Playback.currentPath
+                if (path.isNotBlank()) MediaArtwork(File(path), size = 260.dp, corner = 24.dp)
+                else Icon(Icons.Filled.MusicNote, contentDescription = null,
                     modifier = Modifier.size(96.dp), tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.height(28.dp))
                 Text(Playback.title.ifBlank { "Now playing" },

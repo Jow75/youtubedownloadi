@@ -1,23 +1,65 @@
 package ke.co.baziqhue.umd
 
 import android.app.Activity
-import android.os.Build
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
-/** Softer, rounder corners across the app — cards, sheets, buttons, chips — for a
- * modern streaming-app feel rather than boxy utility. */
+/**
+ * BAZIQ HUE design language. A deliberately-designed dark theme with a signature
+ * violet→cyan "HUE" gradient — a consistent premium identity (not wallpaper-derived
+ * dynamic colour, which looked dull/inconsistent). Used across hero cards, primary
+ * buttons, artwork placeholders and the player.
+ */
+
+// --- Brand identity -------------------------------------------------------- //
+val BrandViolet = Color(0xFF7C5CFF)
+val BrandPurple = Color(0xFFB44DFF)
+val BrandCyan = Color(0xFF18C8FF)
+val BrandPink = Color(0xFFFF5CA8)
+
+/** The signature gradient — use for primary CTAs, hero surfaces, art placeholders. */
+val BrandGradient: Brush = Brush.linearGradient(listOf(BrandViolet, BrandPurple, BrandCyan))
+
+/** A softer diagonal wash for large surfaces (player background, hero cards). */
+val BrandWash: Brush = Brush.linearGradient(
+    0f to Color(0xFF1A1430), 0.5f to Color(0xFF161425), 1f to Color(0xFF101620)
+)
+
+private val UmdDark = darkColorScheme(
+    primary = Color(0xFFB9A8FF),
+    onPrimary = Color(0xFF1A0B3D),
+    primaryContainer = Color(0xFF3A2A78),
+    onPrimaryContainer = Color(0xFFE7DEFF),
+    secondary = Color(0xFF7FE0FF),
+    onSecondary = Color(0xFF00344A),
+    secondaryContainer = Color(0xFF124A60),
+    onSecondaryContainer = Color(0xFFBEEEFF),
+    tertiary = Color(0xFFFFA8D2),
+    onTertiary = Color(0xFF5A1138),
+    tertiaryContainer = Color(0xFF7A2752),
+    onTertiaryContainer = Color(0xFFFFD9E8),
+    background = Color(0xFF0A0A10),
+    onBackground = Color(0xFFEAE8F2),
+    surface = Color(0xFF111119),
+    onSurface = Color(0xFFEAE8F2),
+    surfaceVariant = Color(0xFF23232F),
+    onSurfaceVariant = Color(0xFFC6C4D4),
+    outline = Color(0xFF3C3C4A),
+    error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005),
+)
+
+/** Softer, rounder corners across the app — cards, sheets, buttons, chips. */
 private val UmdShapes = Shapes(
     extraSmall = RoundedCornerShape(10.dp),
     small = RoundedCornerShape(14.dp),
@@ -26,37 +68,9 @@ private val UmdShapes = Shapes(
     extraLarge = RoundedCornerShape(28.dp),
 )
 
-/**
- * App theme. Stays dark (the product's look), but modernised:
- *  - Material You dynamic colour on Android 12+ (themes to the user's wallpaper —
- *    a native, current feel, not a flashy custom skin).
- *  - A refined slate-and-blue fallback palette on older devices.
- */
-private val FallbackDark = darkColorScheme(
-    primary = Color(0xFF8FB6FF),
-    onPrimary = Color(0xFF062045),
-    primaryContainer = Color(0xFF20406B),
-    onPrimaryContainer = Color(0xFFD7E4FF),
-    secondary = Color(0xFF9BD4C6),
-    onSecondary = Color(0xFF003730),
-    secondaryContainer = Color(0xFF1E4E46),
-    onSecondaryContainer = Color(0xFFBDEEE0),
-    background = Color(0xFF0E1116),
-    onBackground = Color(0xFFE6E8EE),
-    surface = Color(0xFF13161C),
-    onSurface = Color(0xFFE6E8EE),
-    surfaceVariant = Color(0xFF262B34),
-    onSurfaceVariant = Color(0xFFC4C8D2),
-    outline = Color(0xFF3B414C),
-    error = Color(0xFFFFB4AB),
-    onError = Color(0xFF690005),
-)
-
 @Composable
 fun UmdTheme(content: @Composable () -> Unit) {
-    val ctx = LocalContext.current
-    val scheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-        dynamicDarkColorScheme(ctx) else FallbackDark
+    val scheme = UmdDark
 
     val view = LocalView.current
     if (!view.isInEditMode) {
