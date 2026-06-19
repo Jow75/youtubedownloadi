@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +48,7 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -122,15 +124,19 @@ class DownloadUi {
 class ChannelUi {
     var mode by mutableStateOf(0)            // 0 = Channel/Profile, 1 = Bulk
     var url by mutableStateOf("")
-    var audio by mutableStateOf(true)
+    var audio by mutableStateOf(true)        // default format for "grab everything"
     var quality by mutableStateOf("Best")
     var scanning by mutableStateOf(false)
     var status by mutableStateOf("")
+    var uploader by mutableStateOf("")
     val entries = mutableStateListOf<Downloader.Entry>()
     var query by mutableStateOf("")
     var page by mutableStateOf(0)
-    val selected = mutableStateListOf<String>()   // selected entry urls
     var categoryFilter by mutableStateOf("All")
+    var officialOnly by mutableStateOf(false)
+    // Per-video format choice for the "pick per video" section (url -> token);
+    // absent = "Skip". Survives pagination so picks across pages are remembered.
+    val formats = mutableStateMapOf<String, String>()
 }
 
 /** Bulk paste-and-go state, hoisted so the queued list survives tab switches. */
@@ -530,12 +536,44 @@ fun DownloadScreen(lm: LicenseManager, ui: DownloadUi, scope: CoroutineScope, on
     if (showAiKey) AiKeyDialog(ctx) { showAiKey = false }
 }
 
+/** Slice a list to one page; pageSize <= 0 means "show all". */
+private fun <T> List<T>.pageSlice(page: Int, pageSize: Int): List<T> =
+    if (pageSize <= 0) this else drop(page * pageSize).take(pageSize)
+
+/** Prev/Next + "N per page" controls shared by the long lists (History/Downloads/Library). */
+@Composable
+private fun PageControls(total: Int, pageSize: Int, page: Int, onPage: (Int) -> Unit, onPageSize: (Int) -> Unit) {
+    val pages = if (pageSize <= 0) 1 else ((total + pageSize - 1) / pageSize).coerceAtLeast(1)
+    val p = page.coerceIn(0, pages - 1)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(enabled = p > 0, onClick = { onPage(p - 1) },
+            contentPadding = PaddingValues(horizontal = 14.dp)) { Text("‹") }
+        Text("Page ${p + 1}/$pages · $total", textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        OutlinedButton(enabled = p < pages - 1, onClick = { onPage(p + 1) },
+            contentPadding = PaddingValues(horizontal = 14.dp)) { Text("›") }
+        Spacer(Modifier.width(6.dp))
+        var menu by remember { mutableStateOf(false) }
+        Box {
+            TextButton(onClick = { menu = true }) { Text(if (pageSize <= 0) "All" else "$pageSize/pg") }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                listOf(10, 20, 50, 0).forEach { sz ->
+                    DropdownMenuItem(text = { Text(if (sz <= 0) "Show all" else "$sz per page") },
+                        onClick = { onPageSize(sz); menu = false })
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(onRedownload: (url: String, audio: Boolean) -> Unit) {
     val ctx = LocalContext.current
     var query by remember { mutableStateOf("") }
     var entries by remember { mutableStateOf(emptyList<HistoryEntry>()) }
+    var page by remember { mutableStateOf(0) }
+    var pageSize by remember { mutableStateOf(20) }
     fun refresh() { entries = History.all() }
     // Reload whenever this screen comes to the foreground.
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refresh() }
@@ -557,7 +595,7 @@ fun HistoryScreen(onRedownload: (url: String, audio: Boolean) -> Unit) {
         }
 
         OutlinedTextField(
-            value = query, onValueChange = { query = it },
+            value = query, onValueChange = { query = it; page = 0 },
             label = { Text("Search history") }, singleLine = true,
             modifier = Modifier.fillMaxWidth()
         )
@@ -566,19 +604,19 @@ fun HistoryScreen(onRedownload: (url: String, audio: Boolean) -> Unit) {
                 modifier = Modifier.weight(1f))
             TextButton(onClick = { History.clear(); refresh() }) { Text("Clear log") }
         }
-        Text("Download log — clearing it keeps your media safe in the Library.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
 
         val playQueue = filtered.map { File(it.path) }
+        val shown = filtered.pageSlice(page, pageSize)
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.weight(1f).fillMaxWidth()
         ) {
-            items(filtered) { e ->
+            items(shown, key = { it.path + it.timestamp }) { e ->
                 HistoryRow(ctx, e, playQueue, onRedownload) { History.remove(e); refresh() }
             }
         }
+        if (filtered.size > 10) PageControls(filtered.size, pageSize, page,
+            { page = it }, { pageSize = it; page = 0 })
     }
 }
 
@@ -652,6 +690,8 @@ fun LibraryScreen() {
     var category by remember { mutableStateOf(0) }  // 0 Songs,1 Videos,2 Favorites,3 Playlists,4 Artists,5 Tools
     var query by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf(0) }
+    var libPage by remember { mutableStateOf(0) }
+    var libPageSize by remember { mutableStateOf(20) }
     var sortMenu by remember { mutableStateOf(false) }
     var openPlaylist by remember { mutableStateOf<String?>(null) }
     var openArtist by remember { mutableStateOf<String?>(null) }
@@ -786,9 +826,12 @@ fun LibraryScreen() {
                         "clearing History won't remove them.",
                         style = MaterialTheme.typography.bodyMedium)
                 }
+                val maxPage = if (libPageSize <= 0) 0 else ((files.size - 1) / libPageSize).coerceAtLeast(0)
+                val p = libPage.coerceIn(0, maxPage)
+                val shown = files.pageSlice(p, libPageSize)
                 LazyColumn(Modifier.weight(1f).fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(files, key = { it.absolutePath }) { f ->
+                    items(shown, key = { it.absolutePath }) { f ->
                         LibraryFileRow(ctx, f, files, selecting,
                             isSelected = f.absolutePath in selected,
                             onToggle = {
@@ -796,6 +839,10 @@ fun LibraryScreen() {
                                 else selected.add(f.absolutePath)
                             })
                     }
+                }
+                if (files.size > 10) {
+                    Spacer(Modifier.height(6.dp))
+                    PageControls(files.size, libPageSize, p, { libPage = it }, { libPageSize = it; libPage = 0 })
                 }
             }
         }
@@ -1043,13 +1090,31 @@ private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
         else -> if (a.isEmpty()) {
             Text("No songs yet.", style = MaterialTheme.typography.bodyMedium)
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
-                items(a, key = { it.first }) { (name, count) ->
-                    ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(name) }) {
-                        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(name, style = MaterialTheme.typography.titleSmall,
-                                modifier = Modifier.weight(1f), maxLines = 1)
-                            Text("$count song(s)", style = MaterialTheme.typography.bodySmall)
+            var query by remember { mutableStateOf("") }
+            val shown = a.filter { query.isBlank() || it.first.contains(query, true) }
+            Column(Modifier.fillMaxSize()) {
+                OutlinedTextField(query, { query = it }, label = { Text("Search artists") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) })
+                Spacer(Modifier.height(8.dp))
+                if (shown.isEmpty()) {
+                    Text("No artists match \"$query\".", style = MaterialTheme.typography.bodyMedium)
+                }
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
+                    items(shown, key = { it.first }) { (name, count) ->
+                        ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(name) }) {
+                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.size(40.dp).clip(CircleShape).background(BrandGradient),
+                                    contentAlignment = Alignment.Center) {
+                                    Text(name.take(1).uppercase(), color = Color.White,
+                                        style = MaterialTheme.typography.titleMedium)
+                                }
+                                Spacer(Modifier.width(12.dp))
+                                Text(name, style = MaterialTheme.typography.titleSmall,
+                                    modifier = Modifier.weight(1f), maxLines = 1)
+                                Text("$count song(s)", style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
@@ -1229,6 +1294,29 @@ private fun DuplicatesSection(ctx: android.content.Context, scope: CoroutineScop
             if (DedupJob.status.isNotBlank()) {
                 Text(DedupJob.status, style = MaterialTheme.typography.bodyMedium)
             }
+            if (DedupJob.groups.isNotEmpty()) {
+                val extras = DedupJob.groups.sumOf { it.files.size - 1 }
+                BrandButton(
+                    onClick = {
+                        var n = 0
+                        DedupJob.groups.forEach { g ->
+                            g.files.drop(1).forEach { f ->
+                                if (f.exists() && f.delete()) { Storage.scan(ctx, f); n++ }
+                            }
+                        }
+                        DedupJob.groups.clear()
+                        DedupJob.status = "Deleted $n duplicate file(s) — kept one of each. 🎉"
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Delete all $extras duplicates (keep one of each)")
+                }
+                Text("Or review and delete them individually below.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             DedupJob.groups.forEachIndexed { gi, group ->
                 HorizontalDivider()
                 Text("${group.reason} — ${group.files.size}× \"${group.files.first().nameWithoutExtension}\"",
@@ -1279,19 +1367,26 @@ private fun TitleCleanupSection(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("🏷️ Title clean-up", style = MaterialTheme.typography.titleMedium)
             Text("AI suggests a clean \"Artist — Title\" for messy filenames. Rename them " +
-                "all in one tap, or pick which. Files you've already cleaned won't be " +
-                "suggested again.", style = MaterialTheme.typography.bodySmall,
+                "all in one tap, or pick which. Files you've already cleaned (or skipped) " +
+                "are remembered and won't be suggested again.", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            var forceAll by remember { mutableStateOf(false) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = forceAll, onCheckedChange = { forceAll = it })
+                Text("Re-check files I've already cleaned", style = MaterialTheme.typography.bodySmall)
+            }
 
             Button(
                 onClick = onClick@{
                     if (!aiOn) { onNeedKey(); return@onClick }
+                    val force = forceAll
                     CleanupJob.reset(); CleanupJob.running = true
                     CleanupJob.status = "Analyzing titles…"
                     Jobs.launch("Title clean-up") {
                         CleanState.ensureLoaded()
-                        // Skip files already cleaned/ignored (and unchanged since).
-                        val todo = files.filter { !CleanState.isHandled(it) }
+                        // Skip files already cleaned/ignored (unless re-check is on).
+                        val todo = if (force) files else files.filter { !CleanState.isHandled(it) }
                         if (todo.isEmpty()) {
                             CleanupJob.status = "Everything's already tidy 🎉"
                             CleanupJob.running = false; return@launch
@@ -1676,97 +1771,148 @@ private fun ChannelBody(ui: ChannelUi) {
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { hasStorage = Storage.hasAccess(ctx) }
 
     val perPage = 20
+    // Per-video list respects search + category + official filters.
     val filtered = ui.entries.filter {
         (ui.query.isBlank() || it.title.contains(ui.query, true)) &&
-            (ui.categoryFilter == "All" || ChannelTriage.categories[it.title] == ui.categoryFilter)
+            (ui.categoryFilter == "All" || ChannelTriage.categories[it.title] == ui.categoryFilter) &&
+            (!ui.officialOnly || ChannelTriage.official[it.title] == true)
     }
     val pages = if (filtered.isEmpty()) 1 else (filtered.size + perPage - 1) / perPage
     val pageClamped = ui.page.coerceIn(0, pages - 1)
     val pageItems = filtered.drop(pageClamped * perPage).take(perPage)
+    // AI-pick set: category + official (ignores the free-text search) — desktop's "queue N".
+    val aiMatch = ui.entries.filter {
+        (ui.categoryFilter == "All" || ChannelTriage.categories[it.title] == ui.categoryFilter) &&
+            (!ui.officialOnly || ChannelTriage.official[it.title] == true)
+    }
+    val chosen = ui.entries.filter { (ui.formats[it.url] ?: "Skip") != "Skip" }
 
-    fun enqueueAll(list: List<Downloader.Entry>) {
+    fun queueOne(e: Downloader.Entry, token: String) {
+        when {
+            token == "Skip" -> {}
+            token.startsWith("MP4") -> {
+                val q = when { "720" in token -> "720p"; "480" in token -> "480p"; else -> "Best" }
+                Downloads.enqueue(ctx, e.url, false, q, e.title)
+            }
+            else -> Downloads.enqueue(ctx, e.url, true, "Best", e.title)
+        }
+    }
+    fun queueBulk(list: List<Downloader.Entry>) {
         list.forEach { Downloads.enqueue(ctx, it.url, ui.audio, ui.quality, it.title) }
     }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(ui.url, { ui.url = it },
-            label = { Text("Channel / playlist / profile URL") }, singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-        Spacer(Modifier.height(8.dp))
-        BrandButton(
-            onClick = {
-                ui.scanning = true; ui.status = "Scanning…"; ui.entries.clear()
-                ui.selected.clear(); ui.page = 0; ui.categoryFilter = "All"; ChannelTriage.reset()
-                // App-scope scan: keeps reading the channel even if you switch tabs.
-                Jobs.launch("Scan channel") {
-                    Downloader.scanEntries(ctx, ui.url.trim()).fold(
-                        onSuccess = {
-                            ui.entries.clear(); ui.entries.addAll(it)
-                            ui.status = "Found ${it.size} item(s)."
-                        },
-                        onFailure = { ui.status = "Scan failed: ${it.message}" })
-                    ui.scanning = false
-                }
-            },
-            enabled = ui.url.isNotBlank() && !ui.scanning, modifier = Modifier.fillMaxWidth()
-        ) {
-            Icon(Icons.Filled.Subscriptions, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (ui.scanning) "Scanning…" else "Scan channel / playlist")
-        }
-
-        if (ui.scanning) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(Modifier.fillMaxWidth()) }
-        if (ui.status.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(ui.status, style = MaterialTheme.typography.bodySmall) }
-        if (!hasStorage && ui.entries.isNotEmpty()) {
-            Text("Grant storage access on the Download tab first.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-        }
-
-        if (ui.entries.isEmpty()) {
+        val scroll = rememberScrollState()
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll)) {
             Spacer(Modifier.height(8.dp))
-            Text("Paste a channel, playlist or profile link and Scan. You'll get the full " +
-                "list — search, sort by type with AI (Music / Live / Interview / …), select " +
-                "items, choose MP3/MP4, and download. It all keeps running while you browse " +
-                "other tabs.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else {
+            OutlinedTextField(ui.url, { ui.url = it },
+                label = { Text("Channel / playlist / profile URL") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
             Spacer(Modifier.height(8.dp))
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                SegmentedButton(selected = ui.audio, onClick = { ui.audio = true },
-                    shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
-                SegmentedButton(selected = !ui.audio, onClick = { ui.audio = false },
-                    shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
+            BrandButton(
+                onClick = {
+                    ui.scanning = true; ui.status = "Scanning…"; ui.entries.clear()
+                    ui.formats.clear(); ui.page = 0; ui.categoryFilter = "All"
+                    ui.officialOnly = false; ui.uploader = ""; ChannelTriage.reset()
+                    // App-scope scan: keeps reading the channel even if you switch tabs.
+                    Jobs.launch("Scan channel") {
+                        Downloader.scanEntries(ctx, ui.url.trim()).fold(
+                            onSuccess = {
+                                ui.entries.clear(); ui.entries.addAll(it)
+                                ui.uploader = it.firstOrNull { e -> e.uploader.isNotBlank() }?.uploader ?: ""
+                                ui.status = "Found ${it.size} video(s)" +
+                                    (if (ui.uploader.isNotBlank()) " · by ${ui.uploader}" else "")
+                            },
+                            onFailure = { ui.status = "Scan failed: ${it.message}" })
+                        ui.scanning = false
+                    }
+                },
+                enabled = ui.url.isNotBlank() && !ui.scanning, modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Filled.Subscriptions, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (ui.scanning) "Scanning…" else "Scan channel / playlist")
             }
-            if (!ui.audio) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("Best", "720p", "480p").forEach {
-                        FilterChip(selected = ui.quality == it, onClick = { ui.quality = it }, label = { Text(it) })
+
+            if (ui.scanning) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            if (ui.status.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Surface(color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = MaterialTheme.shapes.medium, modifier = Modifier.fillMaxWidth()) {
+                    Text(ui.status, style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(12.dp))
+                }
+            }
+            if (!hasStorage && ui.entries.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text("Grant storage access on the Download tab first.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+
+            if (ui.entries.isEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text("Paste a channel, playlist or profile link and Scan. You'll get every " +
+                    "video — let AI sort them by type (Music / Live / Interview / …), grab a " +
+                    "whole category, or pick a format per video. It all keeps running while " +
+                    "you browse other tabs.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                // ===== Grab everything ======================================== #
+                Spacer(Modifier.height(14.dp))
+                Text("⚡ Grab everything", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(6.dp))
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    SegmentedButton(selected = ui.audio, onClick = { ui.audio = true },
+                        shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
+                    SegmentedButton(selected = !ui.audio, onClick = { ui.audio = false },
+                        shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
+                }
+                if (!ui.audio) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("Best", "720p", "480p").forEach {
+                            FilterChip(selected = ui.quality == it, onClick = { ui.quality = it }, label = { Text(it) })
+                        }
                     }
                 }
-            }
+                Spacer(Modifier.height(8.dp))
+                BrandButton(enabled = hasStorage, modifier = Modifier.fillMaxWidth(),
+                    onClick = { queueBulk(ui.entries); ui.status = "Queued all ${ui.entries.size}." }) {
+                    Icon(Icons.Filled.Download, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Download ALL ${ui.entries.size} as ${if (ui.audio) "MP3" else "MP4"}")
+                }
 
-            // --- AI category sort (desktop "AI Triage" parity) ------------------ #
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // ===== AI Triage ============================================= #
+                Spacer(Modifier.height(16.dp))
+                Text("🤖 AI Triage — let AI pick what to grab", style = MaterialTheme.typography.titleMedium)
+                Text("AI reads every title and sorts them, so you can grab just what you want " +
+                    "(e.g. official music only). Only titles are sent.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
                 OutlinedButton(
                     onClick = {
                         if (!Ai.isConfigured(ctx)) {
                             ChannelTriage.status = "Set an AI key first (menu → AI assistant settings)."
                         } else {
-                            ChannelTriage.running = true; ChannelTriage.status = "Sorting by type…"
+                            ChannelTriage.running = true; ChannelTriage.status = "Analyzing…"
                             Jobs.launch("Sort channel") {
                                 val titles = ui.entries.map { it.title }
-                                Ai.analyzeTitles(ctx, titles) { d, t -> ChannelTriage.status = "Sorting $d / $t…" }
+                                ChannelTriage.total = titles.size
+                                Ai.analyzeTitles(ctx, titles) { d, t -> ChannelTriage.status = "Classifying $d / $t…" }
                                     .fold(
                                         onSuccess = { m ->
                                             ui.entries.forEach { e ->
-                                                m[e.title]?.let { ChannelTriage.categories[e.title] = it.category }
+                                                m[e.title]?.let {
+                                                    ChannelTriage.categories[e.title] = it.category
+                                                    ChannelTriage.official[e.title] = it.official == true
+                                                }
                                             }
-                                            ChannelTriage.status = "Sorted — tap a category below."
+                                            ChannelTriage.classified = ChannelTriage.categories.size
+                                            ChannelTriage.status = "Sorted — pick a category."
                                         },
                                         onFailure = { ChannelTriage.status = "Sort failed: ${it.message}" }
                                     )
@@ -1776,69 +1922,70 @@ private fun ChannelBody(ui: ChannelUi) {
                     },
                     enabled = !ChannelTriage.running
                 ) {
-                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (ChannelTriage.running) "Sorting…" else "AI sort by type")
+                    if (ChannelTriage.running) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    } else {
+                        Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(if (ChannelTriage.running) "Analyzing…"
+                    else "✨ Analyze these ${ui.entries.size} videos with AI")
                 }
-                if (ChannelTriage.status.isNotBlank())
-                    Text(ChannelTriage.status, style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2, modifier = Modifier.weight(1f))
-            }
-            if (ChannelTriage.categories.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                val counts = ChannelTriage.categories.values.groupingBy { it }.eachCount()
-                val cats = listOf("All") + counts.keys.sortedByDescending { counts[it] }
-                Row(Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    cats.forEach { c ->
-                        FilterChip(selected = ui.categoryFilter == c,
-                            onClick = { ui.categoryFilter = c; ui.page = 0 },
-                            label = { Text(if (c == "All") "All (${ui.entries.size})" else "$c (${counts[c]})") })
+                if (ChannelTriage.running && ChannelTriage.total > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(ChannelTriage.status, style = MaterialTheme.typography.bodySmall)
+                }
+                if (ChannelTriage.categories.isNotEmpty()) {
+                    val counts = ChannelTriage.categories.values.groupingBy { it }.eachCount()
+                    val cats = listOf("All") + counts.keys.sortedByDescending { counts[it] }
+                    Spacer(Modifier.height(8.dp))
+                    Text("Classified ${ChannelTriage.classified}/${ui.entries.size}  ·  " +
+                        counts.entries.sortedByDescending { it.value }.joinToString(" · ") { "${it.key}: ${it.value}" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Categories to include", style = MaterialTheme.typography.labelMedium)
+                    Row(Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        cats.forEach { c ->
+                            FilterChip(selected = ui.categoryFilter == c,
+                                onClick = { ui.categoryFilter = c; ui.page = 0 },
+                                label = { Text(if (c == "All") "All (${ui.entries.size})" else "$c (${counts[c]})") })
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = ui.officialOnly, onCheckedChange = { ui.officialOnly = it; ui.page = 0 })
+                        Text("Official releases only", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    BrandButton(enabled = hasStorage && aiMatch.isNotEmpty(), modifier = Modifier.fillMaxWidth(),
+                        onClick = { queueBulk(aiMatch); ui.status = "Queued ${aiMatch.size} AI-picked." }) {
+                        Text("📦 Queue ${aiMatch.size} ${ui.categoryFilter} video(s) as ${if (ui.audio) "MP3" else "MP4"}")
                     }
                 }
-            }
 
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(ui.query, { ui.query = it; ui.page = 0 },
-                label = { Text("Search items") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(8.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = {
-                    val pageUrls = pageItems.map { it.url }
-                    if (pageUrls.all { it in ui.selected }) ui.selected.removeAll(pageUrls.toSet())
-                    else pageUrls.forEach { if (it !in ui.selected) ui.selected.add(it) }
-                }) { Text("Select page") }
-                Text("${ui.selected.size} selected", style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f))
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = hasStorage && ui.selected.isNotEmpty(),
-                    onClick = {
-                        enqueueAll(ui.entries.filter { it.url in ui.selected })
-                        ui.status = "Queued ${ui.selected.size}."
-                    },
-                    modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.large) {
-                    Text("Download selected (${ui.selected.size})")
+                // ===== Pick per video ======================================== #
+                Spacer(Modifier.height(16.dp))
+                Text("🎚️ Or pick per video", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(ui.query, { ui.query = it; ui.page = 0 },
+                    label = { Text("Search these videos by name") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                if (pages > 1) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(enabled = pageClamped > 0, onClick = { ui.page = pageClamped - 1 }) { Text("‹ Prev") }
+                        Text("Page ${pageClamped + 1} / $pages · showing ${pageItems.size} of ${filtered.size}",
+                            textAlign = TextAlign.Center, style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f))
+                        OutlinedButton(enabled = pageClamped < pages - 1, onClick = { ui.page = pageClamped + 1 }) { Text("Next ›") }
+                    }
+                    Spacer(Modifier.height(6.dp))
                 }
-                OutlinedButton(enabled = hasStorage && filtered.isNotEmpty(),
-                    onClick = { enqueueAll(filtered); ui.status = "Queued ${filtered.size}." },
-                    modifier = Modifier.weight(1f), shape = MaterialTheme.shapes.large) {
-                    Text("All (${filtered.size})")
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(pageItems, key = { it.url }) { e ->
-                    val sel = e.url in ui.selected
-                    ElevatedCard(Modifier.fillMaxWidth().clickable {
-                        if (sel) ui.selected.remove(e.url) else ui.selected.add(e.url)
-                    }) {
+                pageItems.forEach { e ->
+                    ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
                         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = sel, onCheckedChange = {
-                                if (sel) ui.selected.remove(e.url) else ui.selected.add(e.url)
-                            })
                             if (e.thumb.isNotBlank()) {
                                 AsyncImage(model = e.thumb, contentDescription = null,
                                     modifier = Modifier.size(width = 64.dp, height = 40.dp)
@@ -1857,22 +2004,41 @@ private fun ChannelBody(ui: ChannelUi) {
                                     }
                                 }
                             }
-                            IconButton(enabled = hasStorage, onClick = {
-                                Downloads.enqueue(ctx, e.url, ui.audio, ui.quality, e.title)
-                                ui.status = "Queued \"${e.title}\"."
-                            }) { Icon(Icons.Filled.Download, contentDescription = "Download this") }
+                            Spacer(Modifier.width(6.dp))
+                            FormatPicker(ui.formats[e.url] ?: "Skip") { ui.formats[e.url] = it }
                         }
                     }
                 }
-            }
-
-            if (pages > 1) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(enabled = pageClamped > 0, onClick = { ui.page = pageClamped - 1 }) { Text("‹ Prev") }
-                    Text("Page ${pageClamped + 1} / $pages", textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    OutlinedButton(enabled = pageClamped < pages - 1, onClick = { ui.page = pageClamped + 1 }) { Text("Next ›") }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    BrandButton(enabled = hasStorage && chosen.isNotEmpty(), modifier = Modifier.weight(1f),
+                        onClick = {
+                            chosen.forEach { queueOne(it, ui.formats[it.url] ?: "Skip") }
+                            ui.status = "Queued ${chosen.size} chosen video(s)."
+                        }) { Text("⬇️ Download chosen (${chosen.size})") }
+                    OutlinedButton(enabled = ui.formats.isNotEmpty(),
+                        onClick = { ui.formats.clear() }, modifier = Modifier.weight(1f),
+                        shape = MaterialTheme.shapes.large) { Text("Reset picks") }
                 }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+}
+
+/** Per-video format dropdown for the channel "pick per video" list. */
+@Composable
+private fun FormatPicker(current: String, onPick: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val options = listOf("Skip", "MP3", "MP4 Best", "MP4 720", "MP4 480")
+    Box {
+        OutlinedButton(onClick = { open = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+            Text(current, style = MaterialTheme.typography.labelMedium)
+            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { opt ->
+                DropdownMenuItem(text = { Text(opt) }, onClick = { onPick(opt); open = false })
             }
         }
     }
@@ -1989,12 +2155,15 @@ fun DownloadsBar(onTap: () -> Unit) {
 @Composable
 fun DownloadsList(ctx: android.content.Context, scope: CoroutineScope, onNeedKey: () -> Unit) {
     if (Downloads.tasks.isEmpty()) return
+    var page by remember { mutableStateOf(0) }
+    var pageSize by remember { mutableStateOf(10) }
     Spacer(Modifier.height(8.dp))
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("Downloads", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        Text("Downloads (${Downloads.tasks.size})", style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.weight(1f))
         TextButton(onClick = { Downloads.clearFinished() }) { Text("Clear finished") }
     }
-    Downloads.tasks.forEach { t ->
+    Downloads.tasks.pageSlice(page, pageSize).forEach { t ->
         key(t.id) {
             var explanation by remember { mutableStateOf<String?>(null) }
             var aiBusy by remember { mutableStateOf(false) }
@@ -2029,6 +2198,10 @@ fun DownloadsList(ctx: android.content.Context, scope: CoroutineScope, onNeedKey
                 }
             }
         }
+    }
+    if (Downloads.tasks.size > 10) {
+        Spacer(Modifier.height(6.dp))
+        PageControls(Downloads.tasks.size, pageSize, page, { page = it }, { pageSize = it; page = 0 })
     }
 }
 

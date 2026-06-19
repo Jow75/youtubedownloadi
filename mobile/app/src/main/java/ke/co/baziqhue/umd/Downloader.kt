@@ -147,6 +147,9 @@ object Downloader {
                 req.addOption("--merge-output-format", "mp4")
             }
             req.addOption("--embed-metadata")
+            // Embed the YouTube thumbnail as cover art so the Library/player show
+            // a real picture (usually the artist) instead of a placeholder tile.
+            req.addOption("--embed-thumbnail")
 
             // Some sites (TikTok especially) have probabilistic anti-bot
             // responses — the same request fails one moment and succeeds the
@@ -207,47 +210,82 @@ object Downloader {
         val url: String,
         val durationSec: Int = 0,
         val thumb: String = "",
+        val uploader: String = "",
     )
 
+    // A bare YouTube channel root lists only its TABS (Videos, Shorts, …) — so a
+    // naive scan returns "2 items", not the videos. Point it at the /videos tab
+    // (mirrors desktop downloader.normalize_channel_url) so we get every upload.
+    private val YT_TABS = listOf(
+        "/videos", "/shorts", "/streams", "/playlists", "/featured", "/community", "/about")
+    private val CHANNEL_ROOT_RE =
+        Regex("""youtube\.com/(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)$""", RegexOption.IGNORE_CASE)
+
+    private fun normalizeChannelUrl(url: String): String {
+        val u = url.trim()
+        if (u.isEmpty() || "youtube.com" !in u.lowercase()) return u
+        val base = u.substringBefore("?").substringBefore("#").trimEnd('/')
+        if (YT_TABS.any { base.lowercase().endsWith(it) }) return base
+        if (CHANNEL_ROOT_RE.containsMatchIn(base)) return "$base/videos"
+        return u
+    }
+
+    private fun thumbFor(e: JSONObject, id: String): String {
+        val ta = e.optJSONArray("thumbnails")
+        val fromArr = if (ta != null && ta.length() > 0)
+            ta.optJSONObject(ta.length() - 1)?.optString("url").orEmpty() else ""
+        return when {
+            fromArr.isNotBlank() -> fromArr
+            id.length == 11 -> "https://i.ytimg.com/vi/$id/mqdefault.jpg"
+            else -> ""
+        }
+    }
+
+    // Walk nested results (a channel comes back as tabs-of-playlists), skip the
+    // channel-tab pseudo-entries, and de-dupe — so leaves are real, watchable videos.
+    private fun walkEntries(node: JSONObject, depth: Int, out: MutableList<Entry>, seen: MutableSet<String>) {
+        if (depth > 4) return
+        val subs = node.optJSONArray("entries")
+        if (subs != null && subs.length() > 0) {
+            for (i in 0 until subs.length()) {
+                subs.optJSONObject(i)?.let { walkEntries(it, depth + 1, out, seen) }
+            }
+            return
+        }
+        val ieKey = node.optString("ie_key").ifBlank { node.optString("_type") }
+        if (ieKey.equals("YoutubeTab", true)) return
+        val id = node.optString("id")
+        val eurl = node.optString("url").ifBlank { node.optString("webpage_url").ifBlank { id } }
+        if (eurl.isBlank()) return
+        val key = id.ifBlank { eurl }
+        if (key in seen) return
+        seen.add(key)
+        out.add(Entry(
+            node.optString("title").ifBlank { eurl }, eurl,
+            node.optDouble("duration", 0.0).toInt(), thumbFor(node, id),
+            node.optString("uploader").ifBlank { node.optString("channel") }))
+    }
+
     /**
-     * List everything in a channel / playlist / profile URL without downloading
-     * (flat extraction — fast). Returns the items so the user can preview them.
+     * List every video in a channel / playlist / profile URL without downloading
+     * (flat extraction — fast). Channel roots are rewritten to /videos and nested
+     * tab-playlists are walked, so you get the real videos (not "Videos/Shorts").
      */
     suspend fun scanEntries(context: Context, url: String): Result<List<Entry>> =
         withContext(Dispatchers.IO) {
             try {
                 ensureInit(context)
-                val req = YoutubeDLRequest(url)
+                val target = normalizeChannelUrl(url.trim())
+                val req = YoutubeDLRequest(target)
                 req.addOption("--flat-playlist")
                 req.addOption("--dump-single-json")
                 req.addOption("--no-warnings")
                 val resp = YoutubeDL.getInstance().execute(req)
                 val root = JSONObject(resp.out)
-                val arr = root.optJSONArray("entries")
                 val list = ArrayList<Entry>()
-                if (arr != null) {
-                    for (i in 0 until arr.length()) {
-                        val e = arr.optJSONObject(i) ?: continue
-                        val id = e.optString("id")
-                        val u = e.optString("url").ifBlank {
-                            e.optString("webpage_url").ifBlank { id }
-                        }
-                        if (u.isBlank()) continue
-                        val dur = e.optDouble("duration", 0.0).toInt()
-                        val thumb = run {
-                            val ta = e.optJSONArray("thumbnails")
-                            val fromArr = if (ta != null && ta.length() > 0)
-                                ta.optJSONObject(ta.length() - 1)?.optString("url").orEmpty() else ""
-                            when {
-                                fromArr.isNotBlank() -> fromArr
-                                id.length == 11 -> "https://i.ytimg.com/vi/$id/mqdefault.jpg"
-                                else -> ""
-                            }
-                        }
-                        list.add(Entry(e.optString("title").ifBlank { u }, u, dur, thumb))
-                    }
-                } else {
-                    val u = root.optString("webpage_url").ifBlank { url }
+                walkEntries(root, 0, list, HashSet())
+                if (list.isEmpty()) {
+                    val u = root.optString("webpage_url").ifBlank { target }
                     list.add(Entry(root.optString("title").ifBlank { u }, u))
                 }
                 Result.success(list)
@@ -294,6 +332,9 @@ object Downloader {
                 req.addOption("--merge-output-format", "mp4")
             }
             req.addOption("--embed-metadata")
+            // Embed the YouTube thumbnail as cover art so the Library/player show
+            // a real picture (usually the artist) instead of a placeholder tile.
+            req.addOption("--embed-thumbnail")
 
             YoutubeDL.getInstance().execute(req) { p, _, line ->
                 onProgress(if (p < 0) 0f else p, line.orEmpty())

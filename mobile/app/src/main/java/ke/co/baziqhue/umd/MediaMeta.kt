@@ -72,7 +72,8 @@ object MediaMeta {
 
     private fun filenameArtist(f: File): String {
         val n = f.nameWithoutExtension
-        val i = n.indexOf(" - ")
-        return if (i > 0) n.substring(0, i).trim().ifBlank { "Unknown" } else "Unknown"
+        // Match "Artist - Title", "Artist – Title" (en dash) or "Artist — Title" (em dash).
+        val m = Regex("""^(.{1,60}?)\s[-–—]\s+.+""").find(n) ?: return "Unknown"
+        return m.groupValues[1].trim().ifBlank { "Unknown" }
     }
 }

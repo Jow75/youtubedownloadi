@@ -92,10 +92,13 @@ object AutoPlaylistJob {
     var status by mutableStateOf("")
 }
 
-/** Channel AI triage results — title -> category, survives tab switches. */
+/** Channel AI triage results — title -> category / is-official, survives tab switches. */
 object ChannelTriage {
     var running by mutableStateOf(false)
     var status by mutableStateOf("")
-    val categories = mutableStateMapOf<String, String>()   // entry title -> category
-    fun reset() { categories.clear(); status = "" }
+    var classified by mutableStateOf(0)
+    var total by mutableStateOf(0)
+    val categories = mutableStateMapOf<String, String>()    // entry title -> category
+    val official = mutableStateMapOf<String, Boolean>()     // entry title -> is official release
+    fun reset() { categories.clear(); official.clear(); status = ""; classified = 0; total = 0 }
 }

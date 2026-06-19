@@ -1,17 +1,24 @@
-Mobile v1.21: premium UI redesign pass (BAZIQ HUE design system)
+Mobile v1.22: channel scan fix + desktop-parity Channel v2, thumbnails, pagination, artists search, dedup batch
 
-Dedicated UI/UX redesign (George's priority 8), built once:
-- Brand design system (Theme.kt): a deliberately-designed dark palette + a
-  signature violet -> cyan "HUE" gradient (BrandGradient / BrandWash). Replaces
-  wallpaper-derived dynamic colour, which read as dull/inconsistent. Rounder
-  shapes app-wide.
-- Album artwork everywhere (MediaMeta.artwork + MediaArtwork component): embedded
-  cover art on Library rows, mini-player and the full player; gradient tile with a
-  music/film glyph when a file has no cover. This is the big streaming-app uplift.
-- Library rows rebuilt: artwork + title + artist, lighter list styling (dropped
-  the heavy card chrome) for a Spotify/YT-Music feel.
-- BrandButton gradient CTAs on the primary actions (Download, Channel Scan,
-  Bulk Download all).
-- Full player: gradient-washed background + large 260dp cover.
+Phase H — functional parity & scalability (George's Priority 1-3), built once:
+
+- FIX: channel scan returned "2 items" (the channel's Videos/Shorts TABS) instead
+  of the videos. Ported desktop normalize_channel_url (rewrite @handle -> /videos)
+  + recursive tab-walk that skips YoutubeTab pseudo-entries and de-dupes. Now a
+  channel returns every real video. Entry also carries the uploader.
+- Channel v2 (desktop parity): "Grab everything" (Download ALL as MP3/MP4), AI
+  Triage with category counts ("Classified 117/129 · Music: 90 · Live: 18 …"),
+  "Categories to include" chips + "Official releases only", "Queue N as MP3/MP4",
+  and "Or pick per video" — a per-video format dropdown (Skip/MP3/MP4 Best/720/480)
+  with "Download chosen" across pages.
+- Library/player thumbnails: downloads now --embed-thumbnail, so the cover art
+  (usually the artist) shows on Library rows / mini-player / full player.
+- Pagination + "N per page" (10/20/50/All) for History, Downloads and Library, so
+  long lists don't render as one endless scroll.
+- Artists: search bar + gradient initial avatars; filename-artist fallback handles
+  en/em-dash separators (embedded ARTIST tag still takes priority).
+- Duplicate cleanup: one-click "Delete all duplicates (keep one of each)".
+- Title clean-up: cleaned/skipped files are remembered and skipped; added a
+  "Re-check files I've already cleaned" toggle.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
