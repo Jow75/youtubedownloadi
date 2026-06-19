@@ -28,7 +28,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
@@ -56,6 +59,8 @@ import androidx.compose.material.icons.filled.Subscriptions
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -63,6 +68,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -95,7 +101,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             UmdTheme {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                // The signature gradient wash sits behind the whole app; surfaces
+                // (Scaffold/top bar) are transparent so it shows through.
+                Surface(Modifier.fillMaxSize().background(BrandWash), color = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onBackground) {
                     // Makes all read-only text selectable/copyable (long-press to
                     // select → Copy). Text fields keep their own paste/selection.
                     SelectionContainer { App() }
@@ -212,7 +221,9 @@ fun App() {
     var showAbout by remember { mutableStateOf(false) }
     var showPlayer by remember { mutableStateOf(false) }
     var showAiKey by remember { mutableStateOf(false) }
-    val sections = listOf("Download", "Channel / Bulk", "History", "Library", "Assistant")
+    var showQuickDl by remember { mutableStateOf(false) }
+    // tab map: 0 Home · 1 Download · 2 Channel/Bulk · 3 Library · 4 Assistant · 5 History (drawer)
+    val sections = listOf("Home", "Download", "Channel / Bulk", "Library", "Assistant", "History")
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()) {}
@@ -239,16 +250,18 @@ fun App() {
                 }
                 HorizontalDivider()
                 Spacer(Modifier.height(8.dp))
-                val drawerIcons = listOf(Icons.Filled.Download, Icons.Filled.Subscriptions,
-                    Icons.Filled.Schedule, Icons.Filled.AutoAwesome)
-                sections.forEachIndexed { i, name ->
+                listOf(
+                    Triple("Home", Icons.Filled.Home, 0),
+                    Triple("Download", Icons.Filled.Download, 1),
+                    Triple("Channel / Bulk", Icons.Filled.Subscriptions, 2),
+                    Triple("Library", Icons.Filled.LibraryMusic, 3),
+                    Triple("Assistant", Icons.AutoMirrored.Filled.Chat, 4),
+                    Triple("History", Icons.Filled.Schedule, 5),
+                ).forEach { (name, icon, idx) ->
                     NavigationDrawerItem(
-                        label = { Text(name) }, selected = tab == i,
-                        icon = {
-                            Icon(if (i < drawerIcons.size) drawerIcons[i]
-                                else Icons.AutoMirrored.Filled.Chat, contentDescription = null)
-                        },
-                        onClick = { go(i) },
+                        label = { Text(name) }, selected = tab == idx,
+                        icon = { Icon(icon, contentDescription = null) },
+                        onClick = { go(idx) },
                         modifier = Modifier.padding(horizontal = 12.dp)
                     )
                 }
@@ -273,67 +286,64 @@ fun App() {
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Universal Media Downloader",
-                            style = MaterialTheme.typography.titleMedium)
-                        Text(sections[tab], style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary)
-                    }
-                },
+                title = { Text(sections[tab], style = MaterialTheme.typography.titleLarge) },
                 navigationIcon = {
                     IconButton(onClick = { scope.launch { drawer.open() } }) {
                         Icon(Icons.Filled.Menu, contentDescription = "Menu")
                     }
                 },
+                actions = {
+                    IconButton(onClick = { showAiKey = true }) {
+                        Icon(Icons.Filled.AutoAwesome, contentDescription = "AI settings")
+                    }
+                },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = Color.Transparent
                 )
             )
         },
         bottomBar = {
             Column {
                 AiJobsBar { tab = 3 }
-                DownloadsBar { tab = 0 }
+                DownloadsBar { tab = 1 }
                 MiniPlayer { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true }
-                NavigationBar {
-                NavigationBarItem(
-                    selected = tab == 0, onClick = { tab = 0 },
-                    icon = { Icon(Icons.Filled.Download, contentDescription = null) },
-                    label = { Text("Download") })
-                NavigationBarItem(
-                    selected = tab == 1, onClick = { tab = 1 },
-                    icon = { Icon(Icons.Filled.Subscriptions, contentDescription = null) },
-                    label = { Text("Channel") })
-                NavigationBarItem(
-                    selected = tab == 2, onClick = { tab = 2 },
-                    icon = { Icon(Icons.Filled.Schedule, contentDescription = null) },
-                    label = { Text("History") })
-                NavigationBarItem(
-                    selected = tab == 3, onClick = { tab = 3 },
-                    icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
-                    label = { Text("Library") })
-                NavigationBarItem(
-                    selected = tab == 4, onClick = { tab = 4 },
-                    icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
-                    label = { Text("Assistant") })
+                NavigationBar(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
+                    listOf(
+                        Triple("Home", Icons.Filled.Home, 0),
+                        Triple("Download", Icons.Filled.Download, 1),
+                        Triple("Channel", Icons.Filled.Subscriptions, 2),
+                        Triple("Library", Icons.Filled.LibraryMusic, 3),
+                        Triple("Assistant", Icons.AutoMirrored.Filled.Chat, 4),
+                    ).forEach { (name, icon, idx) ->
+                        NavigationBarItem(
+                            selected = tab == idx, onClick = { tab = idx },
+                            icon = { Icon(icon, contentDescription = null) },
+                            label = { Text(name) })
+                    }
                 }
             }
-        }
+        },
+        floatingActionButton = {
+            if (tab == 0) BrandFab("Download", Icons.Filled.Add) { showQuickDl = true }
+        },
+        containerColor = Color.Transparent
     ) { pad ->
         Crossfade(targetState = tab, animationSpec = tween(260), label = "tab",
             modifier = Modifier.fillMaxSize().padding(pad)) { t ->
             Box(Modifier.fillMaxSize()) {
                 when (t) {
-                    0 -> DownloadScreen(lm, ui, scope) { licensed = false }
-                    1 -> ChannelBulkScreen(channel, bulk)
-                    2 -> HistoryScreen { url, audio ->
-                        ui.url = url; ui.audio = audio; ui.done = null; tab = 0
-                    }
+                    0 -> HomeScreen(
+                        onGo = { tab = it },
+                        onOpenPlayer = { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true })
+                    1 -> DownloadScreen(lm, ui, scope) { licensed = false }
+                    2 -> ChannelBulkScreen(channel, bulk)
                     3 -> LibraryScreen()
-                    else -> AssistantScreen(assistant, scope) { path ->
+                    4 -> AssistantScreen(assistant, scope) { path ->
                         val f = File(path)
                         if (f.exists()) { playInApp(ctx, listOf(f), f); tab = 3 }
+                    }
+                    else -> HistoryScreen { url, audio ->
+                        ui.url = url; ui.audio = audio; ui.done = null; tab = 1
                     }
                 }
             }
@@ -343,8 +353,169 @@ fun App() {
 
     if (showAbout) AboutDialog(ctx, lm) { showAbout = false }
     if (showAiKey) AiKeyDialog(ctx) { showAiKey = false }
+    if (showQuickDl) QuickDownloadDialog(ctx) { showQuickDl = false }
     if (showPlayer && Playback.hasItem && !Playback.isVideo) PlayerScreen { showPlayer = false }
     if (Playback.showVideo && Playback.hasItem) VideoPlayerScreen { Playback.showVideo = false }
+}
+
+/**
+ * The designed landing screen: a greeting, quick actions, "now playing", a
+ * "jump back in" art shelf (recently played), recent downloads and a library
+ * dashboard. [onGo] navigates to a tab index; [onOpenPlayer] expands the player.
+ */
+@Composable
+fun HomeScreen(onGo: (Int) -> Unit, onOpenPlayer: () -> Unit) {
+    val ctx = LocalContext.current
+    var refresh by remember { mutableStateOf(0) }
+    var recent by remember { mutableStateOf<List<File>>(emptyList()) }
+    var recentHist by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
+    var songs by remember { mutableStateOf(0) }
+    var videos by remember { mutableStateOf(0) }
+    var artists by remember { mutableStateOf(0) }
+    var playlists by remember { mutableStateOf(0) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refresh++ }
+    LaunchedEffect(refresh) {
+        withContext(Dispatchers.IO) {
+            val files = Library.mediaFiles()
+            val aud = files.filter { isAudioFile(it) }
+            recent = files.filter { PlayStats.lastPlayed(it.absolutePath) > 0 }
+                .sortedByDescending { PlayStats.lastPlayed(it.absolutePath) }.take(12)
+            recentHist = History.all().take(5)
+            songs = aud.size; videos = files.size - aud.size
+            artists = aud.map { MediaMeta.artist(it) }.distinct().size
+            playlists = Playlists.all().size
+        }
+    }
+    val hour = remember { java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY) }
+    val greeting = when { hour < 12 -> "Good morning"; hour < 17 -> "Good afternoon"; else -> "Good evening" }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Spacer(Modifier.height(4.dp))
+        Column {
+            Text(greeting, style = MaterialTheme.typography.headlineSmall)
+            Text("What do you want to grab today?", style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            QuickTile("Single link", Icons.Filled.Download, Modifier.weight(1f)) { onGo(1) }
+            QuickTile("Channel / Bulk", Icons.Filled.Subscriptions, Modifier.weight(1f)) { onGo(2) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            QuickTile("Library", Icons.Filled.LibraryMusic, Modifier.weight(1f)) { onGo(3) }
+            QuickTile("Assistant", Icons.AutoMirrored.Filled.Chat, Modifier.weight(1f)) { onGo(4) }
+        }
+
+        if (Playback.hasItem) {
+            SectionHeader("Now playing")
+            GlassCard(onClick = onOpenPlayer) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val p = Playback.currentPath
+                    if (p.isNotBlank()) MediaArtwork(File(p), 52.dp, corner = 10.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Text(Playback.title.ifBlank { "Now playing" }, maxLines = 1,
+                        style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    FilledIconButton(onClick = { Playback.playPause() }) {
+                        Icon(if (Playback.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = "Play/Pause")
+                    }
+                }
+            }
+        }
+
+        if (recent.isNotEmpty()) {
+            SectionHeader("Jump back in")
+            Row(Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                recent.forEach { f ->
+                    Column(Modifier.width(120.dp).clickable {
+                        playInApp(ctx, recent, f); onOpenPlayer()
+                    }) {
+                        MediaArtwork(f, 120.dp, corner = 16.dp)
+                        Spacer(Modifier.height(6.dp))
+                        Text(f.nameWithoutExtension, maxLines = 2,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        if (recentHist.isNotEmpty()) {
+            SectionHeader("Recent downloads", "See all") { onGo(5) }
+            recentHist.forEach { e ->
+                val f = File(e.path)
+                GlassCard(onClick = { if (f.exists()) { playInApp(ctx, listOf(f), f); onOpenPlayer() } }) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        MediaArtwork(f, 44.dp, corner = 9.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(e.title, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+                            Text(if (e.audio) "MP3" else "MP4", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(Icons.Filled.PlayCircle, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+
+        SectionHeader("Your library", "Open") { onGo(3) }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatTile("$songs", "Songs", Icons.Filled.MusicNote, { onGo(3) }, Modifier.weight(1f))
+            StatTile("$videos", "Videos", Icons.Filled.Movie, { onGo(3) }, Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            StatTile("$artists", "Artists", Icons.Filled.Person, { onGo(3) }, Modifier.weight(1f))
+            StatTile("$playlists", "Playlists", Icons.AutoMirrored.Filled.QueueMusic, { onGo(3) }, Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(96.dp))
+    }
+}
+
+@Composable
+private fun QuickTile(label: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
+    GlassCard(modifier, onClick = onClick) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(26.dp))
+        Spacer(Modifier.height(8.dp))
+        Text(label, style = MaterialTheme.typography.titleSmall)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun QuickDownloadDialog(ctx: Context, onDismiss: () -> Unit) {
+    var url by remember { mutableStateOf("") }
+    var audio by remember { mutableStateOf(true) }
+    val hasStorage = Storage.hasAccess(ctx)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Quick download") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(url, { url = it }, label = { Text("Paste a link") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    SegmentedButton(selected = audio, onClick = { audio = true },
+                        shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
+                    SegmentedButton(selected = !audio, onClick = { audio = false },
+                        shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
+                }
+                if (!hasStorage) Text("Grant storage access on the Download tab first.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = url.isNotBlank() && hasStorage, onClick = {
+                Downloads.enqueue(ctx, url.trim(), audio, "Best", url.trim()); onDismiss()
+            }) { Text("Download") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

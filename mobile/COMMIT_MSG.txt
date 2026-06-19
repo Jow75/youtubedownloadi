@@ -1,24 +1,19 @@
-Mobile v1.22: channel scan fix + desktop-parity Channel v2, thumbnails, pagination, artists search, dedup batch
+Mobile v1.23: full premium UI/UX redesign (Home, FAB, glass, gradient wash)
 
-Phase H — functional parity & scalability (George's Priority 1-3), built once:
+Phase I — the complete premium redesign George asked for ("do it all"):
 
-- FIX: channel scan returned "2 items" (the channel's Videos/Shorts TABS) instead
-  of the videos. Ported desktop normalize_channel_url (rewrite @handle -> /videos)
-  + recursive tab-walk that skips YoutubeTab pseudo-entries and de-dupes. Now a
-  channel returns every real video. Entry also carries the uploader.
-- Channel v2 (desktop parity): "Grab everything" (Download ALL as MP3/MP4), AI
-  Triage with category counts ("Classified 117/129 · Music: 90 · Live: 18 …"),
-  "Categories to include" chips + "Official releases only", "Queue N as MP3/MP4",
-  and "Or pick per video" — a per-video format dropdown (Skip/MP3/MP4 Best/720/480)
-  with "Download chosen" across pages.
-- Library/player thumbnails: downloads now --embed-thumbnail, so the cover art
-  (usually the artist) shows on Library rows / mini-player / full player.
-- Pagination + "N per page" (10/20/50/All) for History, Downloads and Library, so
-  long lists don't render as one endless scroll.
-- Artists: search bar + gradient initial avatars; filename-artist fallback handles
-  en/em-dash separators (embedded ARTIST tag still takes priority).
-- Duplicate cleanup: one-click "Delete all duplicates (keep one of each)".
-- Title clean-up: cleaned/skipped files are remembered and skipped; added a
-  "Re-check files I've already cleaned" toggle.
+- New designed HOME screen (landing tab): greeting hero, quick-action glass tiles,
+  "Now playing" card, "Jump back in" artwork shelf (recently played), recent
+  downloads, and a library dashboard (Songs/Videos/Artists/Playlists stat tiles).
+- Gradient floating action button (BrandFab) on Home -> Quick Download dialog
+  (paste a link, MP3/MP4, go) without leaving the screen.
+- Navigation restructured to 5 premium tabs: Home · Download · Channel · Library ·
+  Assistant; History moved to the drawer (and surfaced on Home). Proper icons.
+- Signature gradient BACKGROUND WASH behind the whole app; transparent top bar +
+  Scaffold + translucent nav so the brand shows through (glassmorphism feel).
+- New design-system components (Components.kt): GlassCard (frosted translucent
+  card), SectionHeader, StatTile, BrandFab.
+- Top bar simplified (section title + AI-settings action); animated Crossfade tab
+  transitions; rounder shapes throughout (from v1.21 system).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
