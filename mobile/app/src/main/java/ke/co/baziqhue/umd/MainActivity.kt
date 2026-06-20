@@ -18,6 +18,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -559,22 +560,21 @@ fun QuickDownloadDialog(ctx: Context, onDismiss: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DiscoverScreen() {
-    val ctx = LocalContext.current
-    var hasKey by remember { mutableStateOf(Discover.hasKey(ctx)) }
-    var showKey by remember { mutableStateOf(false) }
     var audio by remember { mutableStateOf(true) }
-    var topArtist by remember { mutableStateOf("") }
-
+    // The app learns which artists you download most (by how many of their tracks
+    // are in your library) and builds personalized shelves from that.
+    var artists by remember { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(Unit) {
-        topArtist = withContext(Dispatchers.IO) {
+        artists = withContext(Dispatchers.IO) {
             Library.mediaFiles().filter { isAudioFile(it) }
                 .map { MediaMeta.artist(it) }
                 .filter { it.isNotBlank() && !it.equals("Unknown", true) }
-                .groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: ""
+                .groupingBy { it }.eachCount().entries
+                .sortedByDescending { it.value }.take(3).map { it.key }
         }
     }
 
-    if (!hasKey) {
+    if (!Discover.hasKey()) {
         Column(
             Modifier.fillMaxSize().padding(28.dp),
             verticalArrangement = Arrangement.Center,
@@ -583,45 +583,36 @@ fun DiscoverScreen() {
             Icon(Icons.Filled.AutoAwesome, contentDescription = null,
                 modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.height(12.dp))
-            Text("Discover trending music & videos", style = MaterialTheme.typography.titleLarge,
+            Text("Discover is unavailable", style = MaterialTheme.typography.titleLarge,
                 textAlign = TextAlign.Center)
             Spacer(Modifier.height(8.dp))
-            Text("See what's trending in Kenya and worldwide, browse music and new releases, " +
-                "then download with one tap. Add a free YouTube Data API key to switch it on.",
+            Text("Trending content couldn't be loaded right now. Please try again later.",
                 style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(18.dp))
-            BrandButton(onClick = { showKey = true }, modifier = Modifier.fillMaxWidth()) {
-                Text("Set YouTube key")
-            }
         }
-    } else {
-        Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
-                    SegmentedButton(selected = audio, onClick = { audio = true },
-                        shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
-                    SegmentedButton(selected = !audio, onClick = { audio = false },
-                        shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
-                }
-                IconButton(onClick = { showKey = true }) {
-                    Icon(Icons.Filled.AutoAwesome, contentDescription = "YouTube key")
-                }
-            }
-            LazyColumn(Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 28.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                item { DiscoverShelf("🔥 Trending in Kenya", audio) { Discover.trending(ctx, "KE") } }
-                item { DiscoverShelf("🎵 Trending Music", audio) { Discover.trending(ctx, "KE", "10") } }
-                item { DiscoverShelf("🌍 Trending Worldwide", audio) { Discover.trending(ctx, "US") } }
-                if (topArtist.isNotBlank())
-                    item { DiscoverShelf("✨ New from $topArtist", audio) { Discover.search(ctx, topArtist) } }
+        return
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            SegmentedButton(selected = audio, onClick = { audio = true },
+                shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
+            SegmentedButton(selected = !audio, onClick = { audio = false },
+                shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
+        }
+        LazyColumn(Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            item { DiscoverShelf("🔥 Trending in Kenya", audio) { Discover.trending("KE") } }
+            item { DiscoverShelf("🎵 Trending Music", audio) { Discover.trending("KE", "10") } }
+            item { DiscoverShelf("🌍 Trending Worldwide", audio) { Discover.trending("US") } }
+            if (artists.isNotEmpty())
+                item(key = "picks") { DiscoverShelf("✨ Picks for you", audio) { Discover.search(artists[0], "relevance") } }
+            artists.drop(1).forEach { a ->
+                item(key = "more_$a") { DiscoverShelf("🎤 More from $a", audio) { Discover.search(a, "date") } }
             }
         }
     }
-    if (showKey) DiscoverKeyDialog(ctx) { saved -> showKey = false; if (saved) hasKey = Discover.hasKey(ctx) }
 }
 
 @Composable
@@ -651,9 +642,9 @@ private fun DiscoverShelf(
                 style = MaterialTheme.typography.bodySmall,
                 color = if (error != null) MaterialTheme.colorScheme.error
                 else MaterialTheme.colorScheme.onSurfaceVariant)
-            else -> Row(Modifier.horizontalScroll(rememberScrollState()),
+            else -> LazyRow(Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                list.forEach { item ->
+                items(list, key = { it.videoId }) { item ->
                     DiscoverCard(item) {
                         if (!Storage.hasAccess(ctx)) {
                             Toast.makeText(ctx, "Grant storage access on the Download tab first.",
@@ -698,31 +689,6 @@ private fun DiscoverCard(item: DiscoverItem, onDownload: () -> Unit) {
         Text(item.channel, style = MaterialTheme.typography.labelSmall, maxLines = 1,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun DiscoverKeyDialog(ctx: Context, onClose: (saved: Boolean) -> Unit) {
-    val current = Discover.storedKey(ctx)
-    var key by remember { mutableStateOf(if (current == BuildConfig.YOUTUBE_API_KEY) "" else current) }
-    AlertDialog(
-        onDismissRequest = { onClose(false) },
-        title = { Text("YouTube API key") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Paste a free YouTube Data API v3 key to enable Discover. Get one at " +
-                    "console.cloud.google.com (enable \"YouTube Data API v3\" → create an API key).",
-                    style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(key, { key = it }, label = { Text("API key") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth())
-            }
-        },
-        confirmButton = {
-            TextButton(enabled = key.isNotBlank(),
-                onClick = { Discover.setKey(ctx, key); onClose(true) }) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = { onClose(false) }) { Text("Cancel") } }
-    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

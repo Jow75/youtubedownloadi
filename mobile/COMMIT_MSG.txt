@@ -1,21 +1,15 @@
-Mobile v1.26: Discover tab (YouTube trending/music/new-releases, tap-to-download)
+Mobile v1.27: Discover key embedded (invisible) + personalized shelves (Picks/More-from-artist)
 
-New Discover feature (YouTube Data API v3, free tier + 6h cache):
-- Discover.kt: trending (mostPopular, 1 quota unit) by region + category, and
-  search (newest first), with disk caching for 6h and stale-cache fallback so a
-  shared/bundled key's daily quota lasts. Key comes from BuildConfig (bundled via
-  secret.properties → YOUTUBE_API_KEY) or an in-app override the user pastes.
-- DiscoverScreen: shelves — "Trending in Kenya", "Trending Music", "Trending
-  Worldwide", and "New from <your top artist>" — each a horizontal art shelf.
-  MP3/MP4 toggle; tap any card to queue the download (one tap). Shows a "Set
-  YouTube key" prompt + dialog when no key is configured.
-- Reached via a gradient "Discover" banner on Home + a drawer entry (tab 6). Bottom
-  nav stays 5 tabs, so Home stays fast.
-
-Note on personalization: YouTube's API does NOT expose personal "Top Picks For You",
-so we approximate with trending + "new from your most-played artist".
-
-To enable: paste a free YouTube Data API v3 key in Discover (or set YOUTUBE_API_KEY
-in secret.properties before building).
+- YouTube API key is now embedded at build time (secret.properties -> BuildConfig)
+  and fully invisible: no in-app key dialog, no settings entry, not stored in prefs,
+  not editable or copyable. Discover just works. Removed DiscoverKeyDialog and the
+  prefs-based key override; Discover.apiKey() reads BuildConfig only. (The key lives
+  only in gitignored secret.properties — never committed.)
+- Personalized shelves: the app now learns your most-downloaded artists (top 3 by
+  library count) and builds "✨ Picks for you" (top artist, by relevance) and
+  "🎤 More from <artist>" rows for the next ones — alongside Trending in Kenya /
+  Music / Worldwide.
+- Shelves use LazyRow (thumbnails load lazily as you scroll) for smoothness.
+- Quota-friendly: search results (100 units each) now cache for 24h; trending 6h.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

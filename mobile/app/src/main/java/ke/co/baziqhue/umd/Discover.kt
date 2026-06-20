@@ -1,6 +1,5 @@
 package ke.co.baziqhue.umd
 
-import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -8,6 +7,7 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /** One discoverable video from YouTube. */
@@ -23,46 +23,39 @@ data class DiscoverItem(
 
 /**
  * YouTube content discovery via the free **Data API v3**. Powers the Discover
- * shelves (Trending in Kenya / Worldwide, Music, New-for-you). Responses are
- * cached on disk for 6h so a shared/bundled key's daily quota lasts — trending
- * changes slowly, so this is plenty fresh.
+ * shelves (Trending in Kenya / Worldwide, Music, Picks-for-you, More-from-artist).
  *
- * The API key is read from BuildConfig (bundled at build time from secret.properties)
- * OR an in-app override the user can paste (Discover settings). Note: a single
- * bundled key shares one 10,000-unit/day budget across all users — fine for the
- * cheap mostPopular calls (1 unit) with caching; heavy search (100 units) is used
- * sparingly and cached.
+ * The API key is **embedded at build time** (secret.properties → BuildConfig) and is
+ * deliberately NOT user-visible or configurable — Discover just works, like a native
+ * feature. Responses are cached on disk (trending 6h, the quota-heavy search 24h) so
+ * the shared key's daily quota lasts; trending changes slowly so this is plenty fresh.
  */
 object Discover {
 
     private const val BASE = "https://www.googleapis.com/youtube/v3"
-    private const val PREFS = "umd_discover"
-    private const val CACHE_TTL_MS = 6L * 60 * 60 * 1000   // 6h
+    private const val TRENDING_TTL = 6L * 60 * 60 * 1000          // 6h
+    private const val SEARCH_TTL = 24L * 60 * 60 * 1000           // 24h (search costs 100 units)
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-
-    fun storedKey(ctx: Context): String =
-        prefs(ctx).getString("yt_key", "").orEmpty().ifBlank { BuildConfig.YOUTUBE_API_KEY }.trim()
-
-    fun hasKey(ctx: Context): Boolean = storedKey(ctx).isNotBlank()
-    fun setKey(ctx: Context, key: String) { prefs(ctx).edit().putString("yt_key", key.trim()).apply() }
+    /** The embedded key. Not stored in prefs, not shown, not editable. */
+    fun apiKey(): String = BuildConfig.YOUTUBE_API_KEY.trim()
+    fun hasKey(): Boolean = apiKey().isNotBlank()
 
     // --- cache ---------------------------------------------------------------- #
     private fun cacheDir(): File = File(Storage.aiDir(), "discover_cache").apply { if (!exists()) mkdirs() }
     private fun cacheFile(k: String) = File(cacheDir(), k.replace(Regex("[^a-zA-Z0-9]"), "_") + ".json")
 
-    /** Cached body if present; [ignoreTtl] returns even stale cache (error fallback). */
-    private fun readCache(k: String, ignoreTtl: Boolean): String? {
+    /** Cached body if present and within [ttlMs]; [ignoreTtl] returns even stale cache. */
+    private fun readCache(k: String, ttlMs: Long, ignoreTtl: Boolean): String? {
         val f = cacheFile(k)
         if (!f.exists()) return null
         return try {
             val o = JSONObject(f.readText())
-            if (ignoreTtl || System.currentTimeMillis() - o.optLong("ts") < CACHE_TTL_MS)
+            if (ignoreTtl || System.currentTimeMillis() - o.optLong("ts") < ttlMs)
                 o.optString("body") else null
         } catch (_: Exception) { null }
     }
@@ -88,41 +81,41 @@ object Discover {
             .ifBlank { "Couldn't reach YouTube (HTTP $code)." }
     } catch (_: Exception) { "Couldn't reach YouTube (HTTP $code)." }
 
-    /** Fetch [cacheKey] from cache (fresh) or the network; on failure fall back to stale cache. */
-    private fun cachedFetch(cacheKey: String, url: String): String {
-        readCache(cacheKey, ignoreTtl = false)?.let { return it }
+    /** Cache (fresh) or network; on failure fall back to stale cache. */
+    private fun cachedFetch(cacheKey: String, url: String, ttlMs: Long): String {
+        readCache(cacheKey, ttlMs, ignoreTtl = false)?.let { return it }
         return try {
             httpGet(url).also { writeCache(cacheKey, it) }
         } catch (e: Exception) {
-            readCache(cacheKey, ignoreTtl = true) ?: throw e
+            readCache(cacheKey, ttlMs, ignoreTtl = true) ?: throw e
         }
     }
 
     /** Most-popular videos for a region (1 quota unit). [categoryId] "10" = Music. */
-    suspend fun trending(ctx: Context, regionCode: String, categoryId: String? = null): Result<List<DiscoverItem>> =
+    suspend fun trending(regionCode: String, categoryId: String? = null): Result<List<DiscoverItem>> =
         withContext(Dispatchers.IO) {
-            val key = storedKey(ctx)
-            if (key.isBlank()) return@withContext Result.failure(IOException("No YouTube key set."))
+            val key = apiKey()
+            if (key.isBlank()) return@withContext Result.failure(IOException("Discover is unavailable."))
             try {
                 val cat = if (categoryId != null) "&videoCategoryId=$categoryId" else ""
                 val url = "$BASE/videos?part=snippet,contentDetails&chart=mostPopular&maxResults=20" +
                     "&regionCode=$regionCode$cat&key=$key"
-                Result.success(parseVideos(cachedFetch("trending_${regionCode}_${categoryId ?: "all"}", url)))
+                Result.success(parseVideos(cachedFetch("trending_${regionCode}_${categoryId ?: "all"}", url, TRENDING_TTL)))
             } catch (e: Exception) {
                 Result.failure(e)
             }
         }
 
-    /** Search videos by name, newest first (100 quota units — cached 6h). */
-    suspend fun search(ctx: Context, query: String): Result<List<DiscoverItem>> =
+    /** Search videos by name (100 quota units — cached 24h). [order] = date | relevance. */
+    suspend fun search(query: String, order: String = "date"): Result<List<DiscoverItem>> =
         withContext(Dispatchers.IO) {
-            val key = storedKey(ctx)
-            if (key.isBlank()) return@withContext Result.failure(IOException("No YouTube key set."))
+            val key = apiKey()
+            if (key.isBlank()) return@withContext Result.failure(IOException("Discover is unavailable."))
             if (query.isBlank()) return@withContext Result.success(emptyList())
             try {
-                val q = java.net.URLEncoder.encode(query, "UTF-8")
-                val url = "$BASE/search?part=snippet&type=video&order=date&maxResults=20&q=$q&key=$key"
-                Result.success(parseSearch(cachedFetch("search_$query", url)))
+                val q = URLEncoder.encode(query, "UTF-8")
+                val url = "$BASE/search?part=snippet&type=video&order=$order&maxResults=20&q=$q&key=$key"
+                Result.success(parseSearch(cachedFetch("search_${order}_$query", url, SEARCH_TTL)))
             } catch (e: Exception) {
                 Result.failure(e)
             }
