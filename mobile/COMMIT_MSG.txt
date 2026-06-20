@@ -1,15 +1,18 @@
-Mobile v1.27: Discover key embedded (invisible) + personalized shelves (Picks/More-from-artist)
+Mobile v1.28: Discover search — download-first mini-YouTube (videos + channels)
 
-- YouTube API key is now embedded at build time (secret.properties -> BuildConfig)
-  and fully invisible: no in-app key dialog, no settings entry, not stored in prefs,
-  not editable or copyable. Discover just works. Removed DiscoverKeyDialog and the
-  prefs-based key override; Discover.apiKey() reads BuildConfig only. (The key lives
-  only in gitignored secret.properties — never committed.)
-- Personalized shelves: the app now learns your most-downloaded artists (top 3 by
-  library count) and builds "✨ Picks for you" (top artist, by relevance) and
-  "🎤 More from <artist>" rows for the next ones — alongside Trending in Kenya /
-  Music / Worldwide.
-- Shelves use LazyRow (thumbnails load lazily as you scroll) for smoothness.
-- Quota-friendly: search results (100 units each) now cache for 24h; trending 6h.
+- Discover.searchMixed(): one YouTube search call (no type filter) returns BOTH
+  videos and channels; parsed into SearchResults(videos, channels). Cached 24h.
+- Discover search bar: type a query → search on submit (quota-safe, not as-you-type).
+  - Video results → a tappable list; tap to queue the download (MP3/MP4 toggle).
+  - Channel results → circular avatars; tap a channel to OPEN IT IN THE CHANNEL TAB,
+    which auto-scans it (yt-dlp, no API quota) → reuse AI category filter (Music/Live/
+    Interview/…), official-only, multi-select, per-video format, Download chosen.
+  This makes Discover a download-first browser: find an artist → browse their whole
+  catalogue → bulk-grab what you want, never opening YouTube.
+- Channel auto-scan hook: ChannelUi.requestScan + ChannelBody.startScan() extracted
+  and fired via LaunchedEffect when opened from search.
+
+Architecture note: API = discovery (search, 100 units, cached); yt-dlp = the heavy
+browsing/category/download engine (free). The two together = the goal.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

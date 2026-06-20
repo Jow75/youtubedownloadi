@@ -21,6 +21,14 @@ data class DiscoverItem(
     val url get() = "https://www.youtube.com/watch?v=$videoId"
 }
 
+/** A channel hit from a Discover search — tap to browse its whole catalogue (yt-dlp). */
+data class DiscoverChannel(val channelId: String, val title: String, val thumb: String) {
+    val url get() = "https://www.youtube.com/channel/$channelId"
+}
+
+/** Mixed search results: videos to download directly + channels to open & browse. */
+data class SearchResults(val videos: List<DiscoverItem>, val channels: List<DiscoverChannel>)
+
 /**
  * YouTube content discovery via the free **Data API v3**. Powers the Discover
  * shelves (Trending in Kenya / Worldwide, Music, Picks-for-you, More-from-artist).
@@ -120,6 +128,48 @@ object Discover {
                 Result.failure(e)
             }
         }
+
+    /**
+     * Mixed keyword search (videos + channels in ONE call — 100 units, cached 24h).
+     * Lets Discover act as a download-first "mini YouTube": find a video to grab, or
+     * a channel to open and browse its full catalogue via the existing Channel tab.
+     */
+    suspend fun searchMixed(query: String): Result<SearchResults> =
+        withContext(Dispatchers.IO) {
+            val key = apiKey()
+            if (key.isBlank()) return@withContext Result.failure(IOException("Discover is unavailable."))
+            if (query.isBlank()) return@withContext Result.success(SearchResults(emptyList(), emptyList()))
+            try {
+                val q = URLEncoder.encode(query, "UTF-8")
+                // No `type` → YouTube returns a mix of videos / channels / playlists.
+                val url = "$BASE/search?part=snippet&maxResults=25&q=$q&key=$key"
+                Result.success(parseMixed(cachedFetch("searchmix_$query", url, SEARCH_TTL)))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    private fun parseMixed(body: String): SearchResults {
+        val arr = JSONObject(body).optJSONArray("items") ?: return SearchResults(emptyList(), emptyList())
+        val vids = ArrayList<DiscoverItem>()
+        val chans = ArrayList<DiscoverChannel>()
+        for (i in 0 until arr.length()) {
+            val it = arr.optJSONObject(i) ?: continue
+            val idObj = it.optJSONObject("id") ?: continue
+            val kind = idObj.optString("kind")
+            val sn = it.optJSONObject("snippet") ?: continue
+            val thumb = thumbUrl(sn.optJSONObject("thumbnails"))
+            when {
+                kind.endsWith("video") -> idObj.optString("videoId").takeIf { it.isNotBlank() }?.let {
+                    vids.add(DiscoverItem(it, sn.optString("title"), sn.optString("channelTitle"), thumb, 0))
+                }
+                kind.endsWith("channel") -> idObj.optString("channelId").takeIf { it.isNotBlank() }?.let {
+                    chans.add(DiscoverChannel(it, sn.optString("title"), thumb))
+                }
+            }
+        }
+        return SearchResults(vids, chans)
+    }
 
     // --- parsing -------------------------------------------------------------- #
     private fun thumbUrl(thumbs: JSONObject?): String {

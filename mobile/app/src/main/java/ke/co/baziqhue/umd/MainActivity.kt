@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -77,6 +78,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -150,6 +152,8 @@ class ChannelUi {
     // Per-video format choice for the "pick per video" section (url -> token);
     // absent = "Skip". Survives pagination so picks across pages are remembered.
     val formats = mutableStateMapOf<String, String>()
+    // Set true (with url) to auto-scan when opened from Discover search → Channel.
+    var requestScan by mutableStateOf(false)
 }
 
 /** Bulk paste-and-go state, hoisted so the queued list survives tab switches. */
@@ -361,7 +365,10 @@ fun App() {
                     5 -> HistoryScreen { url, audio ->
                         ui.url = url; ui.audio = audio; ui.done = null; tab = 1
                     }
-                    else -> DiscoverScreen()
+                    else -> DiscoverScreen { url ->
+                        // Search → open this channel in the Channel tab and auto-scan it.
+                        channel.url = url; channel.mode = 0; channel.requestScan = true; tab = 2
+                    }
                 }
             }
         }
@@ -559,8 +566,14 @@ fun QuickDownloadDialog(ctx: Context, onDismiss: () -> Unit) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DiscoverScreen() {
+fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var audio by remember { mutableStateOf(true) }
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<SearchResults?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var searchError by remember { mutableStateOf<String?>(null) }
     // The app learns which artists you download most (by how many of their tracks
     // are in your library) and builds personalized shelves from that.
     var artists by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -571,6 +584,21 @@ fun DiscoverScreen() {
                 .filter { it.isNotBlank() && !it.equals("Unknown", true) }
                 .groupingBy { it }.eachCount().entries
                 .sortedByDescending { it.value }.take(3).map { it.key }
+        }
+    }
+
+    fun runSearch() {
+        val q = query.trim()
+        if (q.isBlank() || searching) return
+        searching = true; searchError = null
+        scope.launch {
+            Discover.searchMixed(q).fold(
+                onSuccess = {
+                    results = it
+                    searchError = if (it.videos.isEmpty() && it.channels.isEmpty()) "No results for \"$q\"." else null
+                },
+                onFailure = { searchError = it.message; results = SearchResults(emptyList(), emptyList()) })
+            searching = false
         }
     }
 
@@ -594,23 +622,117 @@ fun DiscoverScreen() {
     }
 
     Column(Modifier.fillMaxSize()) {
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        OutlinedTextField(
+            value = query, onValueChange = { query = it },
+            placeholder = { Text("Search artists, songs, channels…") },
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            trailingIcon = {
+                if (query.isNotBlank()) IconButton(onClick = {
+                    query = ""; results = null; searchError = null
+                }) { Icon(Icons.Filled.Close, contentDescription = "Clear") }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { runSearch() }),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             SegmentedButton(selected = audio, onClick = { audio = true },
                 shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
             SegmentedButton(selected = !audio, onClick = { audio = false },
                 shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
         }
-        LazyColumn(Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            item { DiscoverShelf("🔥 Trending in Kenya", audio) { Discover.trending("KE") } }
-            item { DiscoverShelf("🎵 Trending Music", audio) { Discover.trending("KE", "10") } }
-            item { DiscoverShelf("🌍 Trending Worldwide", audio) { Discover.trending("US") } }
-            if (artists.isNotEmpty())
-                item(key = "picks") { DiscoverShelf("✨ Picks for you", audio) { Discover.search(artists[0], "relevance") } }
-            artists.drop(1).forEach { a ->
-                item(key = "more_$a") { DiscoverShelf("🎤 More from $a", audio) { Discover.search(a, "date") } }
+        if (searching) { Spacer(Modifier.height(8.dp)); LinearProgressIndicator(Modifier.fillMaxWidth()) }
+
+        val res = results
+        if (res != null) {
+            // ---- Search results -------------------------------------------- #
+            fun grab(item: DiscoverItem) {
+                if (!Storage.hasAccess(ctx)) {
+                    Toast.makeText(ctx, "Grant storage access on the Download tab first.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Downloads.enqueue(ctx, item.url, audio, "Best", item.title)
+                    Toast.makeText(ctx, "Queued \"${item.title.take(40)}\"", Toast.LENGTH_SHORT).show()
+                }
             }
+            LazyColumn(Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                searchError?.let { item { Text(it, style = MaterialTheme.typography.bodyMedium) } }
+                if (res.channels.isNotEmpty()) {
+                    item { Text("Channels — tap to browse & bulk-download",
+                        style = MaterialTheme.typography.titleSmall) }
+                    item {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            items(res.channels, key = { it.channelId }) { ch ->
+                                DiscoverChannelCard(ch) { onOpenChannel(ch.url) }
+                            }
+                        }
+                    }
+                }
+                if (res.videos.isNotEmpty()) {
+                    item { Text("Videos — tap to download", style = MaterialTheme.typography.titleSmall) }
+                    items(res.videos, key = { it.videoId }) { v -> DiscoverResultRow(v) { grab(v) } }
+                }
+            }
+        } else {
+            // ---- Default shelves ------------------------------------------- #
+            LazyColumn(Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                item { DiscoverShelf("🔥 Trending in Kenya", audio) { Discover.trending("KE") } }
+                item { DiscoverShelf("🎵 Trending Music", audio) { Discover.trending("KE", "10") } }
+                item { DiscoverShelf("🌍 Trending Worldwide", audio) { Discover.trending("US") } }
+                if (artists.isNotEmpty())
+                    item(key = "picks") { DiscoverShelf("✨ Picks for you", audio) { Discover.search(artists[0], "relevance") } }
+                artists.drop(1).forEach { a ->
+                    item(key = "more_$a") { DiscoverShelf("🎤 More from $a", audio) { Discover.search(a, "date") } }
+                }
+            }
+        }
+    }
+}
+
+/** A channel hit in Discover search — circular avatar, tap to open in the Channel tab. */
+@Composable
+private fun DiscoverChannelCard(ch: DiscoverChannel, onOpen: () -> Unit) {
+    Column(Modifier.width(96.dp).clickable { onOpen() },
+        horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(72.dp).clip(CircleShape).background(BrandGradient),
+            contentAlignment = Alignment.Center) {
+            if (ch.thumb.isNotBlank())
+                AsyncImage(model = ch.thumb, contentDescription = null,
+                    contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            else Text(ch.title.take(1).uppercase(), color = Color.White,
+                style = MaterialTheme.typography.titleLarge)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(ch.title, style = MaterialTheme.typography.labelSmall, maxLines = 2,
+            textAlign = TextAlign.Center)
+    }
+}
+
+/** A video hit in Discover search — full-width row, tap to download. */
+@Composable
+private fun DiscoverResultRow(item: DiscoverItem, onDownload: () -> Unit) {
+    var queued by remember(item.videoId) { mutableStateOf(false) }
+    ElevatedCard(Modifier.fillMaxWidth().clickable { onDownload(); queued = true }) {
+        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(width = 96.dp, height = 56.dp).clip(MaterialTheme.shapes.small)) {
+                if (item.thumb.isNotBlank())
+                    AsyncImage(model = item.thumb, contentDescription = null,
+                        contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                else Box(Modifier.fillMaxSize().background(BrandGradient))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(item.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
+                Text(item.channel, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(if (queued) Icons.Filled.Check else Icons.Filled.Download,
+                contentDescription = "Download",
+                tint = if (queued) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -2149,6 +2271,28 @@ private fun ChannelBody(ui: ChannelUi) {
     fun queueBulk(list: List<Downloader.Entry>) {
         list.forEach { Downloads.enqueue(ctx, it.url, ui.audio, ui.quality, it.title) }
     }
+    // Scan the current URL — shared by the Scan button and the auto-scan that fires
+    // when a channel is opened from Discover search.
+    fun startScan() {
+        if (ui.url.isBlank() || ui.scanning) return
+        ui.scanning = true; ui.status = "Scanning…"; ui.entries.clear()
+        ui.formats.clear(); ui.page = 0; ui.categoryFilter = "All"
+        ui.officialOnly = false; ui.uploader = ""; ChannelTriage.reset()
+        // App-scope scan: keeps reading the channel even if you switch tabs.
+        Jobs.launch("Scan channel") {
+            Downloader.scanEntries(ctx, ui.url.trim()).fold(
+                onSuccess = {
+                    ui.entries.clear(); ui.entries.addAll(it)
+                    ui.uploader = it.firstOrNull { e -> e.uploader.isNotBlank() }?.uploader ?: ""
+                    ui.status = "Found ${it.size} video(s)" +
+                        (if (ui.uploader.isNotBlank()) " · by ${ui.uploader}" else "")
+                },
+                onFailure = { ui.status = "Scan failed: ${it.message}" })
+            ui.scanning = false
+        }
+    }
+    // Opened from Discover search → scan automatically.
+    LaunchedEffect(ui.requestScan) { if (ui.requestScan) { ui.requestScan = false; startScan() } }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         val scroll = rememberScrollState()
@@ -2160,23 +2304,7 @@ private fun ChannelBody(ui: ChannelUi) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
             Spacer(Modifier.height(8.dp))
             BrandButton(
-                onClick = {
-                    ui.scanning = true; ui.status = "Scanning…"; ui.entries.clear()
-                    ui.formats.clear(); ui.page = 0; ui.categoryFilter = "All"
-                    ui.officialOnly = false; ui.uploader = ""; ChannelTriage.reset()
-                    // App-scope scan: keeps reading the channel even if you switch tabs.
-                    Jobs.launch("Scan channel") {
-                        Downloader.scanEntries(ctx, ui.url.trim()).fold(
-                            onSuccess = {
-                                ui.entries.clear(); ui.entries.addAll(it)
-                                ui.uploader = it.firstOrNull { e -> e.uploader.isNotBlank() }?.uploader ?: ""
-                                ui.status = "Found ${it.size} video(s)" +
-                                    (if (ui.uploader.isNotBlank()) " · by ${ui.uploader}" else "")
-                            },
-                            onFailure = { ui.status = "Scan failed: ${it.message}" })
-                        ui.scanning = false
-                    }
-                },
+                onClick = { startScan() },
                 enabled = ui.url.isNotBlank() && !ui.scanning, modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Filled.Subscriptions, contentDescription = null)
