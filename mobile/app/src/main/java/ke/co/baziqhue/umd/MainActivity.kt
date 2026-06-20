@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -70,6 +71,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -224,8 +226,8 @@ fun App() {
     var showAiKey by remember { mutableStateOf(false) }
     var showQuickDl by remember { mutableStateOf(false) }
     var libJump by remember { mutableStateOf<Int?>(null) }   // Home shortcut → Library category
-    // tab map: 0 Home · 1 Download · 2 Channel/Bulk · 3 Library · 4 Assistant · 5 History (drawer)
-    val sections = listOf("Home", "Download", "Channel / Bulk", "Library", "Assistant", "History")
+    // tab map: 0 Home · 1 Download · 2 Channel/Bulk · 3 Library · 4 Assistant · 5 History · 6 Discover (drawer/Home)
+    val sections = listOf("Home", "Download", "Channel / Bulk", "Library", "Assistant", "History", "Discover")
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()) {}
@@ -258,6 +260,7 @@ fun App() {
                     Triple("Channel / Bulk", Icons.Filled.Subscriptions, 2),
                     Triple("Library", Icons.Filled.LibraryMusic, 3),
                     Triple("Assistant", Icons.AutoMirrored.Filled.Chat, 4),
+                    Triple("Discover", Icons.Filled.AutoAwesome, 6),
                     Triple("History", Icons.Filled.Schedule, 5),
                 ).forEach { (name, icon, idx) ->
                     NavigationDrawerItem(
@@ -354,9 +357,10 @@ fun App() {
                                 Toast.LENGTH_SHORT).show()
                         }
                     }
-                    else -> HistoryScreen { url, audio ->
+                    5 -> HistoryScreen { url, audio ->
                         ui.url = url; ui.audio = audio; ui.done = null; tab = 1
                     }
+                    else -> DiscoverScreen()
                 }
             }
         }
@@ -410,6 +414,22 @@ fun HomeScreen(onGo: (Int) -> Unit, onOpenLibrary: (Int) -> Unit, onOpenPlayer: 
             Text(greeting, style = MaterialTheme.typography.headlineSmall)
             Text("What do you want to grab today?", style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        // Discover banner — trending content, one tap away.
+        Row(
+            Modifier.fillMaxWidth().clip(MaterialTheme.shapes.large).background(BrandGradient)
+                .clickable { onGo(6) }.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.AutoAwesome, contentDescription = null, tint = Color.White,
+                modifier = Modifier.size(28.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Discover", style = MaterialTheme.typography.titleMedium, color = Color.White)
+                Text("Trending in Kenya & worldwide — tap to grab",
+                    style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.9f))
+            }
+            Icon(Icons.Filled.PlayCircle, contentDescription = null, tint = Color.White)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             QuickTile("Single link", Icons.Filled.Download, Modifier.weight(1f)) { onGo(1) }
@@ -527,6 +547,181 @@ fun QuickDownloadDialog(ctx: Context, onDismiss: () -> Unit) {
             }) { Text("Download") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+/**
+ * Discover — YouTube content discovery shelves (Trending in Kenya / Worldwide,
+ * Music, New-from-your-top-artist). Thumbnails + one-tap download. Results are
+ * cached 6h to conserve the API quota. Needs a YouTube Data API v3 key (bundled
+ * at build time, or pasted in-app).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DiscoverScreen() {
+    val ctx = LocalContext.current
+    var hasKey by remember { mutableStateOf(Discover.hasKey(ctx)) }
+    var showKey by remember { mutableStateOf(false) }
+    var audio by remember { mutableStateOf(true) }
+    var topArtist by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        topArtist = withContext(Dispatchers.IO) {
+            Library.mediaFiles().filter { isAudioFile(it) }
+                .map { MediaMeta.artist(it) }
+                .filter { it.isNotBlank() && !it.equals("Unknown", true) }
+                .groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: ""
+        }
+    }
+
+    if (!hasKey) {
+        Column(
+            Modifier.fillMaxSize().padding(28.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(Icons.Filled.AutoAwesome, contentDescription = null,
+                modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(12.dp))
+            Text("Discover trending music & videos", style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center)
+            Spacer(Modifier.height(8.dp))
+            Text("See what's trending in Kenya and worldwide, browse music and new releases, " +
+                "then download with one tap. Add a free YouTube Data API key to switch it on.",
+                style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(18.dp))
+            BrandButton(onClick = { showKey = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("Set YouTube key")
+            }
+        }
+    } else {
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
+                    SegmentedButton(selected = audio, onClick = { audio = true },
+                        shape = SegmentedButtonDefaults.itemShape(0, 2)) { Text("🎵 MP3") }
+                    SegmentedButton(selected = !audio, onClick = { audio = false },
+                        shape = SegmentedButtonDefaults.itemShape(1, 2)) { Text("🎬 MP4") }
+                }
+                IconButton(onClick = { showKey = true }) {
+                    Icon(Icons.Filled.AutoAwesome, contentDescription = "YouTube key")
+                }
+            }
+            LazyColumn(Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                item { DiscoverShelf("🔥 Trending in Kenya", audio) { Discover.trending(ctx, "KE") } }
+                item { DiscoverShelf("🎵 Trending Music", audio) { Discover.trending(ctx, "KE", "10") } }
+                item { DiscoverShelf("🌍 Trending Worldwide", audio) { Discover.trending(ctx, "US") } }
+                if (topArtist.isNotBlank())
+                    item { DiscoverShelf("✨ New from $topArtist", audio) { Discover.search(ctx, topArtist) } }
+            }
+        }
+    }
+    if (showKey) DiscoverKeyDialog(ctx) { saved -> showKey = false; if (saved) hasKey = Discover.hasKey(ctx) }
+}
+
+@Composable
+private fun DiscoverShelf(
+    title: String, audio: Boolean,
+    loader: suspend () -> Result<List<DiscoverItem>>,
+) {
+    val ctx = LocalContext.current
+    var items by remember { mutableStateOf<List<DiscoverItem>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(title) {
+        loader().fold(
+            onSuccess = { items = it; error = null },
+            onFailure = { error = it.message; items = emptyList() })
+    }
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(6.dp))
+        val list = items
+        when {
+            list == null -> Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("Loading…", style = MaterialTheme.typography.bodySmall)
+            }
+            list.isEmpty() -> Text(error ?: "Nothing here right now.",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (error != null) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant)
+            else -> Row(Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                list.forEach { item ->
+                    DiscoverCard(item) {
+                        if (!Storage.hasAccess(ctx)) {
+                            Toast.makeText(ctx, "Grant storage access on the Download tab first.",
+                                Toast.LENGTH_SHORT).show()
+                        } else {
+                            Downloads.enqueue(ctx, item.url, audio, "Best", item.title)
+                            Toast.makeText(ctx, "Queued \"${item.title.take(40)}\"",
+                                Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoverCard(item: DiscoverItem, onDownload: () -> Unit) {
+    var queued by remember(item.videoId) { mutableStateOf(false) }
+    Column(Modifier.width(170.dp).clickable { onDownload(); queued = true }) {
+        Box(Modifier.fillMaxWidth().height(96.dp).clip(MaterialTheme.shapes.medium)) {
+            if (item.thumb.isNotBlank())
+                AsyncImage(model = item.thumb, contentDescription = null,
+                    contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            else Box(Modifier.fillMaxSize().background(BrandGradient))
+            if (item.durationSec > 0)
+                Surface(color = Color.Black.copy(alpha = 0.65f), shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp)) {
+                    Text(fmtDur(item.durationSec), color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp))
+                }
+            Surface(color = if (queued) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.55f),
+                shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
+                Icon(if (queued) Icons.Filled.Check else Icons.Filled.Download,
+                    contentDescription = "Download", tint = Color.White,
+                    modifier = Modifier.padding(4.dp).size(18.dp))
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(item.title, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+        Text(item.channel, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DiscoverKeyDialog(ctx: Context, onClose: (saved: Boolean) -> Unit) {
+    val current = Discover.storedKey(ctx)
+    var key by remember { mutableStateOf(if (current == BuildConfig.YOUTUBE_API_KEY) "" else current) }
+    AlertDialog(
+        onDismissRequest = { onClose(false) },
+        title = { Text("YouTube API key") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Paste a free YouTube Data API v3 key to enable Discover. Get one at " +
+                    "console.cloud.google.com (enable \"YouTube Data API v3\" → create an API key).",
+                    style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(key, { key = it }, label = { Text("API key") },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = key.isNotBlank(),
+                onClick = { Discover.setKey(ctx, key); onClose(true) }) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = { onClose(false) }) { Text("Cancel") } }
     )
 }
 

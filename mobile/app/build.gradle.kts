@@ -13,6 +13,9 @@ val secretProps = Properties().apply {
     if (f.exists()) f.inputStream().use { load(it) }
 }
 val umdSecret: String = (secretProps.getProperty("UMD_SECRET") ?: "").trim()
+// Optional: a YouTube Data API v3 key for the Discover tab. Bundled at build time
+// from secret.properties (gitignored). Can also be set in-app (Discover settings).
+val youtubeApiKey: String = (secretProps.getProperty("YOUTUBE_API_KEY") ?: "").trim()
 
 android {
     namespace = "ke.co.baziqhue.umd"
@@ -22,11 +25,12 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 26
-        versionName = "1.25"
+        versionCode = 27
+        versionName = "1.26"
 
         // Baked into BuildConfig at build time (not in the repo).
         buildConfigField("String", "UMD_SECRET", "\"$umdSecret\"")
+        buildConfigField("String", "YOUTUBE_API_KEY", "\"$youtubeApiKey\"")
     }
 
     buildTypes {
