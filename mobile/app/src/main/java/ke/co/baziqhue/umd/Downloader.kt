@@ -112,6 +112,44 @@ object Downloader {
     }
 
     /**
+     * Pull the real artist out of the source metadata (the .info.json yt-dlp wrote)
+     * and record it as the authoritative artist in [ArtistStore]. Works for YouTube,
+     * TikTok, Instagram, etc. — the artist comes from the platform, not the filename.
+     * Then the sidecar is deleted so the public folder stays clean.
+     */
+    private fun captureArtist(saved: File) {
+        val dir = saved.parentFile ?: return
+        try {
+            val exact = File(dir, saved.nameWithoutExtension + ".info.json")
+            val src = if (exact.exists()) exact
+            else dir.listFiles { f -> f.name.endsWith(".info.json") }?.firstOrNull()
+            if (src != null && src.exists()) {
+                try {
+                    val artist = resolveArtist(JSONObject(src.readText()))
+                    if (artist.isNotBlank()) {
+                        ArtistStore.put(saved.absolutePath, artist)
+                        MediaMeta.forget(saved.absolutePath)
+                    }
+                } catch (_: Exception) {}
+            }
+            // Sweep any leftover sidecars so the user never sees *.info.json files.
+            dir.listFiles { f -> f.name.endsWith(".info.json") }?.forEach { runCatching { it.delete() } }
+        } catch (_: Exception) {}
+    }
+
+    /** Best artist from source metadata: music artist → creator → channel → uploader. */
+    private fun resolveArtist(o: JSONObject): String {
+        val raw = listOf("artist", "creator", "channel", "uploader")
+            .map { o.optString(it) }
+            .firstOrNull { it.isNotBlank() && !it.equals("null", true) } ?: return ""
+        var a = raw.trim()
+        a = a.removeSuffix(" - Topic").trim()              // YouTube auto-generated artist channels
+        a = a.replace(Regex("(?i)\\s*-?\\s*VEVO$"), "").trim()
+        a = a.split(",").first().trim()                    // primary of "Artist A, Artist B"
+        return a
+    }
+
+    /**
      * Download [url] as audio (mp3) or video (mp4). [onProgress] gets 0..100.
      * Returns the saved file + its folder. Run from a coroutine (it blocks).
      */
@@ -154,6 +192,10 @@ object Downloader {
             // Embed the YouTube thumbnail as cover art so the Library/player show
             // a real picture (usually the artist) instead of a placeholder tile.
             req.addOption("--embed-thumbnail")
+            // Write the source metadata (artist/track/album/channel/uploader) to a
+            // sidecar so we capture the REAL artist instead of guessing it from the
+            // filename. We read it after the download, then delete it.
+            req.addOption("--write-info-json")
 
             // Some sites (TikTok especially) have probabilistic anti-bot
             // responses — the same request fails one moment and succeeds the
@@ -200,6 +242,7 @@ object Downloader {
                 return@withContext Result.failure(
                     Exception("Nothing was downloaded (the source may have failed, or it already exists)."))
             }
+            captureArtist(saved)   // real artist from the source metadata
             Storage.scan(context, saved)
             Storage.scan(context, dir)
             Result.success(Outcome(saved, dir, "Saved to ${Storage.displayPath(dir)}"))
@@ -343,6 +386,10 @@ object Downloader {
             // Embed the YouTube thumbnail as cover art so the Library/player show
             // a real picture (usually the artist) instead of a placeholder tile.
             req.addOption("--embed-thumbnail")
+            // Write the source metadata (artist/track/album/channel/uploader) to a
+            // sidecar so we capture the REAL artist instead of guessing it from the
+            // filename. We read it after the download, then delete it.
+            req.addOption("--write-info-json")
 
             YoutubeDL.getInstance().execute(req) { p, _, line ->
                 onProgress(if (p < 0) 0f else p, line.orEmpty())
@@ -354,6 +401,7 @@ object Downloader {
                 (prev == null || f.lastModified() > prev) && f.extension.lowercase() in MEDIA_EXT
             }
             newFiles.forEach { f ->
+                captureArtist(f)
                 Storage.scan(context, f)
                 History.add(HistoryEntry(
                     f.nameWithoutExtension, url, audio, f.absolutePath, f.length(),

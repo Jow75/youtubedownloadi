@@ -22,10 +22,20 @@ object MediaMeta {
     @Synchronized
     fun artist(f: File): String {
         cache[f.absolutePath]?.let { return it }
-        val a = readEmbedded(f) ?: filenameArtist(f)
+        // Artist hierarchy (metadata first, guessing last):
+        //   1. captured source metadata (yt-dlp artist/creator/channel) — the truth,
+        //   2. embedded ID3/media ARTIST tag,
+        //   3. "Artist - Title" filename parse,
+        //   4. "Unknown".
+        // (AI title clean-up is the optional manual backup, not in this path.)
+        val a = ArtistStore.get(f.absolutePath) ?: readEmbedded(f) ?: filenameArtist(f)
         cache[f.absolutePath] = a
         return a
     }
+
+    /** Drop cached values for a path (e.g. after capturing fresh download metadata). */
+    @Synchronized
+    fun forget(path: String) { cache.remove(path); artCache.remove(path) }
 
     /**
      * Embedded album art (cover) as raw bytes, or null if the file has none.

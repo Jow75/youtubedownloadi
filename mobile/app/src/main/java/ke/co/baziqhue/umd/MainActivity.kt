@@ -1921,6 +1921,8 @@ private fun TitleCleanupSection(
         if (nf != null) {
             Storage.scan(ctx, old); Storage.scan(ctx, nf)
             CleanState.markRenamed(old, nf)
+            ArtistStore.move(old.absolutePath, nf.absolutePath)   // keep the real artist
+            MediaMeta.forget(old.absolutePath)
             s.done = true
         }
     }

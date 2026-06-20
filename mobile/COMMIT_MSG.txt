@@ -1,20 +1,25 @@
-Mobile v1.29: Discover — already-downloaded ticks, Follow-artist + new-upload shelves, search filters + playlists
+Mobile v1.30: real artist from source metadata (stop hallucinating artists)
 
-C) Already-downloaded indicator: DownloadedIndex (a live, normalized index of
-   library filenames). Every Discover/search card now shows a GREEN CHECK when the
-   item is already in your library, vs the download arrow otherwise. Reactive — it's
-   refreshed on Discover open + app resume and the moment a download finishes
-   (Downloads -> DownloadedIndex.add); delete the file and the tick reverts.
+Fixes the library guessing artists from filenames (e.g. "Hook Up Song" becoming an
+artist). Now the REAL artist is captured from the source metadata at download time.
 
-A) Follow Artist + new uploads: Follows store (follows.json) + a ⭐ on every channel
-   result. Followed artists get a "🆕 New from <artist>" shelf at the top of Discover,
-   built from their uploads playlist (cheap — 2 quota units, cached 6h). (Background
-   push notifications come with the Phase E foreground/background service.)
+- Every download now passes --write-info-json; after the file lands, Downloader reads
+  the sidecar and resolves the artist as: music artist → creator → channel → uploader
+  (stripping "- Topic"/VEVO, taking the primary of "A, B"), then stores it in the new
+  ArtistStore (artist_meta.json) and deletes the sidecar (folder stays clean). Works
+  for YouTube, TikTok, Instagram, etc. — same code path for single / bulk / channel /
+  Discover / Assistant downloads.
+- MediaMeta.artist() hierarchy is now metadata-first: ArtistStore (captured truth) →
+  embedded ID3/media tag → "Artist - Title" filename → Unknown. AI stays the optional
+  manual backup (Title clean-up), never the primary source.
+- Title clean-up renames now carry the captured artist (ArtistStore.move) so grouping
+  stays correct after a rename.
 
-B) Search power-ups:
-   - Playlists now appear in search results → tap to open in the Channel tab and
-     bulk-download the whole playlist (yt-dlp, no quota).
-   - Sort: Relevance / Newest / Most viewed (order=relevance|date|viewCount).
-   - "Official only" filter (heuristic: Official titles + VEVO / "- Topic" channels).
+Why not the YouTube Data API for this: yt-dlp's own extraction already returns richer
+per-video metadata (the music artist/track/album fields the Data API doesn't expose),
+for free, on every platform — so it's the better source of truth here.
+
+Note: applies to NEW downloads; existing files keep using their embedded tag/filename
+(or the AI Title clean-up tool).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
