@@ -706,7 +706,16 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
             LazyColumn(Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                searchError?.let { item { Text(it, style = MaterialTheme.typography.bodyMedium) } }
+                searchError?.let { msg ->
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(msg, style = MaterialTheme.typography.bodyMedium)
+                            OutlinedButton(onClick = { runSearch() }, enabled = !searching) {
+                                Text("Try again")
+                            }
+                        }
+                    }
+                }
                 if (res.channels.isNotEmpty()) {
                     item { Text("Channels — tap to browse & bulk-download",
                         style = MaterialTheme.typography.titleSmall) }
@@ -732,6 +741,14 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
                 if (vids.isNotEmpty()) {
                     item { Text("Videos — tap to download", style = MaterialTheme.typography.titleSmall) }
                     items(vids, key = { it.videoId }) { v -> DiscoverResultRow(v) { grab(v) } }
+                } else if (officialOnly && res.videos.isNotEmpty()) {
+                    // Don't look broken when the filter hides everything — say so.
+                    item {
+                        Text("No \"official\" videos in these results — turn off Official only " +
+                            "to see all ${res.videos.size}.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         } else {
@@ -1917,9 +1934,13 @@ private fun TitleCleanupSection(
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("🏷️ Title clean-up", style = MaterialTheme.typography.titleMedium)
-            Text("AI suggests a clean \"Artist — Title\" for messy filenames. Rename them " +
-                "all in one tap, or pick which. Files you've already cleaned (or skipped) " +
-                "are remembered and won't be suggested again.", style = MaterialTheme.typography.bodySmall,
+            Text("AI suggests a clean \"Artist — Title\" for messy filenames — it only ever " +
+                "removes junk (it never invents or swaps names), and every suggestion is " +
+                "shown for you to review before anything is renamed. Files you've already " +
+                "cleaned (or skipped) are remembered and won't be suggested again.\n\n" +
+                "Got a name that looks wrong? Use “Restore names from tags” — it rebuilds the " +
+                "real name straight from each file's embedded tags (no AI, instant).",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
 
             var forceAll by remember { mutableStateOf(false) }
@@ -1978,6 +1999,31 @@ private fun TitleCleanupSection(
                 }
                 Text(if (CleanupJob.running) "Analyzing…" else "Analyze titles (AI)")
             }
+
+            // No-AI recovery: rebuild names from each file's embedded tags. Instant,
+            // free, and the cure for any file a past clean-up renamed badly.
+            OutlinedButton(
+                onClick = {
+                    CleanupJob.reset(); CleanupJob.running = true
+                    CleanupJob.status = "Reading embedded tags…"
+                    Jobs.launch("Restore from tags") {
+                        val out = files.mapNotNull { f ->
+                            val real = MediaMeta.embeddedName(f)?.trim() ?: return@mapNotNull null
+                            // Compare on the sanitized form Library.rename will actually use,
+                            // so we only propose genuine changes.
+                            val safe = real.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(120)
+                            if (safe.isBlank() || safe == f.nameWithoutExtension) null
+                            else CleanupSuggestion(f.absolutePath, f.nameWithoutExtension, safe, "From tags")
+                        }
+                        CleanupJob.results.clear(); CleanupJob.results.addAll(out)
+                        CleanupJob.status = if (out.isEmpty()) "All names already match their tags 🎉"
+                        else "${out.size} file(s) can be restored from their embedded tags."
+                        CleanupJob.running = false
+                    }
+                },
+                enabled = !CleanupJob.running && files.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large
+            ) { Text("Restore names from tags (no AI)") }
 
             if (CleanupJob.status.isNotBlank())
                 Text(CleanupJob.status, style = MaterialTheme.typography.bodyMedium)

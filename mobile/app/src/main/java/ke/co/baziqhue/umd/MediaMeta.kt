@@ -71,6 +71,35 @@ object MediaMeta {
         }
     }
 
+    /**
+     * The track's real "Artist - Title" rebuilt from its EMBEDDED tags (yt-dlp writes
+     * these via --embed-metadata). Powers "Restore names from tags": a filename change
+     * never touches the audio/art/tags inside the file, so this recovers the true name
+     * with no AI and no re-download — the fix for any earlier bad rename. Returns null
+     * if the file has no usable embedded title.
+     */
+    @Synchronized
+    fun embeddedName(f: File): String? {
+        if (!f.exists()) return null
+        val r = MediaMetadataRetriever()
+        return try {
+            r.setDataSource(f.absolutePath)
+            val title = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)?.trim()
+            val artist = (r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                ?: r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST))?.trim()
+            when {
+                title.isNullOrBlank() -> null
+                !artist.isNullOrBlank() && !artist.equals("unknown", true)
+                    && !title.contains(artist, ignoreCase = true) -> "$artist - $title"
+                else -> title
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try { r.release() } catch (_: Exception) {}
+        }
+    }
+
     private fun readEmbedded(f: File): String? {
         if (!f.exists()) return null
         val r = MediaMetadataRetriever()

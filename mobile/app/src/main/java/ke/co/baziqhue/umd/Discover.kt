@@ -83,13 +83,38 @@ object Discover {
         } catch (_: Exception) {}
     }
 
+    /** A 4xx the caller shouldn't retry (bad request / quota / forbidden). */
+    private class PermanentHttp(message: String) : IOException(message)
+
+    /**
+     * GET with automatic retry for *transient* failures (no network yet, DNS not
+     * resolved, timeouts, 5xx, rate-limit). This kills the old "search shows an error,
+     * toggle a filter and suddenly it works" flakiness — the first attempt was just
+     * hitting a momentary network blip, and changing the sort forced a fresh request
+     * that happened to succeed. Now we retry transparently. Permanent 4xx errors
+     * (e.g. daily quota used up) still fail fast.
+     */
     private fun httpGet(url: String): String {
-        val req = Request.Builder().url(url).get().build()
-        client.newCall(req).execute().use { resp ->
-            val body = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) throw IOException(parseErr(body, resp.code))
-            return body
+        var last: Exception? = null
+        for (attempt in 0 until 3) {
+            try {
+                val req = Request.Builder().url(url).get().build()
+                client.newCall(req).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (resp.isSuccessful) return body
+                    val msg = parseErr(body, resp.code)
+                    if (resp.code in 400..499 && resp.code != 408 && resp.code != 429)
+                        throw PermanentHttp(msg)              // permanent → don't retry
+                    last = IOException(msg)                   // 5xx / 408 / 429 → retry
+                }
+            } catch (e: PermanentHttp) {
+                throw e
+            } catch (e: IOException) {
+                last = e                                      // connection-level failure → retry
+            }
+            if (attempt < 2) try { Thread.sleep(500L * (attempt + 1)) } catch (_: InterruptedException) {}
         }
+        throw last ?: IOException("Couldn't reach YouTube.")
     }
 
     private fun parseErr(body: String, code: Int): String = try {

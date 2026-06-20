@@ -184,9 +184,18 @@ object Ai {
 
     /**
      * Clean up messy download titles -> {original: TitleInfo}. Batched in small
-     * chunks on the FAST model so it returns quickly and never times out (the
-     * 70B model took ~45s for 12 titles; the 8B does ~8 in ~6s). [onProgress]
-     * reports done/total as batches complete.
+     * chunks on the FAST model so it returns quickly. [onProgress] reports
+     * done/total as batches complete.
+     *
+     * SAFETY (this previously corrupted libraries): the model's reply is matched
+     * back to each input by the **echoed original title** — never by array position.
+     * The small model often drops / merges / reorders items within a batch; the old
+     * positional mapping then silently pinned one song's name onto a *different* file
+     * (e.g. a Zuchu track ending up named after another song in the same batch).
+     * Identity-matching makes that impossible: a suggestion is only ever applied to
+     * the exact title the model echoed back. On top of that, [sanitizeTitleInfo]
+     * rejects invented artists/titles — clean-up may only REMOVE junk, never add or
+     * substitute words that weren't already in the original filename.
      */
     suspend fun analyzeTitles(
         ctx: Context,
@@ -199,32 +208,37 @@ object Ai {
         if (uniq.isEmpty()) return@withContext Result.success(emptyMap())
 
         val result = LinkedHashMap<String, TitleInfo>()
-        val batch = 10
+        val batch = 6                       // smaller batch = less chance the model drifts
         var i = 0
         while (i < uniq.size) {
             val chunk = uniq.subList(i, minOf(i + batch, uniq.size))
-            val prompt =
-                "You clean up media download titles for a library. For EACH title " +
-                "return one JSON object, in the SAME ORDER, with fields: " +
-                "artist (performer/channel as a string, or null), " +
-                "clean_title (the work's name without 'Official Video', tags, etc.), " +
-                "category (exactly one of $CATEGORIES), " +
-                "is_official (true if it looks like an official release, else false). " +
-                "Return ONLY a JSON array, nothing else.\n\nTitles:\n" +
-                chunk.mapIndexed { j, t -> "${j + 1}. $t" }.joinToString("\n")
+            val prompt = buildString {
+                append("You TIDY UP media filenames for a music library. Your only job is to ")
+                append("REMOVE junk — you must NEVER invent, translate, guess, or swap names.\n")
+                append("For EACH item return one JSON object with these fields:\n")
+                append("  \"id\": the item number, copied exactly;\n")
+                append("  \"original\": the item's text, copied VERBATIM (character for character);\n")
+                append("  \"artist\": the performer — but ONLY if their name already appears in the ")
+                append("text; otherwise null. Never write a name that isn't in the text;\n")
+                append("  \"clean_title\": the song/work name with only junk removed (e.g. ")
+                append("\"Official Video\", \"(Official Music Video)\", \"[Lyrics]\", \"HD\", \"4K\", ")
+                append("resolution/fps tags, channel watermarks, emojis, doubled spaces). Keep the ")
+                append("real wording EXACTLY; do NOT add words, rephrase, or translate, and do NOT ")
+                append("repeat the artist here;\n")
+                append("  \"category\": exactly one of $CATEGORIES;\n")
+                append("  \"is_official\": true if it looks like an official release, else false.\n")
+                append("Return ONLY a JSON array of these objects, in the same order as given.\n\nItems:\n")
+                append(chunk.mapIndexed { j, t -> "${j + 1}. $t" }.joinToString("\n"))
+            }
             try {
-                val arr = extractJsonArray(chat(key, prompt, maxTokens = 900, model = FAST_MODEL))
+                val arr = extractJsonArray(chat(key, prompt, maxTokens = 1300, model = FAST_MODEL))
                 if (arr != null) {
-                    for (j in chunk.indices) {
-                        val o = arr.optJSONObject(j) ?: continue
-                        val cat = o.optString("category")
-                        result[chunk[j]] = TitleInfo(
-                            artist = o.optString("artist").ifBlank { null }
-                                ?.takeUnless { it.equals("null", true) },
-                            cleanTitle = o.optString("clean_title").ifBlank { chunk[j] },
-                            category = if (cat in CATEGORIES) cat else "Other",
-                            official = if (o.has("is_official")) o.optBoolean("is_official") else null,
-                        )
+                    for (k in 0 until arr.length()) {
+                        val o = arr.optJSONObject(k) ?: continue
+                        // Match the object back to a specific input by IDENTITY, never position.
+                        val orig = matchOriginal(o, chunk) ?: continue
+                        val info = sanitizeTitleInfo(o, orig) ?: continue
+                        if (!result.containsKey(orig)) result[orig] = info   // first clean hit wins
                     }
                 }
             } catch (_: Exception) {
@@ -235,6 +249,65 @@ object Ai {
         }
         if (result.isEmpty()) Result.failure(IOException("Couldn't analyze titles — try again."))
         else Result.success(result)
+    }
+
+    /**
+     * Tie a returned object back to the EXACT input it describes. Trust the echoed
+     * `original` (verbatim, then normalized); only if that's missing fall back to the
+     * echoed `id`. Returns null when we can't be sure — so the file gets no suggestion
+     * instead of someone else's name.
+     */
+    private fun matchOriginal(o: JSONObject, chunk: List<String>): String? {
+        val echoed = o.optString("original").trim()
+        if (echoed.isNotBlank()) {
+            chunk.firstOrNull { it.equals(echoed, ignoreCase = true) }?.let { return it }
+            val ne = normalizeWords(echoed)
+            chunk.firstOrNull { normalizeWords(it) == ne }?.let { return it }
+            return null            // model named an "original" we never sent → don't guess
+        }
+        val id = o.optInt("id", -1)
+        return if (id in 1..chunk.size) chunk[id - 1] else null
+    }
+
+    /**
+     * Anti-hallucination guard. Clean-up may only SUBTRACT text, so:
+     *  - clean_title is accepted only if every significant word already exists in the
+     *    original (otherwise we keep the original wording);
+     *  - artist is accepted only if it literally appears in the original title.
+     * This stops the model replacing a real title/artist with a different one.
+     */
+    private fun sanitizeTitleInfo(o: JSONObject, original: String): TitleInfo? {
+        val cat = o.optString("category").let { if (it in CATEGORIES) it else "Other" }
+        val official = if (o.has("is_official")) o.optBoolean("is_official") else null
+
+        val rawClean = o.optString("clean_title").trim()
+        val cleanTitle = if (rawClean.isNotBlank() && isSubsetOf(rawClean, original)) rawClean
+                         else original                        // reject invented / rephrased titles
+
+        val rawArtist = o.optString("artist").trim()
+            .takeUnless { it.isBlank() || it.equals("null", true) }
+        val artist = rawArtist?.takeIf { phraseIn(it, original) }   // reject invented artists
+
+        return TitleInfo(artist, cleanTitle.ifBlank { original }, cat, official)
+    }
+
+    private fun normalizeWords(s: String): String =
+        s.lowercase().replace(Regex("[^a-z0-9]+"), " ").trim()
+
+    private fun significantWords(s: String): List<String> =
+        normalizeWords(s).split(' ').filter { it.length >= 2 }
+
+    /** True if `phrase` appears as a contiguous run inside `text` (normalized). */
+    private fun phraseIn(phrase: String, text: String): Boolean {
+        val p = normalizeWords(phrase)
+        return p.isNotBlank() && normalizeWords(text).contains(p)
+    }
+
+    /** True if every significant word of `candidate` already exists in `original`. */
+    private fun isSubsetOf(candidate: String, original: String): Boolean {
+        val orig = significantWords(original).toSet()
+        val cand = significantWords(candidate)
+        return cand.isNotEmpty() && cand.all { it in orig }
     }
 
     /** Pull a JSON array out of a model reply (handles ```json fences / extra text). */
