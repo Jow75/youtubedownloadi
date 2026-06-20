@@ -25,8 +25,13 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 32
-        versionName = "1.31"
+        versionCode = 33
+        versionName = "1.32"
+
+        // Ship native libs only for real Android phones (ARM). Dropping x86/x86_64
+        // (emulator-only) roughly halves the bundled engine size — smaller APK +
+        // smaller install, with no impact on actual devices.
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
 
         // Baked into BuildConfig at build time (not in the repo).
         buildConfigField("String", "UMD_SECRET", "\"$umdSecret\"")
@@ -76,7 +81,7 @@ dependencies {
     // (If a version is not found, let Android Studio suggest the latest.)
     implementation("io.github.junkfood02.youtubedl-android:library:0.17.2")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.17.2")
-    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.17.2")
+    // aria2c (external downloader) removed — unused, and it bundled a large native lib.
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 

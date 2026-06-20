@@ -11,8 +11,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -340,37 +338,33 @@ fun App() {
         },
         containerColor = Color.Transparent
     ) { pad ->
-        Crossfade(targetState = tab, animationSpec = tween(150), label = "tab",
-            modifier = Modifier.fillMaxSize().padding(pad)) { t ->
-            Box(Modifier.fillMaxSize()) {
-                when (t) {
-                    0 -> HomeScreen(
-                        onGo = { tab = it },
-                        onOpenLibrary = { cat -> libJump = cat; tab = 3 },
-                        onOpenPlayer = { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true })
-                    1 -> DownloadScreen(lm, ui, scope) { licensed = false }
-                    2 -> ChannelBulkScreen(channel, bulk)
-                    3 -> LibraryScreen(libJump) { libJump = null }
-                    4 -> AssistantScreen(assistant, scope) { path ->
-                        // Resolve robustly: exact path, else by filename in the Library
-                        // (so renames/moves don't break older chat results).
-                        scope.launch {
-                            val f = withContext(Dispatchers.IO) {
-                                File(path).takeIf { it.exists() }
-                                    ?: Library.mediaFiles().firstOrNull { it.name == File(path).name }
-                            }
-                            if (f != null) { playInApp(ctx, listOf(f), f); tab = 3 }
-                            else Toast.makeText(ctx, "That file isn't in your library anymore.",
-                                Toast.LENGTH_SHORT).show()
+        // Direct switch (no Crossfade) so tabs change instantly — the local-app feel.
+        Box(Modifier.fillMaxSize().padding(pad)) {
+            when (tab) {
+                0 -> HomeScreen(
+                    onGo = { tab = it },
+                    onOpenLibrary = { cat -> libJump = cat; tab = 3 },
+                    onOpenPlayer = { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true })
+                1 -> DownloadScreen(lm, ui, scope) { licensed = false }
+                2 -> ChannelBulkScreen(channel, bulk)
+                3 -> LibraryScreen(libJump) { libJump = null }
+                4 -> AssistantScreen(assistant, scope) { path ->
+                    // Resolve robustly: exact path, else by filename in the Library.
+                    scope.launch {
+                        val f = withContext(Dispatchers.IO) {
+                            File(path).takeIf { it.exists() }
+                                ?: Library.mediaFiles().firstOrNull { it.name == File(path).name }
                         }
+                        if (f != null) { playInApp(ctx, listOf(f), f); tab = 3 }
+                        else Toast.makeText(ctx, "That file isn't in your library anymore.",
+                            Toast.LENGTH_SHORT).show()
                     }
-                    5 -> HistoryScreen { url, audio ->
-                        ui.url = url; ui.audio = audio; ui.done = null; tab = 1
-                    }
-                    else -> DiscoverScreen { url ->
-                        // Search → open this channel in the Channel tab and auto-scan it.
-                        channel.url = url; channel.mode = 0; channel.requestScan = true; tab = 2
-                    }
+                }
+                5 -> HistoryScreen { url, audio ->
+                    ui.url = url; ui.audio = audio; ui.done = null; tab = 1
+                }
+                else -> DiscoverScreen { url ->
+                    channel.url = url; channel.mode = 0; channel.requestScan = true; tab = 2
                 }
             }
         }

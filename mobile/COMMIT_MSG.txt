@@ -1,16 +1,23 @@
-Mobile v1.31: remove Smart Search, fix Discover download badge, add AI artist alias-merge
+Mobile v1.32: cleanup + performance — APK 153MB -> 77MB, instant tab switching
 
-- Removed Smart Search (Library → Tools) and deleted SearchIndex.kt. It built an AI
-  embedding index (NVIDIA calls, embeds.json that grew stale — "Indexed 424 of 361")
-  for a "search by meaning" use almost nobody needs, while the Library already has
-  instant name search. Leaner, faster, less RAM/clutter.
-- Discover download badge is now persistent and accurate (tied to the real queue):
-  green ✓ = in your library · purple spinner = downloading (stays until it finishes)
-  · arrow = available. Tapping is disabled while downloading or already-owned, so you
-  can't double-download. (DlTask gained a url; Downloads.isActive(url).)
-- AI alias-merge for cross-platform artists: Artists → "Merge aliases (AI)" clusters
-  the SAME artist written differently ("Diamond Platnumz" / "diamondplatnumz" /
-  "… - Topic") into one canonical name. Ai.mergeArtists + ArtistAlias store; MediaMeta
-  now canonicalizes on top of its metadata hierarchy (AI stays the backup).
+Size (safe — no functional change on real devices):
+- abiFilters = armeabi-v7a + arm64-v8a only. Dropped x86/x86_64 native libs, which
+  are emulator-only and were ~half the engine payload.
+- Removed the unused aria2c dependency (we never used --external-downloader), which
+  bundled a large native lib.
+- Result: APK 153.2MB -> 77.3MB; install size falls proportionally. The Python +
+  ffmpeg engine for ARM is untouched, so all downloads/conversions still work.
+
+Performance:
+- Removed the Crossfade tab transition — tabs now switch INSTANTLY (no 150ms fade,
+  no double-composition of the outgoing + incoming screen). Local-app responsiveness.
+- Background work (downloads, AI jobs, playlist analysis) already runs on app-scope
+  coroutines, so the UI thread is never blocked by them.
+
+Repo cleanup:
+- Removed the committed "IMAGES FORM PHONE" screenshot folder (no app purpose).
+
+Note: the install size being larger than the APK is normal Android behaviour (it
+extracts native libs + compiles dex on install); the ABI trim shrinks both.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
