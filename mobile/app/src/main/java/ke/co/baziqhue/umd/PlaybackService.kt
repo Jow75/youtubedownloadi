@@ -3,6 +3,7 @@ package ke.co.baziqhue.umd
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -19,7 +20,12 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
-        val player = ExoPlayer.Builder(this)
+        // If the primary hardware video decoder can't keep up (stutter / dropped
+        // frames), fall back to another decoder instead of struggling — smoother
+        // local MP4 playback on weaker devices.
+        val renderers = DefaultRenderersFactory(this)
+            .setEnableDecoderFallback(true)
+        val player = ExoPlayer.Builder(this, renderers)
             // Pause on headphone unplug; handle audio focus (duck/pause).
             .setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus = */ true)
             .setHandleAudioBecomingNoisy(true)

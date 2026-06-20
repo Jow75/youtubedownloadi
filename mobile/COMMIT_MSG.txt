@@ -1,18 +1,16 @@
-Mobile v1.24: assistant-bubble fix, mini-player prev, video A/V sync, Home->category nav, liveliness, snappier nav
+Mobile v1.25: fix MP4 video stutter (force H.264 1080p30 + decoder fallback)
 
-Phase J — pre-release polish & fixes:
-- Assistant: EVERY completed-download bubble stays tappable permanently (was only
-  the newest). Keyed off the saved path, not File.exists() at compose time; on tap
-  it resolves the file robustly (exact path, else by filename in the Library) so
-  renames/moves never break older results. Bubbles now show cover artwork too.
-- Mini-player: added the Previous button (Prev / Play-Pause / Next / Close). Full
-  player keeps all controls (speed/seek/repeat/shuffle/timer).
-- Video A/V sync: downloads now prefer H.264(mp4)+AAC(m4a) instead of letting yt-dlp
-  pick VP9/Opus, which the device couldn't keep in sync (audio-ahead/video-behind).
-  Fixes new MP4 downloads; existing VP9 files would need re-downloading.
-- Home shortcuts now open the EXACT Library category: Videos->Videos, Artists->
-  Artists, Playlists->Playlists (LibraryScreen gained a jumpTo param).
-- Liveliness: finished items in the Downloads list show cover art + a play button.
-- Performance: snappier tab transitions (Crossfade 260ms -> 150ms).
+The video kept stuttering ("trying to catch up" while audio stayed smooth) — the
+classic symptom of the hardware decoder dropping frames on a too-demanding stream.
+Since PlaybackService runs in-process, it was never a routing/IPC problem; it was
+the stream itself (high-bitrate 1080p60, or VP9/AV1).
+
+- Download: force avc1 (H.264) video + AAC audio, capped at 1080p and 30fps
+  (720p/480p likewise). These decode in hardware smoothly and stay A/V-synced.
+- Player: ExoPlayer now uses DefaultRenderersFactory with decoder fallback, so a
+  struggling primary decoder falls back instead of stuttering.
+
+Note: applies to NEW downloads. Videos grabbed before this need re-downloading to
+pick up the H.264/30fps format.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

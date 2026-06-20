@@ -138,14 +138,14 @@ object Downloader {
                 req.addOption("--audio-format", "mp3")
                 req.addOption("--audio-quality", "0")
             } else {
-                // Prefer H.264 video + AAC audio in an mp4 container. These are the
-                // formats Android's player decodes natively and keeps perfectly in
-                // sync; the old "bestvideo+bestaudio" could pick VP9/Opus, which the
-                // device struggles to A/V-sync (the audio-ahead / video-behind bug).
+                // Force H.264 (avc1) video + AAC audio, capped at 1080p and 30fps.
+                // Phones decode this in hardware smoothly; VP9/AV1, 4K, and 60fps are
+                // what overload the decoder so the video stutters / drops frames and
+                // "catches up" to the audio. avc1 + ≤1080p + ≤30fps keeps it in sync.
                 val sel = when (quality) {
-                    "720p" -> "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best[height<=720]"
-                    "480p" -> "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]/best[height<=480]"
-                    else -> "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best"
+                    "720p" -> "bestvideo[vcodec^=avc1][height<=720][fps<=30]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best[height<=720]"
+                    "480p" -> "bestvideo[vcodec^=avc1][height<=480][fps<=30]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]/best[height<=480]"
+                    else -> "bestvideo[vcodec^=avc1][height<=1080][fps<=30]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
                 }
                 req.addOption("-f", sel)
                 req.addOption("--merge-output-format", "mp4")
@@ -327,14 +327,14 @@ object Downloader {
                 req.addOption("--audio-format", "mp3")
                 req.addOption("--audio-quality", "0")
             } else {
-                // Prefer H.264 video + AAC audio in an mp4 container. These are the
-                // formats Android's player decodes natively and keeps perfectly in
-                // sync; the old "bestvideo+bestaudio" could pick VP9/Opus, which the
-                // device struggles to A/V-sync (the audio-ahead / video-behind bug).
+                // Force H.264 (avc1) video + AAC audio, capped at 1080p and 30fps.
+                // Phones decode this in hardware smoothly; VP9/AV1, 4K, and 60fps are
+                // what overload the decoder so the video stutters / drops frames and
+                // "catches up" to the audio. avc1 + ≤1080p + ≤30fps keeps it in sync.
                 val sel = when (quality) {
-                    "720p" -> "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best[height<=720]"
-                    "480p" -> "bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]/best[height<=480]"
-                    else -> "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/bestvideo+bestaudio/best"
+                    "720p" -> "bestvideo[vcodec^=avc1][height<=720][fps<=30]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best[height<=720]"
+                    "480p" -> "bestvideo[vcodec^=avc1][height<=480][fps<=30]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]/best[height<=480]"
+                    else -> "bestvideo[vcodec^=avc1][height<=1080][fps<=30]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
                 }
                 req.addOption("-f", sel)
                 req.addOption("--merge-output-format", "mp4")
