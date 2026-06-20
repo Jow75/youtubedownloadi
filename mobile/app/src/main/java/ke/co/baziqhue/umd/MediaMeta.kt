@@ -18,6 +18,13 @@ object MediaMeta {
 
     private val cache = HashMap<String, String>()
     private val artCache = HashMap<String, ByteArray?>()
+    private val artistsCache = HashMap<String, List<String>>()
+
+    // Separators that join collaborating artists. "x" / "and" / "vs" only match as
+    // WHOLE words so we never split inside a real name (Maxwell, Sanderson, …).
+    private val ARTIST_SPLIT = Regex(
+        """(?i)\s*(?:,|;|/|&|＋|\+|×|\bx\b|\bvs\.?\b|\band\b|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b)\s*"""
+    )
 
     @Synchronized
     fun artist(f: File): String {
@@ -35,13 +42,61 @@ object MediaMeta {
         return a
     }
 
+    /**
+     * EVERY individual artist a track belongs to. A collaboration attaches to ALL
+     * participants — "Diamond Platnumz Ft Mbosso - Kanyaga" shows up under BOTH
+     * "Diamond Platnumz" AND "Mbosso", never as a combined "… Ft …" bucket. This is
+     * what keeps the Artists view one-artist-per-entry: open any artist and you see
+     * every song they're on, solo or featured.
+     *
+     * Sources, merged: (1) the resolved primary credit (which may itself be a combo
+     * like "Mario, The Voice"), and (2) the artist segment of the filename before
+     * " - " ("A Ft B - Title"). Each name is canonicalized via [ArtistAlias] so the
+     * "Merge aliases (AI)" tool still folds different spellings together.
+     */
+    @Synchronized
+    fun artists(f: File): List<String> {
+        artistsCache[f.absolutePath]?.let { return it }
+        val out = LinkedHashSet<String>()
+        splitArtists(artist(f)).forEach { out.add(it) }
+        splitArtists(artistSegment(f.nameWithoutExtension)).forEach { out.add(it) }
+        val cleaned = out.asSequence()
+            .map { ArtistAlias.canonical(cleanArtist(it)) }
+            .filter { it.isNotBlank() && !it.equals("unknown", true) }
+            .distinct().toList()
+            .ifEmpty { listOf("Unknown") }
+        artistsCache[f.absolutePath] = cleaned
+        return cleaned
+    }
+
+    private fun splitArtists(s: String): List<String> =
+        if (s.isBlank()) emptyList()
+        else s.split(ARTIST_SPLIT).map { it.trim() }.filter { it.isNotBlank() }
+
+    /** The artist portion of a filename: text before the first " - " / " – " / " — ".
+     *  No dash → "" (we don't risk parsing a dash-less title into fake artists). */
+    private fun artistSegment(name: String): String {
+        val dash = Regex("""\s[-–—]\s""").find(name) ?: return ""
+        return name.substring(0, dash.range.first)
+    }
+
+    /** Tidy one artist name (drop YouTube-isms / stray punctuation). Conservative —
+     *  deeper "same artist, different spelling" cases are left to alias-merge. */
+    private fun cleanArtist(s: String): String {
+        var x = s.trim()
+        x = x.replace(Regex("""(?i)\s*-\s*Topic\b"""), "")
+        x = x.replace(Regex("""(?i)\bVEVO\b"""), "")
+        x = x.replace(Regex("""\s+"""), " ").trim()
+        return x.trim('-', '–', '—', ',', '&', '/', '.', ' ').trim()
+    }
+
     /** Drop cached values for a path (e.g. after capturing fresh download metadata). */
     @Synchronized
-    fun forget(path: String) { cache.remove(path); artCache.remove(path) }
+    fun forget(path: String) { cache.remove(path); artCache.remove(path); artistsCache.remove(path) }
 
     /** Drop ALL cached artist resolutions (e.g. after an alias merge). */
     @Synchronized
-    fun clearAll() { cache.clear() }
+    fun clearAll() { cache.clear(); artistsCache.clear() }
 
     /**
      * Embedded album art (cover) as raw bytes, or null if the file has none.

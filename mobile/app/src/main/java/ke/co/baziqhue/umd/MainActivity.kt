@@ -419,7 +419,7 @@ fun HomeScreen(onGo: (Int) -> Unit, onOpenLibrary: (Int) -> Unit, onOpenPlayer: 
                 .sortedByDescending { PlayStats.lastPlayed(it.absolutePath) }.take(12)
             recentHist = History.all().take(5)
             songs = aud.size; videos = files.size - aud.size
-            artists = aud.map { MediaMeta.artist(it) }.distinct().size
+            artists = aud.flatMap { MediaMeta.artists(it) }.distinct().size
             playlists = Playlists.all().size
         }
     }
@@ -598,7 +598,7 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
         DownloadedIndex.refresh()
         artists = withContext(Dispatchers.IO) {
             Library.mediaFiles().filter { isAudioFile(it) }
-                .map { MediaMeta.artist(it) }
+                .flatMap { MediaMeta.artists(it) }
                 .filter { it.isNotBlank() && !it.equals("Unknown", true) }
                 .groupingBy { it }.eachCount().entries
                 .sortedByDescending { it.value }.take(3).map { it.key }
@@ -1311,7 +1311,7 @@ fun LibraryScreen(jumpTo: Int? = null, onConsumed: () -> Unit = {}) {
     LaunchedEffect(Unit) { aiOn = Ai.isConfigured(ctx); Playlists.ensureLoaded(); PlayStats.ensureLoaded() }
     // Warm the artist cache off the main thread (MediaMetadataRetriever is slow).
     LaunchedEffect(allFiles) {
-        withContext(Dispatchers.IO) { allFiles.forEach { if (isAudioFile(it)) MediaMeta.artist(it) } }
+        withContext(Dispatchers.IO) { allFiles.forEach { if (isAudioFile(it)) MediaMeta.artists(it) } }
     }
 
     fun exitSelect() { selecting = false; selected.clear() }
@@ -1356,7 +1356,7 @@ fun LibraryScreen(jumpTo: Int? = null, onConsumed: () -> Unit = {}) {
             category == 4 && openArtist == null -> ArtistsList(allFiles) { openArtist = it }
             else -> Column(Modifier.fillMaxSize()) {
                 val source = when {
-                    category == 4 -> allFiles.filter { isAudioFile(it) && MediaMeta.artist(it).equals(openArtist, true) }
+                    category == 4 -> allFiles.filter { f -> isAudioFile(f) && MediaMeta.artists(f).any { it.equals(openArtist, true) } }
                     category == 1 -> allFiles.filter { !isAudioFile(it) }
                     category == 2 -> { val fav = Favorites.all().toHashSet(); allFiles.filter { it.absolutePath in fav } }
                     else -> allFiles.filter { isAudioFile(it) }
@@ -1682,8 +1682,13 @@ private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
     var mergeStatus by remember { mutableStateOf("") }
     LaunchedEffect(allFiles, refresh) {
         artists = withContext(Dispatchers.IO) {
-            allFiles.filter { isAudioFile(it) }.groupBy { MediaMeta.artist(it) }
-                .map { it.key to it.value.size }
+            // One row per INDIVIDUAL artist. A collaboration counts for EACH artist on
+            // it (the song lives in both their libraries) — no "A Ft B" combo buckets.
+            val counts = HashMap<String, Int>()
+            allFiles.filter { isAudioFile(it) }.forEach { f ->
+                MediaMeta.artists(f).forEach { a -> counts[a] = (counts[a] ?: 0) + 1 }
+            }
+            counts.map { it.key to it.value }
                 .sortedWith(compareByDescending<Pair<String, Int>> { it.second }
                     .thenBy { it.first.lowercase() })
         }
