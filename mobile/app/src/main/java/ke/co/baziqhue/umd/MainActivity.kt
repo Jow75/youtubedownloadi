@@ -801,9 +801,9 @@ private fun DiscoverPlaylistCard(pl: DiscoverPlaylist, onOpen: () -> Unit) {
 /** A video hit in Discover search — full-width row, tap to download. */
 @Composable
 private fun DiscoverResultRow(item: DiscoverItem, onDownload: () -> Unit) {
-    var queued by remember(item.videoId) { mutableStateOf(false) }
     val have = DownloadedIndex.has(item.title)
-    ElevatedCard(Modifier.fillMaxWidth().clickable { onDownload(); queued = true }) {
+    val downloading = Downloads.isActive(item.url)
+    ElevatedCard(Modifier.fillMaxWidth().clickable(enabled = !have && !downloading) { onDownload() }) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(width = 96.dp, height = 56.dp).clip(MaterialTheme.shapes.small)) {
                 if (item.thumb.isNotBlank())
@@ -814,15 +814,20 @@ private fun DiscoverResultRow(item: DiscoverItem, onDownload: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(item.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
-                Text(if (have) "In your library · ${item.channel}" else item.channel,
-                    style = MaterialTheme.typography.labelSmall, maxLines = 1,
-                    color = if (have) Color(0xFF2BB673) else MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(when {
+                    have -> "In your library · ${item.channel}"
+                    downloading -> "Downloading… · ${item.channel}"
+                    else -> item.channel
+                }, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                    color = when {
+                        have -> Color(0xFF2BB673); downloading -> BrandViolet
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    })
             }
-            Icon(if (have || queued) Icons.Filled.Check else Icons.Filled.Download,
+            if (downloading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = BrandViolet)
+            else Icon(if (have) Icons.Filled.Check else Icons.Filled.Download,
                 contentDescription = if (have) "Already downloaded" else "Download",
-                tint = if (have) Color(0xFF2BB673)
-                else if (queued) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant)
+                tint = if (have) Color(0xFF2BB673) else MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -875,9 +880,9 @@ private fun DiscoverShelf(
 
 @Composable
 private fun DiscoverCard(item: DiscoverItem, onDownload: () -> Unit) {
-    var queued by remember(item.videoId) { mutableStateOf(false) }
     val have = DownloadedIndex.has(item.title)
-    Column(Modifier.width(170.dp).clickable { onDownload(); queued = true }) {
+    val downloading = Downloads.isActive(item.url)
+    Column(Modifier.width(170.dp).clickable(enabled = !have && !downloading) { onDownload() }) {
         Box(Modifier.fillMaxWidth().height(96.dp).clip(MaterialTheme.shapes.medium)) {
             if (item.thumb.isNotBlank())
                 AsyncImage(model = item.thumb, contentDescription = null,
@@ -890,20 +895,31 @@ private fun DiscoverCard(item: DiscoverItem, onDownload: () -> Unit) {
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp))
                 }
-            // Green check if it's already in the library, else a download arrow.
-            Surface(
-                color = if (have) Color(0xFF2BB673) else if (queued) MaterialTheme.colorScheme.primary
-                else Color.Black.copy(alpha = 0.55f),
-                shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
-                Icon(if (have || queued) Icons.Filled.Check else Icons.Filled.Download,
-                    contentDescription = if (have) "Already downloaded" else "Download", tint = Color.White,
-                    modifier = Modifier.padding(4.dp).size(18.dp))
-            }
+            DownloadBadge(have, downloading, Modifier.align(Alignment.TopEnd).padding(4.dp))
         }
         Spacer(Modifier.height(4.dp))
         Text(item.title, style = MaterialTheme.typography.bodySmall, maxLines = 2)
         Text(item.channel, style = MaterialTheme.typography.labelSmall, maxLines = 1,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** Download-state badge: green ✓ (in library) · purple spinner (downloading) · arrow. */
+@Composable
+private fun DownloadBadge(have: Boolean, downloading: Boolean, modifier: Modifier = Modifier) {
+    val color = when {
+        have -> Color(0xFF2BB673)
+        downloading -> BrandViolet
+        else -> Color.Black.copy(alpha = 0.55f)
+    }
+    Surface(color = color, shape = CircleShape, modifier = modifier) {
+        Box(Modifier.padding(4.dp).size(18.dp), contentAlignment = Alignment.Center) {
+            when {
+                have -> Icon(Icons.Filled.Check, "In your library", tint = Color.White, modifier = Modifier.size(18.dp))
+                downloading -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
+                else -> Icon(Icons.Filled.Download, "Download", tint = Color.White, modifier = Modifier.size(18.dp))
+            }
+        }
     }
 }
 
@@ -1293,7 +1309,7 @@ fun LibraryScreen(jumpTo: Int? = null, onConsumed: () -> Unit = {}) {
                     if (!aiOn) {
                         ElevatedCard(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Smart search and title clean-up use the AI assistant.",
+                                Text("Title clean-up & auto-playlists use the AI assistant.",
                                     style = MaterialTheme.typography.bodyMedium)
                                 Button(onClick = { showAiKey = true }, modifier = Modifier.fillMaxWidth()) {
                                     Text("🤖 Set up AI key")
@@ -1301,7 +1317,6 @@ fun LibraryScreen(jumpTo: Int? = null, onConsumed: () -> Unit = {}) {
                             }
                         }
                     }
-                    SmartSearchSection(ctx, scope, allFiles, aiOn) { showAiKey = true }
                     DuplicatesSection(ctx, scope)
                     TitleCleanupSection(ctx, scope, allFiles, aiOn, { showAiKey = true }) { refreshKey++ }
                     Spacer(Modifier.height(16.dp))
@@ -1632,8 +1647,12 @@ private fun PlaylistDetail(id: String, onBack: () -> Unit) {
 
 @Composable
 private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
+    val ctx = LocalContext.current
+    var refresh by remember { mutableStateOf(0) }
     var artists by remember { mutableStateOf<List<Pair<String, Int>>?>(null) }
-    LaunchedEffect(allFiles) {
+    var merging by remember { mutableStateOf(false) }
+    var mergeStatus by remember { mutableStateOf("") }
+    LaunchedEffect(allFiles, refresh) {
         artists = withContext(Dispatchers.IO) {
             allFiles.filter { isAudioFile(it) }.groupBy { MediaMeta.artist(it) }
                 .map { it.key to it.value.size }
@@ -1655,6 +1674,49 @@ private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
             var query by remember { mutableStateOf("") }
             val shown = a.filter { query.isBlank() || it.first.contains(query, true) }
             Column(Modifier.fillMaxSize()) {
+                // Merge the SAME artist written differently across platforms (AI backup).
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            when {
+                                !Ai.isConfigured(ctx) ->
+                                    mergeStatus = "Set an AI key first (menu → AI assistant settings)."
+                                a.size < 2 -> mergeStatus = "Not enough artists to merge."
+                                else -> {
+                                    merging = true; mergeStatus = "Merging aliases…"
+                                    Jobs.launch("Merge artists") {
+                                        Ai.mergeArtists(ctx, a.map { it.first }).fold(
+                                            onSuccess = { m ->
+                                                ArtistAlias.putAll(m)
+                                                MediaMeta.clearAll()
+                                                val merged = m.count { (k, v) -> !k.equals(v, true) }
+                                                mergeStatus = if (merged == 0) "No aliases found — looks clean."
+                                                else "Merged $merged alias(es) into their real artist."
+                                                refresh++
+                                            },
+                                            onFailure = { mergeStatus = "Failed: ${it.message}" })
+                                        merging = false
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !merging
+                    ) {
+                        if (merging) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(6.dp))
+                        } else {
+                            Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text(if (merging) "Merging…" else "Merge aliases (AI)")
+                    }
+                    if (mergeStatus.isNotBlank())
+                        Text(mergeStatus, style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2, modifier = Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(query, { query = it }, label = { Text("Search artists") },
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
                     leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) })
@@ -1733,92 +1795,6 @@ private fun PlaylistNameDialog(title: String, initial: String, onResult: (String
                 modifier = Modifier.fillMaxWidth())
         }
     )
-}
-
-@Composable
-private fun SmartSearchSection(
-    ctx: android.content.Context,
-    scope: CoroutineScope,
-    files: List<File>,
-    aiOn: Boolean,
-    onNeedKey: () -> Unit,
-) {
-    var indexed by remember { mutableStateOf(0) }
-    var status by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<File>>(emptyList()) }
-    LaunchedEffect(files.size) { indexed = SearchIndex.indexedCount() }
-    val names = files.map { it.nameWithoutExtension }
-
-    ElevatedCard(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("🔎 Smart search", style = MaterialTheme.typography.titleMedium)
-            Text("Find media by meaning, not exact words — e.g. \"that calm " +
-                "piano study music\".", style = MaterialTheme.typography.bodySmall)
-            Text("Indexed: $indexed / ${files.size}", style = MaterialTheme.typography.bodySmall)
-
-            OutlinedButton(
-                onClick = {
-                    if (!aiOn) onNeedKey() else {
-                        busy = true; status = "Indexing…"
-                        scope.launch {
-                            val r = SearchIndex.build(ctx, names) { d, t ->
-                                status = "Indexing $d / $t…"
-                            }
-                            indexed = SearchIndex.indexedCount()
-                            busy = false
-                            status = r.fold({ "Index ready ($indexed)." }, { "Failed: ${it.message}" })
-                        }
-                    }
-                },
-                enabled = !busy && files.isNotEmpty(), modifier = Modifier.fillMaxWidth()
-            ) { Text("Build / refresh search index") }
-
-            OutlinedTextField(
-                value = query, onValueChange = { query = it },
-                label = { Text("Search by meaning") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Button(
-                onClick = {
-                    if (!aiOn) onNeedKey() else {
-                        busy = true; status = "Searching…"
-                        scope.launch {
-                            val r = SearchIndex.search(ctx, query.trim(), names)
-                            results = r.getOrDefault(emptyList()).mapNotNull { (name, _) ->
-                                files.firstOrNull { it.nameWithoutExtension == name }
-                            }
-                            busy = false
-                            status = r.fold(
-                                { if (results.isEmpty()) "No matches (build the index first?)." else "" },
-                                { "Failed: ${it.message}" })
-                        }
-                    }
-                },
-                enabled = !busy && query.isNotBlank(), modifier = Modifier.fillMaxWidth()
-            ) { Text("Search") }
-
-            if (busy) Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                Text(status, style = MaterialTheme.typography.bodySmall)
-            } else if (status.isNotBlank()) {
-                Text(status, style = MaterialTheme.typography.bodySmall)
-            }
-
-            results.forEach { f ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text((if (isAudioFile(f)) "🎵 " else "🎬 ") + f.nameWithoutExtension,
-                        style = MaterialTheme.typography.bodyMedium, maxLines = 2,
-                        modifier = Modifier.weight(1f))
-                    TextButton(onClick = { playInApp(ctx, results, f) }) { Text("▶ Play") }
-                }
-            }
-        }
-    }
 }
 
 @Composable

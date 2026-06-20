@@ -295,6 +295,41 @@ object Ai {
         else Result.success(result)
     }
 
+    // ---- artist alias merge (cross-platform same-artist) ------------------- #
+    /**
+     * Cluster artist-name aliases of the SAME real artist (different spellings /
+     * platforms) → a canonical name each. Returns {inputName: canonicalName}. The
+     * AI backup for [MediaMeta]'s metadata-first hierarchy.
+     */
+    suspend fun mergeArtists(ctx: Context, names: List<String>): Result<Map<String, String>> =
+        withContext(Dispatchers.IO) {
+            val key = storedKey(ctx)
+            if (key.isBlank()) return@withContext Result.failure(IOException("No AI key configured."))
+            val uniq = names.filter { it.isNotBlank() && !it.equals("Unknown", true) }.distinct().take(80)
+            if (uniq.size < 2) return@withContext Result.success(emptyMap())
+            val prompt =
+                "These are music artist names from a library. Some refer to the SAME real " +
+                "artist written differently or from different platforms (e.g. \"Diamond Platnumz\", " +
+                "\"diamondplatnumz\", \"Diamond Platnumz Official\", \"Diamond Platnumz - Topic\"). " +
+                "Group the names that are the SAME artist and pick ONE clean canonical name for " +
+                "each group (the cleanest real artist name). Return ONLY a JSON object mapping " +
+                "EVERY input name to its canonical name. If a name is unique or you're unsure, map " +
+                "it to itself. NEVER merge genuinely different artists.\n\nNames:\n" +
+                uniq.joinToString("\n")
+            try {
+                val o = extractJsonObject(chat(key, prompt, maxTokens = 1500, model = CHAT_MODEL))
+                    ?: return@withContext Result.failure(IOException("AI returned an unexpected response."))
+                val result = LinkedHashMap<String, String>()
+                for (n in uniq) {
+                    val c = o.optString(n).trim()
+                    if (c.isNotBlank() && !c.equals("null", true)) result[n] = c
+                }
+                Result.success(result)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
     // ---- chat assistant (natural language -> action) ----------------------- #
     data class AgentPlan(
         val action: String,       // download | search | channel | help

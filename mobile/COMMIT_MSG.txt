@@ -1,25 +1,16 @@
-Mobile v1.30: real artist from source metadata (stop hallucinating artists)
+Mobile v1.31: remove Smart Search, fix Discover download badge, add AI artist alias-merge
 
-Fixes the library guessing artists from filenames (e.g. "Hook Up Song" becoming an
-artist). Now the REAL artist is captured from the source metadata at download time.
-
-- Every download now passes --write-info-json; after the file lands, Downloader reads
-  the sidecar and resolves the artist as: music artist → creator → channel → uploader
-  (stripping "- Topic"/VEVO, taking the primary of "A, B"), then stores it in the new
-  ArtistStore (artist_meta.json) and deletes the sidecar (folder stays clean). Works
-  for YouTube, TikTok, Instagram, etc. — same code path for single / bulk / channel /
-  Discover / Assistant downloads.
-- MediaMeta.artist() hierarchy is now metadata-first: ArtistStore (captured truth) →
-  embedded ID3/media tag → "Artist - Title" filename → Unknown. AI stays the optional
-  manual backup (Title clean-up), never the primary source.
-- Title clean-up renames now carry the captured artist (ArtistStore.move) so grouping
-  stays correct after a rename.
-
-Why not the YouTube Data API for this: yt-dlp's own extraction already returns richer
-per-video metadata (the music artist/track/album fields the Data API doesn't expose),
-for free, on every platform — so it's the better source of truth here.
-
-Note: applies to NEW downloads; existing files keep using their embedded tag/filename
-(or the AI Title clean-up tool).
+- Removed Smart Search (Library → Tools) and deleted SearchIndex.kt. It built an AI
+  embedding index (NVIDIA calls, embeds.json that grew stale — "Indexed 424 of 361")
+  for a "search by meaning" use almost nobody needs, while the Library already has
+  instant name search. Leaner, faster, less RAM/clutter.
+- Discover download badge is now persistent and accurate (tied to the real queue):
+  green ✓ = in your library · purple spinner = downloading (stays until it finishes)
+  · arrow = available. Tapping is disabled while downloading or already-owned, so you
+  can't double-download. (DlTask gained a url; Downloads.isActive(url).)
+- AI alias-merge for cross-platform artists: Artists → "Merge aliases (AI)" clusters
+  the SAME artist written differently ("Diamond Platnumz" / "diamondplatnumz" /
+  "… - Topic") into one canonical name. Ai.mergeArtists + ArtistAlias store; MediaMeta
+  now canonicalizes on top of its metadata hierarchy (AI stays the backup).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

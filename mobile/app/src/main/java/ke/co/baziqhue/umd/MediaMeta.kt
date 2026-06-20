@@ -28,7 +28,9 @@ object MediaMeta {
         //   3. "Artist - Title" filename parse,
         //   4. "Unknown".
         // (AI title clean-up is the optional manual backup, not in this path.)
-        val a = ArtistStore.get(f.absolutePath) ?: readEmbedded(f) ?: filenameArtist(f)
+        val raw = ArtistStore.get(f.absolutePath) ?: readEmbedded(f) ?: filenameArtist(f)
+        // Canonicalize cross-platform aliases (from the optional "Merge aliases (AI)" tool).
+        val a = ArtistAlias.canonical(raw)
         cache[f.absolutePath] = a
         return a
     }
@@ -36,6 +38,10 @@ object MediaMeta {
     /** Drop cached values for a path (e.g. after capturing fresh download metadata). */
     @Synchronized
     fun forget(path: String) { cache.remove(path); artCache.remove(path) }
+
+    /** Drop ALL cached artist resolutions (e.g. after an alias merge). */
+    @Synchronized
+    fun clearAll() { cache.clear() }
 
     /**
      * Embedded album art (cover) as raw bytes, or null if the file has none.

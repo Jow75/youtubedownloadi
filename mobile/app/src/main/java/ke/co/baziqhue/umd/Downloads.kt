@@ -13,7 +13,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** One queued/running download, observable by the UI. */
-class DlTask(val id: Long, val label: String, val audio: Boolean) {
+class DlTask(val id: Long, val label: String, val audio: Boolean, val url: String) {
     var status by mutableStateOf("queued")   // queued | running | done | failed
     var progress by mutableStateOf(0f)
     var detail by mutableStateOf("")
@@ -36,9 +36,13 @@ object Downloads {
     val tasks = mutableStateListOf<DlTask>()
     val activeCount: Int get() = tasks.count { it.status == "queued" || it.status == "running" }
 
+    /** True if this exact URL is queued or downloading right now (for UI state). */
+    fun isActive(url: String): Boolean =
+        url.isNotBlank() && tasks.any { it.url == url && (it.status == "queued" || it.status == "running") }
+
     fun enqueue(ctx: Context, url: String, audio: Boolean, quality: String, label: String): DlTask {
         val app = ctx.applicationContext
-        val t = DlTask(System.nanoTime(), label.ifBlank { url }, audio)
+        val t = DlTask(System.nanoTime(), label.ifBlank { url }, audio, url)
         tasks.add(0, t)
         scope.launch {
             gate.withLock {
