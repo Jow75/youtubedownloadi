@@ -87,6 +87,12 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -105,6 +111,8 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Notifications.ensureChannels(this)
+        scheduleFollowChecks()
         setContent {
             UmdTheme {
                 // The signature gradient wash sits behind the whole app; surfaces
@@ -117,6 +125,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** Schedule the ~12h background check for new uploads from followed artists. */
+    private fun scheduleFollowChecks() {
+        val req = PeriodicWorkRequestBuilder<FollowWorker>(12, TimeUnit.HOURS)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "umd_follow_check", ExistingPeriodicWorkPolicy.KEEP, req)
     }
 }
 

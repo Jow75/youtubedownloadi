@@ -59,3 +59,7 @@ runtime/
 Output/
 *.zip
 *.spec
+
+# Release signing keystore — NEVER commit (back it up safely offline)
+mobile/release.keystore
+*.keystore

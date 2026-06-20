@@ -18,8 +18,10 @@ class FollowedChannel(val channelId: String, val title: String, val thumb: Strin
 object Follows {
 
     private val list = mutableStateListOf<FollowedChannel>()
+    private val seen = HashMap<String, String>()   // channelId -> last-seen videoId
     private var loaded = false
     private fun file(): File = File(Storage.aiDir(), "follows.json")
+    private fun seenFile(): File = File(Storage.aiDir(), "follow_seen.json")
 
     fun ensureLoaded() {
         if (loaded) return
@@ -33,6 +35,25 @@ object Follows {
                     list.add(FollowedChannel(o.optString("id"), o.optString("title"), o.optString("thumb")))
                 }
             }
+            val sf = seenFile()
+            if (sf.exists()) {
+                val o = JSONObject(sf.readText())
+                o.keys().forEach { k -> seen[k] = o.optString(k) }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** The newest upload videoId we've already seen for a channel (for new-upload alerts). */
+    fun lastSeen(channelId: String): String? { ensureLoaded(); return seen[channelId] }
+
+    fun setLastSeen(channelId: String, videoId: String) {
+        ensureLoaded()
+        seen[channelId] = videoId
+        try {
+            val o = JSONObject()
+            seen.forEach { (k, v) -> o.put(k, v) }
+            seenFile().writeText(o.toString())
         } catch (_: Exception) {
         }
     }

@@ -1,7 +1,9 @@
 package ke.co.baziqhue.umd
 
 import android.content.Context
+import android.content.Intent
 import androidx.compose.runtime.getValue
+import androidx.core.content.ContextCompat
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -44,6 +46,9 @@ object Downloads {
         val app = ctx.applicationContext
         val t = DlTask(System.nanoTime(), label.ifBlank { url }, audio, url)
         tasks.add(0, t)
+        // Foreground service keeps the process (and these coroutines) alive so the
+        // download survives the screen going off / the app being swiped away.
+        runCatching { ContextCompat.startForegroundService(app, Intent(app, DownloadService::class.java)) }
         scope.launch {
             gate.withLock {
                 t.status = "running"; t.detail = "Starting…"
