@@ -54,6 +54,7 @@ object Downloads {
                                 f.nameWithoutExtension, url, audio, f.absolutePath, f.length(),
                                 System.currentTimeMillis()))
                             t.filePath = f.absolutePath
+                            DownloadedIndex.add(f.nameWithoutExtension)   // green tick in Discover
                         }
                         t.status = "done"; t.progress = 1f
                         t.detail = out.file?.nameWithoutExtension ?: "Saved"

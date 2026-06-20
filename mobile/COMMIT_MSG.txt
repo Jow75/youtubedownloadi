@@ -1,18 +1,20 @@
-Mobile v1.28: Discover search — download-first mini-YouTube (videos + channels)
+Mobile v1.29: Discover — already-downloaded ticks, Follow-artist + new-upload shelves, search filters + playlists
 
-- Discover.searchMixed(): one YouTube search call (no type filter) returns BOTH
-  videos and channels; parsed into SearchResults(videos, channels). Cached 24h.
-- Discover search bar: type a query → search on submit (quota-safe, not as-you-type).
-  - Video results → a tappable list; tap to queue the download (MP3/MP4 toggle).
-  - Channel results → circular avatars; tap a channel to OPEN IT IN THE CHANNEL TAB,
-    which auto-scans it (yt-dlp, no API quota) → reuse AI category filter (Music/Live/
-    Interview/…), official-only, multi-select, per-video format, Download chosen.
-  This makes Discover a download-first browser: find an artist → browse their whole
-  catalogue → bulk-grab what you want, never opening YouTube.
-- Channel auto-scan hook: ChannelUi.requestScan + ChannelBody.startScan() extracted
-  and fired via LaunchedEffect when opened from search.
+C) Already-downloaded indicator: DownloadedIndex (a live, normalized index of
+   library filenames). Every Discover/search card now shows a GREEN CHECK when the
+   item is already in your library, vs the download arrow otherwise. Reactive — it's
+   refreshed on Discover open + app resume and the moment a download finishes
+   (Downloads -> DownloadedIndex.add); delete the file and the tick reverts.
 
-Architecture note: API = discovery (search, 100 units, cached); yt-dlp = the heavy
-browsing/category/download engine (free). The two together = the goal.
+A) Follow Artist + new uploads: Follows store (follows.json) + a ⭐ on every channel
+   result. Followed artists get a "🆕 New from <artist>" shelf at the top of Discover,
+   built from their uploads playlist (cheap — 2 quota units, cached 6h). (Background
+   push notifications come with the Phase E foreground/background service.)
+
+B) Search power-ups:
+   - Playlists now appear in search results → tap to open in the Channel tab and
+     bulk-download the whole playlist (yt-dlp, no quota).
+   - Sort: Relevance / Newest / Most viewed (order=relevance|date|viewCount).
+   - "Official only" filter (heuristic: Official titles + VEVO / "- Topic" channels).
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

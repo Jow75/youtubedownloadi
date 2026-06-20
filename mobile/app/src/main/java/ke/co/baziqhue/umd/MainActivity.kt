@@ -66,6 +66,8 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -574,10 +576,15 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
     var results by remember { mutableStateOf<SearchResults?>(null) }
     var searching by remember { mutableStateOf(false) }
     var searchError by remember { mutableStateOf<String?>(null) }
+    var order by remember { mutableStateOf("relevance") }   // relevance | date | viewCount
+    var officialOnly by remember { mutableStateOf(false) }
+    var sortMenu by remember { mutableStateOf(false) }
     // The app learns which artists you download most (by how many of their tracks
     // are in your library) and builds personalized shelves from that.
     var artists by remember { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(Unit) {
+        Follows.ensureLoaded()
+        DownloadedIndex.refresh()
         artists = withContext(Dispatchers.IO) {
             Library.mediaFiles().filter { isAudioFile(it) }
                 .map { MediaMeta.artist(it) }
@@ -586,18 +593,21 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
                 .sortedByDescending { it.value }.take(3).map { it.key }
         }
     }
+    // Keep the "already downloaded" ticks fresh when returning to the app.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { scope.launch { DownloadedIndex.refresh() } }
 
     fun runSearch() {
         val q = query.trim()
         if (q.isBlank() || searching) return
         searching = true; searchError = null
         scope.launch {
-            Discover.searchMixed(q).fold(
+            Discover.searchMixed(q, order).fold(
                 onSuccess = {
                     results = it
-                    searchError = if (it.videos.isEmpty() && it.channels.isEmpty()) "No results for \"$q\"." else null
+                    searchError = if (it.videos.isEmpty() && it.channels.isEmpty() && it.playlists.isEmpty())
+                        "No results for \"$q\"." else null
                 },
-                onFailure = { searchError = it.message; results = SearchResults(emptyList(), emptyList()) })
+                onFailure = { searchError = it.message; results = SearchResults(emptyList(), emptyList(), emptyList()) })
             searching = false
         }
     }
@@ -655,6 +665,33 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
                     Toast.makeText(ctx, "Queued \"${item.title.take(40)}\"", Toast.LENGTH_SHORT).show()
                 }
             }
+            // "Official only" is a heuristic (the API has no such flag): keep titles
+            // marked Official, or auto-generated artist channels (VEVO / " - Topic").
+            val vids = if (officialOnly) res.videos.filter {
+                it.title.contains("official", true) || it.channel.endsWith(" - Topic", true) ||
+                    it.channel.contains("VEVO", true)
+            } else res.videos
+
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box {
+                    OutlinedButton(onClick = { sortMenu = true }) {
+                        Text(when (order) { "date" -> "Newest"; "viewCount" -> "Most viewed"; else -> "Relevance" })
+                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp))
+                    }
+                    DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                        listOf("relevance" to "Relevance", "date" to "Newest", "viewCount" to "Most viewed")
+                            .forEach { (o, label) ->
+                                DropdownMenuItem(text = { Text(label) },
+                                    onClick = { order = o; sortMenu = false; runSearch() })
+                            }
+                    }
+                }
+                FilterChip(selected = officialOnly, onClick = { officialOnly = !officialOnly },
+                    label = { Text("Official only") })
+            }
+
             LazyColumn(Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -670,9 +707,20 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
                         }
                     }
                 }
-                if (res.videos.isNotEmpty()) {
+                if (res.playlists.isNotEmpty()) {
+                    item { Text("Playlists — tap to open & bulk-download",
+                        style = MaterialTheme.typography.titleSmall) }
+                    item {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            items(res.playlists, key = { it.playlistId }) { pl ->
+                                DiscoverPlaylistCard(pl) { onOpenChannel(pl.url) }
+                            }
+                        }
+                    }
+                }
+                if (vids.isNotEmpty()) {
                     item { Text("Videos — tap to download", style = MaterialTheme.typography.titleSmall) }
-                    items(res.videos, key = { it.videoId }) { v -> DiscoverResultRow(v) { grab(v) } }
+                    items(vids, key = { it.videoId }) { v -> DiscoverResultRow(v) { grab(v) } }
                 }
             }
         } else {
@@ -680,6 +728,12 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
             LazyColumn(Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(bottom = 28.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Artists you follow — their newest uploads first.
+                Follows.all().forEach { f ->
+                    item(key = "follow_${f.channelId}") {
+                        DiscoverShelf("🆕 New from ${f.title}", audio) { Discover.latestUploads(f.channelId) }
+                    }
+                }
                 item { DiscoverShelf("🔥 Trending in Kenya", audio) { Discover.trending("KE") } }
                 item { DiscoverShelf("🎵 Trending Music", audio) { Discover.trending("KE", "10") } }
                 item { DiscoverShelf("🌍 Trending Worldwide", audio) { Discover.trending("US") } }
@@ -693,18 +747,30 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
     }
 }
 
-/** A channel hit in Discover search — circular avatar, tap to open in the Channel tab. */
+/**
+ * A channel hit in Discover search — tap the avatar to open & browse in the Channel
+ * tab; tap the ⭐ to follow (then their new uploads show on Discover).
+ */
 @Composable
 private fun DiscoverChannelCard(ch: DiscoverChannel, onOpen: () -> Unit) {
-    Column(Modifier.width(96.dp).clickable { onOpen() },
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.size(72.dp).clip(CircleShape).background(BrandGradient),
-            contentAlignment = Alignment.Center) {
-            if (ch.thumb.isNotBlank())
-                AsyncImage(model = ch.thumb, contentDescription = null,
-                    contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            else Text(ch.title.take(1).uppercase(), color = Color.White,
-                style = MaterialTheme.typography.titleLarge)
+    val followed = Follows.isFollowed(ch.channelId)
+    Column(Modifier.width(96.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(Modifier.size(72.dp)) {
+            Box(Modifier.fillMaxSize().clip(CircleShape).background(BrandGradient).clickable { onOpen() },
+                contentAlignment = Alignment.Center) {
+                if (ch.thumb.isNotBlank())
+                    AsyncImage(model = ch.thumb, contentDescription = null,
+                        contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                else Text(ch.title.take(1).uppercase(), color = Color.White,
+                    style = MaterialTheme.typography.titleLarge)
+            }
+            Icon(if (followed) Icons.Filled.Star else Icons.Filled.StarBorder,
+                contentDescription = "Follow",
+                tint = if (followed) Color(0xFFFFC107) else Color.White,
+                modifier = Modifier.align(Alignment.BottomEnd).size(24.dp)
+                    .clip(CircleShape).background(Color.Black.copy(alpha = 0.55f))
+                    .clickable { Follows.toggle(FollowedChannel(ch.channelId, ch.title, ch.thumb)) }
+                    .padding(3.dp))
         }
         Spacer(Modifier.height(4.dp))
         Text(ch.title, style = MaterialTheme.typography.labelSmall, maxLines = 2,
@@ -712,10 +778,31 @@ private fun DiscoverChannelCard(ch: DiscoverChannel, onOpen: () -> Unit) {
     }
 }
 
+/** A playlist hit — tap to open in the Channel tab and bulk-download it. */
+@Composable
+private fun DiscoverPlaylistCard(pl: DiscoverPlaylist, onOpen: () -> Unit) {
+    Column(Modifier.width(150.dp).clickable { onOpen() }) {
+        Box(Modifier.fillMaxWidth().height(84.dp).clip(MaterialTheme.shapes.medium)) {
+            if (pl.thumb.isNotBlank())
+                AsyncImage(model = pl.thumb, contentDescription = null,
+                    contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            else Box(Modifier.fillMaxSize().background(BrandGradient))
+            Surface(color = Color.Black.copy(alpha = 0.6f), shape = MaterialTheme.shapes.small,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(4.dp)) {
+                Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null, tint = Color.White,
+                    modifier = Modifier.padding(3.dp).size(16.dp))
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(pl.title, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+    }
+}
+
 /** A video hit in Discover search — full-width row, tap to download. */
 @Composable
 private fun DiscoverResultRow(item: DiscoverItem, onDownload: () -> Unit) {
     var queued by remember(item.videoId) { mutableStateOf(false) }
+    val have = DownloadedIndex.has(item.title)
     ElevatedCard(Modifier.fillMaxWidth().clickable { onDownload(); queued = true }) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(width = 96.dp, height = 56.dp).clip(MaterialTheme.shapes.small)) {
@@ -727,12 +814,15 @@ private fun DiscoverResultRow(item: DiscoverItem, onDownload: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(item.title, style = MaterialTheme.typography.bodyMedium, maxLines = 2)
-                Text(item.channel, style = MaterialTheme.typography.labelSmall, maxLines = 1,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(if (have) "In your library · ${item.channel}" else item.channel,
+                    style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                    color = if (have) Color(0xFF2BB673) else MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Icon(if (queued) Icons.Filled.Check else Icons.Filled.Download,
-                contentDescription = "Download",
-                tint = if (queued) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(if (have || queued) Icons.Filled.Check else Icons.Filled.Download,
+                contentDescription = if (have) "Already downloaded" else "Download",
+                tint = if (have) Color(0xFF2BB673)
+                else if (queued) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -786,6 +876,7 @@ private fun DiscoverShelf(
 @Composable
 private fun DiscoverCard(item: DiscoverItem, onDownload: () -> Unit) {
     var queued by remember(item.videoId) { mutableStateOf(false) }
+    val have = DownloadedIndex.has(item.title)
     Column(Modifier.width(170.dp).clickable { onDownload(); queued = true }) {
         Box(Modifier.fillMaxWidth().height(96.dp).clip(MaterialTheme.shapes.medium)) {
             if (item.thumb.isNotBlank())
@@ -799,10 +890,13 @@ private fun DiscoverCard(item: DiscoverItem, onDownload: () -> Unit) {
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp))
                 }
-            Surface(color = if (queued) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.55f),
+            // Green check if it's already in the library, else a download arrow.
+            Surface(
+                color = if (have) Color(0xFF2BB673) else if (queued) MaterialTheme.colorScheme.primary
+                else Color.Black.copy(alpha = 0.55f),
                 shape = CircleShape, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
-                Icon(if (queued) Icons.Filled.Check else Icons.Filled.Download,
-                    contentDescription = "Download", tint = Color.White,
+                Icon(if (have || queued) Icons.Filled.Check else Icons.Filled.Download,
+                    contentDescription = if (have) "Already downloaded" else "Download", tint = Color.White,
                     modifier = Modifier.padding(4.dp).size(18.dp))
             }
         }
