@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -1297,6 +1298,11 @@ fun LibraryScreen(jumpTo: Int? = null, onConsumed: () -> Unit = {}) {
     var sortMenu by remember { mutableStateOf(false) }
     var openPlaylist by remember { mutableStateOf<String?>(null) }
     var openArtist by remember { mutableStateOf<String?>(null) }
+    // Hoisted so the Artist list keeps its scroll / sort / search when you open an
+    // artist and come back — instead of jumping back to the top.
+    val artistListState = rememberLazyListState()
+    var artistQuery by remember { mutableStateOf("") }
+    var artistSort by remember { mutableStateOf(ArtistSort.MostSongs) }
     var selecting by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
     var addTarget by remember { mutableStateOf<List<String>?>(null) }
@@ -1349,7 +1355,8 @@ fun LibraryScreen(jumpTo: Int? = null, onConsumed: () -> Unit = {}) {
             category == 3 && openPlaylist == null -> PlaylistsList(ctx, scope,
                 allFiles.filter { isAudioFile(it) }, aiOn, { showAiKey = true }) { openPlaylist = it }
             category == 3 -> PlaylistDetail(openPlaylist!!) { openPlaylist = null }
-            category == 4 && openArtist == null -> ArtistsList(allFiles) { openArtist = it }
+            category == 4 && openArtist == null -> ArtistsList(allFiles, artistQuery, { artistQuery = it },
+                artistSort, { artistSort = it }, artistListState) { openArtist = it }
             else -> Column(Modifier.fillMaxSize()) {
                 val source = when {
                     category == 4 -> { val ak = MediaMeta.artistKey(openArtist ?: "")
@@ -1701,28 +1708,52 @@ private fun PlaylistDetail(id: String, onBack: () -> Unit) {
     }
 }
 
+/** How the Artist list is ordered. Persisted across opening/returning from an artist. */
+enum class ArtistSort(val label: String) {
+    MostSongs("Most songs"), LeastSongs("Fewest songs"),
+    AZ("A → Z"), ZA("Z → A"), Newest("Newest added"), Oldest("Oldest added")
+}
+
+private data class ArtistRow(val name: String, val count: Int, val addedAt: Long)
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
+private fun ArtistsList(
+    allFiles: List<File>,
+    query: String,
+    onQuery: (String) -> Unit,
+    sort: ArtistSort,
+    onSort: (ArtistSort) -> Unit,
+    listState: LazyListState,
+    onOpen: (String) -> Unit,
+) {
     val ctx = LocalContext.current
     var refresh by remember { mutableStateOf(0) }
-    var artists by remember { mutableStateOf<List<Pair<String, Int>>?>(null) }
+    var rows by remember { mutableStateOf<List<ArtistRow>?>(null) }
     var merging by remember { mutableStateOf(false) }
     var mergeStatus by remember { mutableStateOf("") }
+    var sortMenu by remember { mutableStateOf(false) }
     LaunchedEffect(allFiles, refresh) {
-        artists = withContext(Dispatchers.IO) {
-            // One row per INDIVIDUAL artist. A collaboration counts for EACH artist on
-            // it (the song lives in both their libraries) — no "A Ft B" combo buckets.
+        rows = withContext(Dispatchers.IO) {
+            // One row per INDIVIDUAL artist (a collab counts for EACH artist on it).
+            // Track each artist's earliest download time so we can sort by date added.
             val counts = HashMap<String, Int>()
+            val firstSeen = HashMap<String, Long>()
             allFiles.filter { isAudioFile(it) }.forEach { f ->
-                MediaMeta.artists(f).forEach { a -> counts[a] = (counts[a] ?: 0) + 1 }
+                val m = f.lastModified()
+                MediaMeta.artists(f).forEach { a ->
+                    counts[a] = (counts[a] ?: 0) + 1
+                    val k = MediaMeta.artistKey(a)
+                    val cur = firstSeen[k]; if (cur == null || m < cur) firstSeen[k] = m
+                }
             }
             // Collapse case/spacing variants so "BAD BUNNY" and "Bad Bunny" are ONE row.
-            MediaMeta.collapseArtistCounts(counts)
-                .sortedWith(compareByDescending<Pair<String, Int>> { it.second }
-                    .thenBy { it.first.lowercase() })
+            MediaMeta.collapseArtistCounts(counts).map { (name, c) ->
+                ArtistRow(name, c, firstSeen[MediaMeta.artistKey(name)] ?: 0L)
+            }
         }
     }
-    when (val a = artists) {
+    when (val all = rows) {
         null -> Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1730,13 +1761,22 @@ private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
             Text("Reading artist tags…", style = MaterialTheme.typography.bodySmall)
         }
-        else -> if (a.isEmpty()) {
+        else -> if (all.isEmpty()) {
             Text("No songs yet.", style = MaterialTheme.typography.bodyMedium)
         } else {
-            var query by remember { mutableStateOf("") }
-            val shown = a.filter { query.isBlank() || it.first.contains(query, true) }
+            val sorted = remember(all, sort) {
+                when (sort) {
+                    ArtistSort.MostSongs -> all.sortedWith(compareByDescending<ArtistRow> { it.count }.thenBy { it.name.lowercase() })
+                    ArtistSort.LeastSongs -> all.sortedWith(compareBy<ArtistRow> { it.count }.thenBy { it.name.lowercase() })
+                    ArtistSort.AZ -> all.sortedBy { it.name.lowercase() }
+                    ArtistSort.ZA -> all.sortedByDescending { it.name.lowercase() }
+                    ArtistSort.Newest -> all.sortedWith(compareByDescending<ArtistRow> { it.addedAt }.thenBy { it.name.lowercase() })
+                    ArtistSort.Oldest -> all.sortedWith(compareBy<ArtistRow> { it.addedAt }.thenBy { it.name.lowercase() })
+                }
+            }
+            val shown = sorted.filter { query.isBlank() || it.name.contains(query, true) }
             Column(Modifier.fillMaxSize()) {
-                // Merge the SAME artist written differently across platforms (AI backup).
+                // Merge button (left) + the sort menu (right, in the previously empty space).
                 Row(verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
@@ -1744,11 +1784,11 @@ private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
                             when {
                                 !Ai.isConfigured(ctx) ->
                                     mergeStatus = "Set an AI key first (menu → AI assistant settings)."
-                                a.size < 2 -> mergeStatus = "Not enough artists to merge."
+                                all.size < 2 -> mergeStatus = "Not enough artists to merge."
                                 else -> {
                                     merging = true; mergeStatus = "Merging aliases…"
                                     Jobs.launch("Merge artists") {
-                                        Ai.mergeArtists(ctx, a.map { it.first }).fold(
+                                        Ai.mergeArtists(ctx, all.map { it.name }).fold(
                                             onSuccess = { m ->
                                                 ArtistAlias.putAll(m)
                                                 MediaMeta.clearAll()
@@ -1774,31 +1814,55 @@ private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
                         }
                         Text(if (merging) "Merging…" else "Merge aliases (AI)")
                     }
-                    if (mergeStatus.isNotBlank())
-                        Text(mergeStatus, style = MaterialTheme.typography.bodySmall,
-                            maxLines = 2, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        OutlinedButton(onClick = { sortMenu = true },
+                            contentPadding = PaddingValues(horizontal = 12.dp)) {
+                            Text(sort.label, maxLines = 1, style = MaterialTheme.typography.labelLarge)
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Sort",
+                                modifier = Modifier.size(18.dp))
+                        }
+                        DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                            ArtistSort.values().forEach { s ->
+                                DropdownMenuItem(
+                                    text = { Text(s.label) },
+                                    leadingIcon = if (s == sort) {
+                                        { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                                    } else null,
+                                    onClick = { onSort(s); sortMenu = false })
+                            }
+                        }
+                    }
+                }
+                if (mergeStatus.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(mergeStatus, style = MaterialTheme.typography.bodySmall, maxLines = 2)
                 }
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(query, { query = it }, label = { Text("Search artists") },
+                OutlinedTextField(query, onQuery, label = { Text("Search artists") },
                     singleLine = true, modifier = Modifier.fillMaxWidth(),
                     leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) })
                 Spacer(Modifier.height(8.dp))
+                Text("${shown.size} artist(s)", style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
                 if (shown.isEmpty()) {
                     Text("No artists match \"$query\".", style = MaterialTheme.typography.bodyMedium)
                 }
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
-                    items(shown, key = { it.first }) { (name, count) ->
-                        ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(name) }) {
+                LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxSize()) {
+                    items(shown, key = { it.name }) { row ->
+                        ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(row.name) }) {
                             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(40.dp).clip(CircleShape).background(BrandGradient),
                                     contentAlignment = Alignment.Center) {
-                                    Text(name.take(1).uppercase(), color = Color.White,
+                                    Text(row.name.take(1).uppercase(), color = Color.White,
                                         style = MaterialTheme.typography.titleMedium)
                                 }
                                 Spacer(Modifier.width(12.dp))
-                                Text(name, style = MaterialTheme.typography.titleSmall,
+                                Text(row.name, style = MaterialTheme.typography.titleSmall,
                                     modifier = Modifier.weight(1f), maxLines = 1)
-                                Text("$count song(s)", style = MaterialTheme.typography.bodySmall,
+                                Text("${row.count} song(s)", style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }

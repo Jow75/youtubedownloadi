@@ -41,8 +41,8 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 38
-        versionName = "1.37"
+        versionCode = 39
+        versionName = "1.38"
 
         // Ship native libs only for real Android phones (ARM). Dropping x86/x86_64
         // (emulator-only) roughly halves the bundled engine size — smaller APK +
