@@ -477,7 +477,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
       </div>
       <div class="right">
         <button class="icon-btn" id="theme-toggle" title="Toggle theme"><span class="ic-theme"></span></button>
-        <button class="btn primary" onclick="go('generate')"><span class="ic-plus"></span> New License</button>
+        <button class="btn primary" onclick="newLicense()"><span class="ic-plus"></span> New License</button>
       </div>
     </header>
 
@@ -850,7 +850,7 @@ function go(view){
   if(view==='dashboard') renderCharts();
   window.scrollTo({top:0,behavior:'smooth'});
 }
-document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>go(n.dataset.view));
+document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=> n.dataset.view==='generate' ? newLicense() : go(n.dataset.view));
 
 /* ============================ KPI ============================ */
 const KPI_DEFS=[
@@ -1175,12 +1175,18 @@ function resetGenerate(){
   $('#gen-form-desc').textContent='Fill in the customer details, choose a duration, and generate a signed key.';
   fillDurations(); onDurationChange(); updatePreview(); hideGenError();
 }
-function renewLast(){ const c=customerByMid(window._lastMid); resetGenerate(); if(c) prefillRenew(c); }
+function newLicense(){
+  // Workflow B — a brand-new customer: ALWAYS a clean, empty form, never the
+  // currently-selected customer. (Fixes "+" loading the last viewed customer.)
+  resetGenerate();
+  go('generate');
+}
+function renewLast(){ const c=customerByMid(window._lastMid); if(c) prefillRenew(c); }
 function viewLastCustomer(){ const mid=window._lastMid; go('customers'); setTimeout(()=>openDrawer(encodeURIComponent(mid)),250); }
 
 function prefillRenew(c){
+  resetGenerate();        // start clean so no other customer's data can linger
   go('generate');
-  $('#success-card').classList.remove('show'); $('#gen-wrap').style.display='';
   $('#f-customer').value=c.customer||'';
   $('#f-phone').value=c.phone||'';
   $('#f-email').value=c.email||'';
