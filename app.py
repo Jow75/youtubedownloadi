@@ -1207,15 +1207,12 @@ with _t_home:
         if _p and os.path.isfile(_p):
             if _rc[2].button("📂 Open", key=f"home_open_{_i}", use_container_width=True):
                 open_and_select(_p)
-    downloads_panel()
 
 with _t_discover:
     discover_panel()
-    downloads_panel()
 
 with _t_assistant:
     assistant_panel()
-    downloads_panel()
 
 with _t_dl:
     _mode_opts = ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"]
