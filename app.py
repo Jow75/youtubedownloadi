@@ -28,6 +28,7 @@ import streamlit as st
 import ai
 import archive
 import branding
+import discover
 import downloader as dl
 import downloads
 import history as hist
@@ -470,13 +471,164 @@ all_hist = hist.load_history()
 ai_on = bool(st.session_state.get("ai_on"))
 ai_cache = ai.cached_analysis() if ai_on else {}
 
-_t_dl, _t_hist, _t_insights, _t_arch, _t_clean = st.tabs([
+# =========================================================================== #
+#  DISCOVER  (YouTube Data API v3 — mirrors the mobile app's Discover)
+# =========================================================================== #
+@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
+def _disc_trending(region, cat):
+    try:
+        return [v.as_dict() for v in discover.trending(region, cat)], None
+    except Exception as e:  # noqa: BLE001
+        return [], str(e)
+
+
+@st.cache_data(ttl=discover.SEARCH_TTL, show_spinner=False)
+def _disc_search(query, order):
+    try:
+        r = discover.search_mixed(query, order)
+        return {"videos": [v.as_dict() for v in r["videos"]],
+                "channels": [c.as_dict() for c in r["channels"]],
+                "playlists": [p.as_dict() for p in r["playlists"]]}, None
+    except Exception as e:  # noqa: BLE001
+        return None, str(e)
+
+
+@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
+def _disc_uploads(channel_id):
+    try:
+        return [v.as_dict() for v in discover.latest_uploads(channel_id)], None
+    except Exception as e:  # noqa: BLE001
+        return [], str(e)
+
+
+@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
+def _disc_playlist(playlist_id):
+    try:
+        return [v.as_dict() for v in discover.playlist_items(playlist_id)], None
+    except Exception as e:  # noqa: BLE001
+        return [], str(e)
+
+
+def _disc_video_grid(items, key_prefix, cols=4):
+    """A row-wrapped grid of video cards — thumbnail, title, channel, MP3/MP4."""
+    for start in range(0, len(items), cols):
+        row = items[start:start + cols]
+        columns = st.columns(cols)
+        for idx, (col, it) in enumerate(zip(columns, row)):
+            gi = start + idx
+            with col:
+                if it.get("thumb"):
+                    st.image(it["thumb"], use_container_width=True)
+                dur = it.get("duration_sec") or 0
+                meta = f"{dur // 60}:{dur % 60:02d}" if dur else ""
+                st.markdown(f"**{it['title'][:70]}**")
+                st.caption(it["channel"] + (f"  ·  {meta}" if meta else ""))
+                b = st.columns(2)
+                if b[0].button("🎵 MP3", key=f"{key_prefix}_a_{gi}_{it['video_id']}", use_container_width=True):
+                    enqueue([{"url": it["url"], "fmt": "audio", "title": it["title"]}])
+                    st.toast(f"Queued MP3 · {it['title'][:36]}")
+                if b[1].button("🎬 MP4", key=f"{key_prefix}_v_{gi}_{it['video_id']}", use_container_width=True):
+                    enqueue([{"url": it["url"], "fmt": "video", "title": it["title"]}])
+                    st.toast(f"Queued MP4 · {it['title'][:36]}")
+
+
+def discover_panel():
+    """Download-first 'mini YouTube' — trending shelves + mixed search, mirroring
+    the mobile Discover. Every result is one tap to MP3/MP4 via the same engine."""
+    if not discover.has_key():
+        st.info("🔭 **Discover is unavailable** — no YouTube key is configured "
+                "(place your key in a `youtube.key` file next to the app).")
+        return
+
+    sc = st.columns([5, 2])
+    q = sc[0].text_input("Search", key="disc_q", label_visibility="collapsed",
+                         placeholder="🔎 Search artists, songs, channels…")
+    order = sc[1].selectbox("Sort", ["relevance", "date", "viewCount"],
+                            format_func=lambda o: {"relevance": "Relevance", "date": "Newest",
+                                                   "viewCount": "Most viewed"}[o],
+                            key="disc_order", label_visibility="collapsed")
+    query = (q or "").strip()
+
+    # An opened channel/playlist shows its videos at the top (above results/trending).
+    open_ch = st.session_state.get("disc_open_channel")
+    open_pl = st.session_state.get("disc_open_playlist")
+    if open_ch or open_pl:
+        hc = st.columns([6, 1])
+        hc[0].markdown(f"### 📂 {st.session_state.get('disc_open_title', 'Selection')}")
+        if hc[1].button("✕ Close", key="disc_close"):
+            for k in ("disc_open_channel", "disc_open_playlist", "disc_open_title"):
+                st.session_state.pop(k, None)
+            st.rerun()
+        items, err = _disc_uploads(open_ch) if open_ch else _disc_playlist(open_pl)
+        if err:
+            st.warning(err)
+        elif items:
+            _disc_video_grid(items, "disc_open")
+        else:
+            st.caption("Nothing to show here.")
+        st.divider()
+
+    if query:
+        res, err = _disc_search(query, order)
+        if err:
+            st.warning(err)
+            if st.button("🔄 Try again", key="disc_retry"):
+                _disc_search.clear()
+                st.rerun()
+            return
+        if res["channels"]:
+            st.markdown("##### 📡 Channels — open to browse & download their uploads")
+            for ch in res["channels"]:
+                cc = st.columns([1, 4, 2])
+                if ch["thumb"]:
+                    cc[0].image(ch["thumb"], use_container_width=True)
+                cc[1].markdown(f"**{ch['title']}**")
+                if cc[2].button("Latest uploads", key=f"disc_ch_{ch['channel_id']}"):
+                    st.session_state["disc_open_channel"] = ch["channel_id"]
+                    st.session_state.pop("disc_open_playlist", None)
+                    st.session_state["disc_open_title"] = ch["title"]
+                    st.rerun()
+        if res["playlists"]:
+            st.markdown("##### 🎶 Playlists — open to grab the whole list")
+            for pl in res["playlists"]:
+                pc = st.columns([1, 4, 2])
+                if pl["thumb"]:
+                    pc[0].image(pl["thumb"], use_container_width=True)
+                pc[1].markdown(f"**{pl['title']}**")
+                if pc[2].button("Open playlist", key=f"disc_pl_{pl['playlist_id']}"):
+                    st.session_state["disc_open_playlist"] = pl["playlist_id"]
+                    st.session_state.pop("disc_open_channel", None)
+                    st.session_state["disc_open_title"] = pl["title"]
+                    st.rerun()
+        if res["videos"]:
+            st.markdown("##### ▶️ Videos — tap to download")
+            _disc_video_grid(res["videos"], "disc_v")
+        if not (res["videos"] or res["channels"] or res["playlists"]):
+            st.caption(f"No results for “{query}”.")
+    elif not (open_ch or open_pl):
+        for label, region, cat in (("🔥 Trending in Kenya", "KE", None),
+                                    ("🌍 Trending Worldwide", "US", None),
+                                    ("🎵 Trending Music", "KE", "10")):
+            st.markdown(f"### {label}")
+            items, err = _disc_trending(region, cat)
+            if err:
+                st.caption(f"Couldn't load — {err}")
+            elif items:
+                _disc_video_grid(items, f"disc_t_{region}_{cat}")
+
+
+_t_dl, _t_discover, _t_hist, _t_insights, _t_arch, _t_clean = st.tabs([
     "⬇️  Download",
+    "🔭  Discover",
     f"🕓  History ({len(all_hist)})",
     "📊  Insights",
     "🗄️  Archive",
     "🗂️  Library & Cleanup",
 ])
+
+with _t_discover:
+    discover_panel()
+    downloads_panel()
 
 with _t_dl:
     _mode_opts = ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"]
