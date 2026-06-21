@@ -349,3 +349,40 @@ def playlist_items(playlist_id):
         raise IOError("Discover is unavailable (no YouTube key).")
     url = f"{BASE}/playlistItems?part=snippet&maxResults=25&playlistId={playlist_id}&key={api_key()}"
     return _parse_playlist_items(_cached_fetch(f"plitems_{playlist_id}", url, TRENDING_TTL))
+
+
+def channel_info(channel_id):
+    """Channel header: title, image, subscriber & video counts, uploads playlist
+    (1 quota unit, cached 6h). Powers the Discover channel view."""
+    if not has_key():
+        raise IOError("Discover is unavailable (no YouTube key).")
+    url = f"{BASE}/channels?part=snippet,statistics,contentDetails&id={channel_id}&key={api_key()}"
+    items = json.loads(_cached_fetch(f"chinfo_{channel_id}", url, TRENDING_TTL)).get("items") or []
+    if not items:
+        return None
+    it = items[0]
+    sn = it.get("snippet") or {}
+    stt = it.get("statistics") or {}
+    return {
+        "id": channel_id,
+        "title": sn.get("title", ""),
+        "thumb": _thumb_url(sn.get("thumbnails")),
+        "subs": None if stt.get("hiddenSubscriberCount") else stt.get("subscriberCount"),
+        "videos": stt.get("videoCount"),
+        "uploads": (((it.get("contentDetails") or {}).get("relatedPlaylists") or {}).get("uploads", "")),
+    }
+
+
+def channel_playlists(channel_id):
+    """A channel's public playlists (1 quota unit, cached 6h)."""
+    if not has_key():
+        raise IOError("Discover is unavailable (no YouTube key).")
+    url = (f"{BASE}/playlists?part=snippet&channelId={channel_id}&maxResults=15&key={api_key()}")
+    arr = json.loads(_cached_fetch(f"chpls_{channel_id}", url, TRENDING_TTL)).get("items") or []
+    out = []
+    for it in arr:
+        sn = it.get("snippet") or {}
+        pid = it.get("id", "")
+        if pid:
+            out.append(DiscoverPlaylist(pid, sn.get("title", ""), _thumb_url(sn.get("thumbnails"))))
+    return out

@@ -822,6 +822,58 @@ def _disc_video_grid(items, key_prefix, cols=4):
                     st.toast(f"Queued MP4 · {it['title'][:36]}")
 
 
+@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
+def _disc_chinfo(channel_id):
+    try:
+        return discover.channel_info(channel_id), None
+    except Exception as e:  # noqa: BLE001
+        return None, str(e)
+
+
+@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
+def _disc_chpls(channel_id):
+    try:
+        return [p.as_dict() for p in discover.channel_playlists(channel_id)], None
+    except Exception as e:  # noqa: BLE001
+        return [], str(e)
+
+
+@st.cache_data(ttl=discover.SEARCH_TTL, show_spinner=False)
+def _disc_artist(name):
+    try:
+        return [v.as_dict() for v in discover.search(name, "relevance")], None
+    except Exception as e:  # noqa: BLE001
+        return [], str(e)
+
+
+def _fmt_count(n):
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return ""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M".replace(".0M", "M")
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K".replace(".0K", "K")
+    return str(n)
+
+
+def _top_artists(n=3, limit=150):
+    """Your most-downloaded artists (from recent history) — for personalized shelves."""
+    counts = {}
+    for h in all_hist[:limit]:
+        p = h.get("path")
+        if p and os.path.isfile(p):
+            try:
+                for a in _artists_cached(p, os.path.getmtime(p)):
+                    if a.lower() != "unknown":
+                        counts[a] = counts.get(a, 0) + 1
+            except Exception:  # noqa: BLE001
+                pass
+    collapsed = artists.collapse_artist_counts(counts)
+    return [name for name, _c in sorted(collapsed, key=lambda x: -x[1])[:n]]
+
+
 def discover_panel():
     """Download-first 'mini YouTube' — trending shelves + mixed search, mirroring
     the mobile Discover. Every result is one tap to MP3/MP4 via the same engine."""
@@ -842,14 +894,51 @@ def discover_panel():
     # An opened channel/playlist shows its videos at the top (above results/trending).
     open_ch = st.session_state.get("disc_open_channel")
     open_pl = st.session_state.get("disc_open_playlist")
-    if open_ch or open_pl:
-        hc = st.columns([6, 1])
-        hc[0].markdown(f"### 📂 {st.session_state.get('disc_open_title', 'Selection')}")
-        if hc[1].button("✕ Close", key="disc_close"):
+    def _disc_close_btn(col):
+        if col.button("✕ Close", key="disc_close"):
             for k in ("disc_open_channel", "disc_open_playlist", "disc_open_title"):
                 st.session_state.pop(k, None)
             st.rerun()
-        items, err = _disc_uploads(open_ch) if open_ch else _disc_playlist(open_pl)
+
+    if open_ch:
+        info, _ie = _disc_chinfo(open_ch)
+        hc = st.columns([1, 5, 1])
+        if info and info.get("thumb"):
+            hc[0].image(info["thumb"], use_container_width=True)
+        hc[1].markdown(f"### 📡 {(info or {}).get('title') or st.session_state.get('disc_open_title', 'Channel')}")
+        _meta = []
+        if info and info.get("subs"):
+            _meta.append(f"👥 {_fmt_count(info['subs'])} subscribers")
+        if info and info.get("videos"):
+            _meta.append(f"🎬 {_fmt_count(info['videos'])} videos")
+        if _meta:
+            hc[1].caption("  ·  ".join(_meta))
+        _disc_close_btn(hc[2])
+        st.markdown("##### ▶️ Recent uploads")
+        _ups, _uerr = _disc_uploads(open_ch)
+        if _ups:
+            _disc_video_grid(_ups, "disc_open")
+        else:
+            st.caption(_uerr or "No recent uploads found.")
+        _chpls, _ = _disc_chpls(open_ch)
+        if _chpls:
+            st.markdown("##### 🎶 Playlists")
+            for _cpl in _chpls:
+                _pcc = st.columns([1, 4, 2])
+                if _cpl["thumb"]:
+                    _pcc[0].image(_cpl["thumb"], use_container_width=True)
+                _pcc[1].markdown(f"**{_cpl['title']}**")
+                if _pcc[2].button("Open", key=f"disc_cpl_{_cpl['playlist_id']}"):
+                    st.session_state["disc_open_playlist"] = _cpl["playlist_id"]
+                    st.session_state.pop("disc_open_channel", None)
+                    st.session_state["disc_open_title"] = _cpl["title"]
+                    st.rerun()
+        st.divider()
+    elif open_pl:
+        hc = st.columns([6, 1])
+        hc[0].markdown(f"### 🎶 {st.session_state.get('disc_open_title', 'Playlist')}")
+        _disc_close_btn(hc[1])
+        items, err = _disc_playlist(open_pl)
         if err:
             st.warning(err)
         elif items:
@@ -905,6 +994,12 @@ def discover_panel():
                 st.caption(f"Couldn't load — {err}")
             elif items:
                 _disc_video_grid(items, f"disc_t_{region}_{cat}")
+        # Personalized — "More from <artist>" from your most-downloaded artists.
+        for _artist in _top_artists():
+            _avids, _ae = _disc_artist(_artist)
+            if _avids:
+                st.markdown(f"### 🎧 More from {_artist}")
+                _disc_video_grid(_avids[:8], f"disc_a_{artists.artist_key(_artist)}")
 
 
 # =========================================================================== #
