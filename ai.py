@@ -282,6 +282,38 @@ def analyze_titles(titles, progress=None, batch=12):
     return {t: cache[t] for t in titles if t in cache}
 
 
+def classify_tracks(titles, progress=None, batch=10):
+    """Sort titles -> {title: {genre, language}} for playlist auto-grouping.
+    GENRE + LANGUAGE/REGION only — never mood (mirrors the mobile classifier)."""
+    titles = [t for t in dict.fromkeys(titles) if t]
+    out = {}
+    for i in range(0, len(titles), batch):
+        chunk = titles[i:i + batch]
+        prompt = (
+            "You sort music tracks into a FEW meaningful playlists by GENRE and by "
+            "LANGUAGE/REGION — never by mood or feeling. For EACH title return one JSON "
+            "object IN THE SAME ORDER with two fields:\n"
+            "  genre: one of Afrobeats, Amapiano, Bongo Flava, Gengetone, Rhumba, Gospel, "
+            "Hip-Hop, R&B, Pop, Reggae, Dancehall, Drill, Reggaeton, Bollywood, Country, "
+            "Classical, Other;\n"
+            "  language: the main language/region — one of Swahili, English, Nigerian, "
+            "French, Spanish, Hindi, Bengali, Marathi, Arabic, Kikuyu, Mixed, Unknown.\n"
+            "Pick the single best fit; do NOT invent new labels. Return ONLY a JSON array.\n\nTitles:\n"
+            + "\n".join(f"{j + 1}. {t}" for j, t in enumerate(chunk)))
+        try:
+            data = _extract_json(_chat(prompt, max_tokens=700))
+        except Exception:  # noqa: BLE001
+            data = None
+        if isinstance(data, list):
+            for t, obj in zip(chunk, data):
+                if isinstance(obj, dict):
+                    out[t] = {"genre": (obj.get("genre") or "").strip(),
+                              "language": (obj.get("language") or "").strip()}
+        if progress:
+            progress(min(i + batch, len(titles)), len(titles))
+    return out
+
+
 def cached_analysis():
     return _load_cache()
 

@@ -482,6 +482,22 @@ def _art_for(path):
         return None
 
 
+@st.cache_data(show_spinner=False, max_entries=5000)
+def _duration_s(path, _sig):
+    """Track length in seconds (cached per path+mtime) via mutagen."""
+    try:
+        import mutagen
+        f = mutagen.File(path)
+        return int(getattr(f.info, "length", 0) or 0) if f else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _fmt_dur(s):
+    s = int(s or 0)
+    return f"{s // 60}:{s % 60:02d}" if s > 0 else ""
+
+
 def _empty(icon, title, hint=""):
     """A centered, friendly empty state (instead of a bare caption)."""
     st.markdown(
@@ -519,9 +535,17 @@ def _lib_song_grid(items, key_prefix, cols=6):
                 else:
                     st.markdown(_lib_placeholder(it["fmt"]), unsafe_allow_html=True)
                 nm = os.path.splitext(os.path.basename(it["path"]))[0]
+                _dur = _fmt_dur(_duration_s(it["path"], it.get("mtime", 0)))
                 st.markdown(f"**{nm[:34]}**")
-                st.caption(f"{it['ext'][1:].upper()} · {fmt_size(it['size'])}")
-                if st.button("📂 Open", key=f"{key_prefix}_open_{it['path']}", use_container_width=True):
+                st.caption(f"{it['ext'][1:].upper()} · {fmt_size(it['size'])}"
+                           + (f" · {_dur}" if _dur else ""))
+                _b = st.columns(2)
+                if _b[0].button("▶", key=f"{key_prefix}_play_{it['path']}",
+                                use_container_width=True, help="Play in app"):
+                    st.session_state["lib_play"] = it["path"]
+                    st.rerun()
+                if _b[1].button("📂", key=f"{key_prefix}_open_{it['path']}",
+                                use_container_width=True, help="Open folder"):
                     open_and_select(it["path"])
     if len(items) > show:
         if st.button(f"⬇️ Show more ({len(items) - show} left)", key=f"{key_prefix}_more",
@@ -631,12 +655,39 @@ def _lib_playlists_view(media):
             st.rerun()
         return
 
-    _pc = st.columns([3, 1])
+    _pc = st.columns([3, 1, 1.4])
     _new = _pc[0].text_input("New playlist", key="pl_new", label_visibility="collapsed",
                              placeholder="New playlist name…")
     if _pc[1].button("➕ Create", key="pl_create", use_container_width=True) and _new.strip():
         playlists.create(pls, _new.strip())
         st.rerun()
+    if _pc[2].button("🪄 Auto-group", key="pl_auto", use_container_width=True,
+                     help="AI: group your library into genre & language/region playlists"):
+        if not st.session_state.get("ai_on"):
+            st.warning("Turn on AI in the sidebar → AI Settings first.")
+        else:
+            with st.spinner("Classifying your library by genre & language…"):
+                _titles = {os.path.splitext(os.path.basename(m["path"]))[0]: m["path"] for m in audio}
+                _tags = ai.classify_tracks(list(_titles.keys()))
+            _groups = {}
+            for _nm, _path in _titles.items():
+                _tg = _tags.get(_nm) or {}
+                _g = (_tg.get("genre") or "").strip()
+                _l = (_tg.get("language") or "").strip()
+                if _g and _g.lower() != "other":
+                    _groups.setdefault(f"🎵 {_g}", []).append(_path)
+                if _l and _l.lower() not in ("unknown", "mixed"):
+                    _groups.setdefault(f"🗣 {_l}", []).append(_path)
+            _n = 0
+            for _gname, _paths in _groups.items():
+                if len(_paths) >= 3:
+                    _ex = next((p for p in pls if p["name"] == _gname), None)
+                    _pl = _ex or playlists.create(pls, _gname)
+                    playlists.add_paths(pls, _pl["id"], _paths)
+                    _n += 1
+            st.success(f"Built {_n} genre/language playlist(s)." if _n
+                       else "Need ≥3 songs of a genre/language to group.")
+            st.rerun()
     if not pls:
         st.caption("No playlists yet — name one above and Create, then add songs.")
         return
@@ -2095,6 +2146,17 @@ with _t_clean:
                                placeholder="🔎 Filter by name…")
     _lib_view = _lc[1].radio("View", ["All", "Songs", "Videos", "Artists", "Playlists"],
                              horizontal=True, key="lib_view", label_visibility="collapsed")
+    _play = st.session_state.get("lib_play")
+    if _play and os.path.isfile(_play):
+        _pcol = st.columns([6, 1])
+        _pcol[0].markdown(f"**▶ {os.path.splitext(os.path.basename(_play))[0][:64]}**")
+        if _pcol[1].button("✕ Stop", key="lib_stop", use_container_width=True):
+            st.session_state.pop("lib_play", None)
+            st.rerun()
+        if os.path.splitext(_play)[1].lower() in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"):
+            st.video(_play)
+        else:
+            st.audio(_play)
     if not _media:
         _empty("🎵", "Your library is empty", "Download something and it'll show up here with its artwork.")
     elif _lib_view == "Artists":
