@@ -101,6 +101,8 @@ def _inject_brand_css():
       [data-testid="stMetric"] { background:#171128; border:1px solid #2a2342; border-radius:16px; padding:14px 18px; }
       .stTextInput input, .stTextArea textarea { border-radius:10px; }
       h1, h2, h3 { letter-spacing:-.3px; }
+      [data-testid="stImage"] img { border-radius:12px; transition:transform .18s ease, box-shadow .18s ease; }
+      [data-testid="stImage"]:hover img { transform:scale(1.03); box-shadow:0 10px 24px -10px rgba(0,0,0,.65); }
       .umd-hero { background:linear-gradient(125deg,#7C5CFF 0%,#B44DFF 48%,#18C8FF 100%);
         border-radius:24px; padding:26px 30px; color:#fff; margin:2px 0 18px;
         box-shadow:0 16px 44px -14px rgba(124,92,255,.55); }
@@ -480,6 +482,16 @@ def _art_for(path):
         return None
 
 
+def _empty(icon, title, hint=""):
+    """A centered, friendly empty state (instead of a bare caption)."""
+    st.markdown(
+        f"<div style='text-align:center;padding:40px 12px;color:#9a93b5;'>"
+        f"<div style='font-size:46px;line-height:1'>{icon}</div>"
+        f"<div style='font-size:16px;font-weight:600;margin-top:10px;color:#cfcadf'>{title}</div>"
+        f"<div style='font-size:13px;margin-top:4px'>{hint}</div></div>",
+        unsafe_allow_html=True)
+
+
 def _lib_placeholder(fmt):
     return ("<div style='aspect-ratio:1;border-radius:12px;display:flex;align-items:center;"
             "justify-content:center;font-size:34px;background:linear-gradient(135deg,#2a2342,#171128);'>"
@@ -764,7 +776,7 @@ ai_cache = ai.cached_analysis() if ai_on else {}
 # =========================================================================== #
 #  DISCOVER  (YouTube Data API v3 — mirrors the mobile app's Discover)
 # =========================================================================== #
-@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
+@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner="Loading trending…")
 def _disc_trending(region, cat):
     try:
         return [v.as_dict() for v in discover.trending(region, cat)], None
@@ -772,7 +784,7 @@ def _disc_trending(region, cat):
         return [], str(e)
 
 
-@st.cache_data(ttl=discover.SEARCH_TTL, show_spinner=False)
+@st.cache_data(ttl=discover.SEARCH_TTL, show_spinner="Searching YouTube…")
 def _disc_search(query, order):
     try:
         r = discover.search_mixed(query, order)
@@ -783,7 +795,7 @@ def _disc_search(query, order):
         return None, str(e)
 
 
-@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
+@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner="Loading uploads…")
 def _disc_uploads(channel_id):
     try:
         return [v.as_dict() for v in discover.latest_uploads(channel_id)], None
@@ -838,7 +850,7 @@ def _disc_chpls(channel_id):
         return [], str(e)
 
 
-@st.cache_data(ttl=discover.SEARCH_TTL, show_spinner=False)
+@st.cache_data(ttl=discover.SEARCH_TTL, show_spinner="Loading artist…")
 def _disc_artist(name):
     try:
         return [v.as_dict() for v in discover.search(name, "relevance")], None
@@ -983,7 +995,7 @@ def discover_panel():
             st.markdown("##### ▶️ Videos — tap to download")
             _disc_video_grid(res["videos"], "disc_v")
         if not (res["videos"] or res["channels"] or res["playlists"]):
-            st.caption(f"No results for “{query}”.")
+            _empty("🔎", "No results", f"Nothing found for “{query}” — try another search.")
     elif not (open_ch or open_pl):
         for label, region, cat in (("🔥 Trending in Kenya", "KE", None),
                                     ("🌍 Trending Worldwide", "US", None),
@@ -2087,7 +2099,7 @@ with _t_clean:
     _lib_view = _lc[1].radio("View", ["All", "Songs", "Videos", "Artists", "Playlists"],
                              horizontal=True, key="lib_view", label_visibility="collapsed")
     if not _media:
-        st.caption("No media yet — download something and it'll appear here with its artwork.")
+        _empty("🎵", "Your library is empty", "Download something and it'll show up here with its artwork.")
     elif _lib_view == "Artists":
         _lib_artists_view(_media, _lib_q)
     elif _lib_view == "Playlists":
