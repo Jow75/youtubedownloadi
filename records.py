@@ -29,8 +29,10 @@ def _data_dir():
 
 
 RECORDS = _data_dir() / "license_records.csv"
+# "reference" = the payment's transaction code (M-Pesa code / bank ref / PayPal id).
 FIELDNAMES = ["timestamp", "customer", "phone", "email", "machine_id",
-              "plan", "issued", "expires", "amount", "payment", "notes", "code"]
+              "plan", "issued", "expires", "amount", "payment", "reference",
+              "notes", "code"]
 
 
 def load_records():
@@ -51,3 +53,21 @@ def append_record(row):
         w.writeheader()
         for r in rows:
             w.writerow({k: (r.get(k, "") or "") for k in FIELDNAMES})
+
+
+def clear_records():
+    """DANGER ZONE: wipe ALL records. Backs the ledger up to a timestamped file
+    first (so a mistake is recoverable), then truncates to just the header.
+    Returns (rows_removed, backup_path_or_None)."""
+    from datetime import datetime
+    rows = load_records()
+    backup = None
+    if RECORDS.is_file() and rows:
+        backup = RECORDS.with_name(f"license_records_backup_{datetime.now():%Y%m%d_%H%M%S}.csv")
+        try:
+            backup.write_bytes(RECORDS.read_bytes())
+        except OSError:
+            backup = None
+    with RECORDS.open("w", newline="", encoding="utf-8") as f:
+        csv.DictWriter(f, fieldnames=FIELDNAMES, extrasaction="ignore").writeheader()
+    return len(rows), (str(backup) if backup else None)

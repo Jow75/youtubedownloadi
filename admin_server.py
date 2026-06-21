@@ -20,13 +20,17 @@ import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from urllib.parse import urlparse, parse_qs
+
 import licensing as lic
 import records
+import exports
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI_FILE = os.path.join(HERE, "admin_ui.html")
 MID_RE = re.compile(r"^UMD-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$")
 ALLOWED_UNITS = {"minutes", "hours", "days", "weeks", "months", "years"}
+CLEAR_PIN = "4770"   # Danger Zone — the wipe-all confirmation PIN
 
 DURATIONS = [
     {"label": "30 minutes", "kw": {"minutes": 30}},
@@ -96,7 +100,8 @@ def build_payload():
             "phone": r.get("phone", ""), "email": r.get("email", ""),
             "plan": r.get("plan", ""), "issued": r.get("issued", ""),
             "expires": r.get("expires", ""), "amount": _to_float(r.get("amount", "")),
-            "payment": r.get("payment", ""), "notes": r.get("notes", ""),
+            "payment": r.get("payment", ""), "reference": r.get("reference", ""),
+            "notes": r.get("notes", ""),
             "code": r.get("code", ""), "status": st, "days_left": days,
             "human_left": human,
         })
@@ -204,10 +209,74 @@ def do_generate(data):
         "issued": payload["i"], "expires": payload["e"],
         "amount": str(data.get("amount") or "").strip(),
         "payment": (data.get("payment") or "").strip(),
+        "reference": (data.get("reference") or "").strip(),
         "notes": (data.get("notes") or "").strip(), "code": code,
     })
     return 200, {"ok": True, "code": code, "payload": payload, "machine_id": mid,
                  "plan": plan, "human_left": lic.human_left(lic.parse_dt(payload["e"]))}
+
+
+def _fmt_dt(iso):
+    try:
+        return lic.parse_dt(iso).strftime("%Y-%m-%d %H:%M")
+    except Exception:  # noqa: BLE001
+        return iso or ""
+
+
+def _export_rows():
+    """Full per-license rows (newest first) for an export."""
+    now = datetime.now()
+    headers = ["Customer", "Phone", "Email", "Machine ID", "Plan", "Status",
+               "Issued", "Expires", "Amount", "Payment", "Reference", "Notes", "License Key"]
+    rows = []
+    for r in sorted(records.load_records(), key=lambda x: x.get("issued", ""), reverse=True):
+        st, _d, _h = _status(r.get("expires", ""), now)
+        rows.append([
+            r.get("customer", ""), r.get("phone", ""), r.get("email", ""),
+            r.get("machine_id", ""), r.get("plan", ""), st.capitalize(),
+            _fmt_dt(r.get("issued", "")), _fmt_dt(r.get("expires", "")),
+            _to_float(r.get("amount", "")), r.get("payment", ""),
+            r.get("reference", ""), r.get("notes", ""), r.get("code", ""),
+        ])
+    return headers, rows
+
+
+def do_export(fmt):
+    """Write the ledger to csv/xlsx/pdf next to the data file, then open it."""
+    headers, rows = _export_rows()
+    out_dir = records.RECORDS.parent
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sub = f"{len(rows)} license(s) · exported {datetime.now():%Y-%m-%d %H:%M}"
+    try:
+        if fmt == "csv":
+            path = exports.write_csv(out_dir / f"UMD_licenses_{stamp}.csv", headers, rows)
+        elif fmt == "xlsx":
+            path = exports.write_xlsx(out_dir / f"UMD_licenses_{stamp}.xlsx", headers, rows)
+        elif fmt == "pdf":
+            # A compact, readable column set for the landscape PDF report.
+            idx = [0, 1, 3, 4, 5, 7, 8, 9, 10]
+            pdf_h = [headers[i] for i in idx]
+            pdf_rows = [[r[i] for i in idx] for r in rows]
+            path = exports.write_pdf(out_dir / f"UMD_licenses_{stamp}.pdf", pdf_h, pdf_rows,
+                                     title="UMD — License Records", subtitle=sub)
+        else:
+            return 400, {"ok": False, "error": "Unknown export format."}
+    except Exception as e:  # noqa: BLE001
+        return 500, {"ok": False, "error": f"Export failed: {e}"}
+    try:
+        os.startfile(str(path))  # noqa: S606  (Windows: open in Excel / PDF viewer)
+    except Exception:  # noqa: BLE001
+        pass
+    return 200, {"ok": True, "path": str(path), "count": len(rows)}
+
+
+def do_clear(data):
+    """Danger Zone: wipe ALL records, gated by the PIN. Always backs up first."""
+    pin = str((data or {}).get("pin") or "").strip()
+    if pin != CLEAR_PIN:
+        return 403, {"ok": False, "error": "Incorrect PIN — nothing was deleted."}
+    removed, backup = records.clear_records()
+    return 200, {"ok": True, "removed": removed, "backup": backup}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -232,10 +301,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/bootstrap":
             self._send(200, build_payload())
             return
+        if path == "/api/export":
+            q = parse_qs(urlparse(self.path).query)
+            fmt = (q.get("fmt", ["csv"])[0] or "csv").lower()
+            status, body = do_export(fmt)
+            self._send(status, body)
+            return
         self._send(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
-        if self.path.split("?", 1)[0] == "/api/generate":
+        route = self.path.split("?", 1)[0]
+        if route in ("/api/generate", "/api/clear"):
             length = int(self.headers.get("Content-Length", 0) or 0)
             raw = self.rfile.read(length) if length else b"{}"
             try:
@@ -243,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._send(400, {"ok": False, "error": "Bad JSON"})
                 return
-            status, body = do_generate(data)
+            status, body = do_generate(data) if route == "/api/generate" else do_clear(data)
             self._send(status, body)
             return
         self._send(404, {"error": "not found"})

@@ -398,6 +398,28 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 }
 .toast svg{width:16px;height:16px}
 .toast.ok svg{color:var(--success)} .toast.err svg{color:var(--danger)}
+/* request template + payment reference */
+.tpl-row{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.tpl-hint{font-size:12px;color:var(--text-3)}
+/* danger button + zone */
+.btn.danger{background:var(--danger-soft);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,transparent)}
+.btn.danger:hover{background:color-mix(in srgb,var(--danger) 24%,transparent);color:var(--danger)}
+.danger-zone{margin-top:22px;border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);background:var(--danger-soft)}
+.danger-zone .dz-title{display:flex;align-items:center;gap:8px;font-weight:650;color:var(--danger);margin-bottom:12px}
+.danger-zone .dz-title svg{width:16px;height:16px}
+.danger-zone .dz-row{display:flex;align-items:center;gap:18px;justify-content:space-between;flex-wrap:wrap}
+.danger-zone .dz-info b{font-size:14px}
+.danger-zone .dz-sub{font-size:12.5px;color:var(--text-2);max-width:560px;margin-top:3px}
+/* danger modal */
+.modal-overlay{position:fixed;inset:0;background:var(--backdrop);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:300}
+.modal-overlay.show{display:flex}
+.modal-card{background:var(--surface-solid);border:1px solid var(--border-strong);border-radius:18px;padding:28px;max-width:430px;width:90%;text-align:center;box-shadow:var(--shadow-lg)}
+.modal-ic{width:54px;height:54px;border-radius:50%;background:var(--danger-soft);color:var(--danger);display:grid;place-items:center;margin:0 auto 14px}
+.modal-ic svg{width:26px;height:26px}
+.modal-card h3{font-size:18px;margin-bottom:8px}
+.modal-card p{font-size:13.5px;color:var(--text-2);line-height:1.5;margin-bottom:18px}
+.modal-card #dm-pin{text-align:center;letter-spacing:8px;font-size:20px;font-weight:600;margin-bottom:18px}
+.modal-actions{display:flex;gap:10px;justify-content:center}
 @keyframes toastIn{from{opacity:0;transform:translateY(14px) scale(.95)}to{opacity:1;transform:none}}
 .toast.out{animation:toastOut .3s var(--ease) forwards}
 @keyframes toastOut{to{opacity:0;transform:translateY(10px);height:0;margin:0;padding-top:0;padding-bottom:0}}
@@ -492,7 +514,9 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
             <span class="ic-search"></span>
             <input id="search" type="text" placeholder="Search by name, machine ID, phone, email…" oninput="renderTable()" />
           </div>
-          <button class="btn" onclick="exportCSV()"><span class="ic-download"></span> Export</button>
+          <button class="btn" onclick="exportData('xlsx')" title="Export to Excel"><span class="ic-download"></span> Excel</button>
+          <button class="btn" onclick="exportData('pdf')" title="Export to PDF">PDF</button>
+          <button class="btn" onclick="exportData('csv')" title="Export to CSV">CSV</button>
         </div>
         <div class="chips" id="filter-chips"></div>
         <div style="height:16px"></div>
@@ -514,6 +538,17 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
             </table>
           </div>
         </div>
+
+        <div class="card danger-zone">
+          <div class="dz-title"><span class="ic-warn"></span> Danger Zone</div>
+          <div class="dz-row">
+            <div class="dz-info">
+              <b>Clear all users</b>
+              <div class="dz-sub">Permanently deletes every customer &amp; license record — use this to wipe all your test/trial data before going live. A timestamped backup CSV is saved first, and a PIN is required.</div>
+            </div>
+            <button class="btn danger" onclick="dangerClear()"><span class="ic-warn"></span> Clear all users</button>
+          </div>
+        </div>
       </section>
 
       <!-- ===== GENERATE ===== -->
@@ -525,6 +560,11 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
               <div class="d" id="gen-form-desc">Fill in the customer details, choose a duration, and generate a signed key.</div>
             </div>
             <div class="gen-error" id="gen-error"><span class="ic-warn"></span><span id="gen-error-msg"></span></div>
+
+            <div class="tpl-row">
+              <button class="btn sm" type="button" onclick="copyTemplate()"><span class="ic-copy"></span> Copy request template</button>
+              <span class="tpl-hint">Send it to the customer to fill in — name, phone, email &amp; Device ID — then paste their reply back here.</span>
+            </div>
 
             <div class="field-row">
               <div class="field">
@@ -557,11 +597,15 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
               </div>
               <div class="field">
                 <label class="fl">Payment method</label>
-                <select class="inp" id="f-payment">
+                <select class="inp" id="f-payment" onchange="onPaymentChange()">
                   <option>Cash</option><option>M-Pesa</option><option>Bank Transfer</option>
                   <option>Card</option><option>PayPal</option><option>Other</option>
                 </select>
               </div>
+            </div>
+            <div class="field" id="ref-field" style="display:none">
+              <label class="fl" id="ref-label">Transaction code</label>
+              <input class="inp" id="f-reference" placeholder="e.g. M-Pesa code SGH7XK9LMN" style="font-family:var(--mono)" />
             </div>
             <div class="custom-dur" id="custom-dur">
               <div><label class="fl">Quantity</label><input class="inp" id="f-cust-qty" type="number" min="1" value="1" /></div>
@@ -1068,10 +1112,14 @@ function hideGenError(){ $('#gen-error').classList.remove('show'); }
 async function generate(){
   hideGenError();
   const d=currentDuration();
+  const pay=$('#f-payment').value, ref=$('#f-reference').value.trim();
+  if(['M-Pesa','Bank Transfer','Card','PayPal'].includes(pay) && !ref){
+    showGenError('Enter the '+pay+' transaction code (or set payment to Cash).'); return;
+  }
   const body={
     customer:$('#f-customer').value, phone:$('#f-phone').value, email:$('#f-email').value,
     machine_id:$('#f-machine').value, plan_label:d.label, duration:d.kw,
-    amount:$('#f-amount').value, payment:$('#f-payment').value, notes:$('#f-notes').value,
+    amount:$('#f-amount').value, payment:pay, reference:ref, notes:$('#f-notes').value,
   };
   const btn=$('#gen-submit'); btn.disabled=true; const orig=btn.innerHTML; btn.innerHTML=I.renew+' Generating…';
   try{
@@ -1097,7 +1145,8 @@ function showSuccess(j, body){
 function resetGenerate(){
   $('#success-card').classList.remove('show');
   $('#gen-wrap').style.display='';
-  ['f-customer','f-phone','f-email','f-machine','f-amount','f-notes'].forEach(id=>$('#'+id).value='');
+  ['f-customer','f-phone','f-email','f-machine','f-amount','f-notes','f-reference'].forEach(id=>$('#'+id).value='');
+  $('#f-payment').value='Cash'; onPaymentChange();
   $('#gen-form-title').textContent='Issue a new license';
   $('#gen-form-desc').textContent='Fill in the customer details, choose a duration, and generate a signed key.';
   fillDurations(); onDurationChange(); updatePreview(); hideGenError();
@@ -1113,6 +1162,7 @@ function prefillRenew(c){
   $('#f-email').value=c.email||'';
   $('#f-machine').value=c.machine_id||'';
   $('#f-amount').value='';
+  $('#f-reference').value=''; onPaymentChange();
   $('#f-notes').value='Renewal';
   // try to reuse their last plan duration
   const idx=state.durations.findIndex(d=>d.label===c.plan);
@@ -1124,14 +1174,72 @@ function prefillRenew(c){
 }
 
 /* ============================ EXPORT ============================ */
-function exportCSV(){
-  const rows=[['Customer','Machine ID','Phone','Email','Plan','Status','Issued','Expires','Total Paid','Licenses']];
-  state.customers.forEach(c=>rows.push([c.customer,c.machine_id,c.phone,c.email,c.plan,c.status,c.issued,c.expires,c.total_paid,c.license_count]));
-  const csv=rows.map(r=>r.map(x=>`"${String(x==null?'':x).replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  const blob=new Blob([csv],{type:'text/csv'}); const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob); a.download='license_customers.csv'; a.click();
-  toast('Exported customer list');
+async function exportData(fmt){
+  toast('Preparing '+fmt.toUpperCase()+' export…');
+  try{
+    const res=await fetch('/api/export?fmt='+encodeURIComponent(fmt));
+    const j=await res.json();
+    if(j.ok) toast(j.count+' record(s) exported — opening '+fmt.toUpperCase()+'…');
+    else toast(j.error||'Export failed','err');
+  }catch(e){ toast('Export failed — is the app still running?','err'); }
 }
+
+/* ===== request template (copy & send to the customer) ===== */
+function copyTemplate(){
+  const t=[
+    'Hi! To set up your Universal Media Downloader license, please fill this in and send it back:',
+    '','Name:','Phone Number:','Email Address:',
+    'Device ID (open the app → it shows your ID, like UMD-XXXX-XXXX-XXXX):',
+    '','Thank you!'
+  ].join('\n');
+  copyText(t,'Request template copied — paste it to your customer');
+}
+
+/* ===== payment: reveal the transaction-code field for non-cash ===== */
+function onPaymentChange(){
+  const m=$('#f-payment').value;
+  const wrap=$('#ref-field'), lbl=$('#ref-label'), inp=$('#f-reference');
+  const map={'M-Pesa':'M-Pesa transaction code','Bank Transfer':'Bank reference / slip no.',
+    'Card':'Card reference','PayPal':'PayPal transaction ID','Other':'Payment reference'};
+  if(m==='Cash'){ wrap.style.display='none'; inp.value=''; }
+  else { wrap.style.display=''; lbl.textContent=map[m]||'Transaction code';
+    inp.placeholder='Enter the '+(map[m]||'reference').toLowerCase(); }
+}
+
+/* ===== Danger Zone: clear all users (two confirmations + PIN) ===== */
+let _dangerStep=0;
+function dangerClear(){
+  _dangerStep=1;
+  $('#dm-title').textContent='Clear all users?';
+  $('#dm-text').textContent='This permanently deletes EVERY customer & license record (e.g. to wipe your test data before going live). A timestamped backup CSV is saved first.';
+  $('#dm-pin').style.display='none'; $('#dm-pin').value='';
+  $('#dm-confirm').textContent='Continue';
+  $('#danger-modal').classList.add('show');
+}
+function dangerNext(){
+  if(_dangerStep===1){
+    _dangerStep=2;
+    $('#dm-title').textContent='Are you absolutely sure?';
+    $('#dm-text').textContent='This cannot be undone. Enter your PIN to permanently clear all data.';
+    $('#dm-pin').style.display=''; $('#dm-confirm').textContent='Clear everything';
+    setTimeout(()=>$('#dm-pin').focus(),50);
+    return;
+  }
+  doClear();
+}
+async function doClear(){
+  const pin=$('#dm-pin').value.trim();
+  if(!pin){ toast('Enter the PIN','err'); return; }
+  const btn=$('#dm-confirm'); btn.disabled=true;
+  try{
+    const res=await fetch('/api/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pin})});
+    const j=await res.json();
+    if(j.ok){ closeDanger(); toast('Cleared '+j.removed+' record(s)'+(j.backup?' · backup saved':'')); await refresh(); }
+    else { toast(j.error||'Could not clear','err'); $('#dm-pin').value=''; }
+  }catch(e){ toast('Network error','err'); }
+  finally{ btn.disabled=false; }
+}
+function closeDanger(){ $('#danger-modal').classList.remove('show'); _dangerStep=0; }
 
 /* ============================ BOOTSTRAP ============================ */
 async function refresh(){
@@ -1142,7 +1250,7 @@ async function refresh(){
   $('#nav-cust').textContent=state.customers.length;
   $('#dev-banner').classList.toggle('show', !!state.using_dev_secret);
   renderKPIs(); renderChips(); renderTable(); renderCharts();
-  if(firstLoad){ fillDurations(); onDurationChange(); updatePreview(); }
+  if(firstLoad){ fillDurations(); onDurationChange(); updatePreview(); onPaymentChange(); }
 }
 async function init(){
   inject();
@@ -1151,5 +1259,17 @@ async function init(){
 }
 init();
 </script>
+<div class="modal-overlay" id="danger-modal">
+  <div class="modal-card">
+    <div class="modal-ic"><span class="ic-warn"></span></div>
+    <h3 id="dm-title">Clear all users?</h3>
+    <p id="dm-text">This permanently deletes every customer &amp; license record. A timestamped backup is saved first.</p>
+    <input class="inp" id="dm-pin" type="password" inputmode="numeric" placeholder="• • • •" style="display:none" onkeydown="if(event.key==='Enter')dangerNext()" />
+    <div class="modal-actions">
+      <button class="btn" onclick="closeDanger()">Cancel</button>
+      <button class="btn danger" id="dm-confirm" onclick="dangerNext()">Continue</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
