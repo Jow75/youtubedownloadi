@@ -419,6 +419,65 @@ def enqueue(jobs, lane=downloads.LANE_NOW):
     return len(specs)
 
 
+def _extract_raw_art(path):
+    """Raw embedded cover-art bytes from a media file (mp3 APIC / mp4 covr /
+    flac pictures), or None. yt-dlp embeds the thumbnail on download, so most
+    files have one."""
+    try:
+        import mutagen
+        f = mutagen.File(path)
+        if f is None:
+            return None
+        tags = getattr(f, "tags", None)
+        if tags:
+            for k in list(tags.keys()):
+                if str(k).startswith("APIC"):
+                    try:
+                        return tags[k].data
+                    except Exception:  # noqa: BLE001
+                        pass
+            if "covr" in tags:
+                try:
+                    return bytes(tags["covr"][0])
+                except Exception:  # noqa: BLE001
+                    pass
+        pics = getattr(f, "pictures", None)
+        if pics:
+            return pics[0].data
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+@st.cache_data(show_spinner=False, max_entries=400)
+def _cover_art(path, _sig):
+    """Embedded cover art as small JPEG thumbnail bytes (or None). Cached per
+    (path, _sig) — pass the file's mtime as _sig so it refreshes if the file
+    changes. Resized small so a whole library of cards stays light to render."""
+    raw = _extract_raw_art(path)
+    if not raw:
+        return None
+    try:
+        import io
+
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        im.thumbnail((240, 240))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=82)
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001
+        return raw
+
+
+def _art_for(path):
+    """Convenience: cover art for a path, cache-keyed on its mtime."""
+    try:
+        return _cover_art(path, os.path.getmtime(path))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 @st.fragment(run_every=2.0)  # numeric seconds — avoids Streamlit importing pandas
 def downloads_panel():
     """Always-visible, self-refreshing queue. Lives in its own fragment so it
@@ -496,7 +555,13 @@ def downloads_panel():
                             else "⛔" if j.status == "canceled" else "❌")
                     sub = (j.error if j.status == "error"
                            else os.path.basename(j.result) if j.result else j.detail)
-                    r1, r2 = st.columns([7, 1])
+                    art = (_art_for(j.result) if j.status == "done" and j.result
+                           and os.path.isfile(j.result) else None)
+                    if art:
+                        tcol, r1, r2 = st.columns([0.8, 6.2, 1])
+                        tcol.image(art, width=44)
+                    else:
+                        r1, r2 = st.columns([7, 1])
                     r1.markdown(
                         f"{icon} **{j.label}**  \n"
                         f"<span style='color:#888;font-size:.8em'>{sub}</span>",
@@ -1176,79 +1241,6 @@ with _t_dl:
                        "videos) needs a cookies.txt and a public 'Liked' list — set the "
                        "cookies path in the sidebar → Speed & advanced.")
 
-    # =========================================================================== #
-    # ASSISTANT MODE (natural language → actions)
-    # =========================================================================== #
-    elif mode == "🤖 Assistant":
-        st.caption("Tell me what you want in plain language — I'll work out the rest.")
-        st.markdown("*Try:* `download Diamond Platnumz Fine as mp3` · "
-                    "`grab https://youtu.be/… in 720p` · "
-                    "`how do I download a whole TikTok profile?`")
-        instruction = st.text_input("What would you like to do?", key="agent_input",
-                                    placeholder="download Diamond Platnumz Fine as mp3")
-        if st.button("✨ Ask the assistant", type="primary"):
-            if not instruction.strip():
-                st.warning("Type a request first.")
-            else:
-                with st.spinner("Thinking…"):
-                    st.session_state.agent_plan = ai.agent_plan(instruction.strip())
-                st.session_state.pop("agent_results", None)
-
-        plan = st.session_state.get("agent_plan")
-        if plan:
-            action = plan.get("action")
-            is_aud = str(plan.get("fmt", "mp3")).lower() != "mp4"
-            flabel = "MP3" if is_aud else f"MP4 ({plan.get('quality', 'Best Available')})"
-
-            def _job(url, title=""):
-                return {"url": url, "title": title, "fmt": "audio" if is_aud else "video",
-                        "quality": None if is_aud else plan.get("quality", "Best Available"),
-                        "audio_codec": "mp3"}
-
-            if action == "help":
-                st.info(plan.get("answer")
-                        or "I'm here to help — ask me to download something, or how a "
-                           "feature works.")
-            elif action == "download" and plan.get("url"):
-                st.success(f"**Plan:** download `{plan['url']}` as **{flabel}**")
-                if st.button("⬇️ Do it", type="primary", key="agent_dl"):
-                    enqueue([_job(plan["url"])], downloads.LANE_NOW)
-                    st.success("⚡ Queued — see **Downloads** above.")
-                    st.session_state.pop("agent_plan", None)
-            elif action == "channel" and plan.get("url"):
-                st.success(f"**Plan:** grab the whole channel `{plan['url']}` as **{flabel}**")
-                if st.button("📦 Grab channel", type="primary", key="agent_ch"):
-                    with st.spinner("Reading the channel…"):
-                        res = dl.list_media(plan["url"], cookiefile)
-                    n = enqueue([_job(e["url"], e["title"]) for e in res["entries"]],
-                                downloads.LANE_BATCH)
-                    st.success(f"📦 Queued **{n}** from *{res['title']}* — see **Downloads** above.")
-                    st.session_state.pop("agent_plan", None)
-            else:  # search (also handles channel-by-name)
-                q = plan.get("query") or instruction
-                st.success(f"**Plan:** search for **{q}**, then you pick what to grab "
-                           f"as **{flabel}**.")
-                if st.button(f"🔎 Search “{q}”", type="primary", key="agent_sr"):
-                    with st.spinner("Searching YouTube…"):
-                        st.session_state.agent_results = dl.search(
-                            q, max(5, int(plan.get("count") or 1)), cookiefile)
-                results = st.session_state.get("agent_results")
-                if results:
-                    st.write(f"**Top {len(results)} result(s)** — tap ⬇️ to grab:")
-                    for i, r in enumerate(results):
-                        rc0, rc1, rc2 = st.columns([1.4, 5, 1])
-                        if r.get("thumbnail"):
-                            rc0.image(r["thumbnail"], use_container_width=True)
-                        else:
-                            rc0.markdown("🎬" if False else "🎵")
-                        dur = dl.human_duration(r["duration"]) if r.get("duration") else ""
-                        rc1.markdown(
-                            f"**{r['title']}**{(' · ' + dur) if dur else ''}  \n"
-                            f"<span style='color:#888;font-size:.82em'>"
-                            f"{r.get('uploader', '')}</span>", unsafe_allow_html=True)
-                        if rc2.button("⬇️", key=f"agent_pick_{i}", help=f"Grab as {flabel}"):
-                            enqueue([_job(r["url"], r["title"])], downloads.LANE_NOW)
-                            st.success(f"⚡ Queued **{r['title']}** — see **Downloads** above.")
 
     # =========================================================================== #
     # BULK MODE
@@ -1821,6 +1813,57 @@ with _t_clean:
             if _d and len(_d) > 3:        # skip blanks / drive roots like "C:\"
                 _scan_roots.add(_d)
     scan_folders = library.collapse_folders(_scan_roots)
+
+    # ---- Visual media browser (real cover-art cards) --------------------- #
+    _media = library.media_files(scan_folders)
+    st.markdown("#### 🎵 Your library")
+    _lc = st.columns([3, 2])
+    _lib_q = _lc[0].text_input("Filter", key="lib_filter", label_visibility="collapsed",
+                               placeholder="🔎 Filter by name…")
+    _lib_view = _lc[1].radio("View", ["All", "Songs", "Videos"], horizontal=True,
+                             key="lib_view", label_visibility="collapsed")
+    if _media:
+        _items = _media
+        if _lib_view == "Songs":
+            _items = [m for m in _items if m["fmt"] == "audio"]
+        elif _lib_view == "Videos":
+            _items = [m for m in _items if m["fmt"] == "video"]
+        if _lib_q.strip():
+            _ql = _lib_q.strip().lower()
+            _items = [m for m in _items if _ql in os.path.basename(m["path"]).lower()]
+        _items = sorted(_items, key=lambda m: m.get("mtime", 0), reverse=True)
+        st.caption(f"{len(_items)} item(s)")
+        _show = st.session_state.get("lib_show", 24)
+        _cols_n = 6
+        _page = _items[:_show]
+        for _s in range(0, len(_page), _cols_n):
+            _cs = st.columns(_cols_n)
+            for _col, _it in zip(_cs, _page[_s:_s + _cols_n]):
+                with _col:
+                    _art = _art_for(_it["path"])
+                    if _art:
+                        st.image(_art, use_container_width=True)
+                    else:
+                        st.markdown(
+                            "<div style='aspect-ratio:1;border-radius:12px;display:flex;"
+                            "align-items:center;justify-content:center;font-size:34px;"
+                            "background:linear-gradient(135deg,#2a2342,#171128);'>"
+                            f"{'🎬' if _it['fmt'] == 'video' else '🎵'}</div>",
+                            unsafe_allow_html=True)
+                    _nm = os.path.splitext(os.path.basename(_it["path"]))[0]
+                    st.markdown(f"**{_nm[:34]}**")
+                    st.caption(f"{_it['ext'][1:].upper()} · {fmt_size(_it['size'])}")
+                    if st.button("📂 Open", key=f"lib_open_{_it['path']}",
+                                 use_container_width=True):
+                        open_and_select(_it["path"])
+        if len(_items) > _show:
+            if st.button(f"⬇️ Show more ({len(_items) - _show} left)", key="lib_more",
+                         use_container_width=True):
+                st.session_state["lib_show"] = _show + 24
+                st.rerun()
+    else:
+        st.caption("No media yet — download something and it'll appear here with its artwork.")
+    st.divider()
 
     with st.expander("🔧 Rebuild library index"):
         st.caption("Scans your folders and **reconstructs missing history records** "
