@@ -36,6 +36,7 @@ import downloads
 import history as hist
 import library
 import licensing
+import playlists
 
 
 def fmt_size(n):
@@ -572,6 +573,78 @@ def _lib_artists_view(media, q):
                      use_container_width=True):
             st.session_state["lib_art_show"] = show + 30
             st.rerun()
+
+
+def _lib_playlists_view(media):
+    """User playlists — create, open, add/remove songs, delete. Mirrors mobile."""
+    pls = st.session_state.setdefault("desk_playlists", playlists.load())
+    by_path = {m["path"]: m for m in media}
+    audio = [m for m in media if m["fmt"] == "audio"]
+    open_id = st.session_state.get("lib_playlist")
+
+    if open_id:
+        pl = next((p for p in pls if p["id"] == open_id), None)
+        if not pl:
+            st.session_state.pop("lib_playlist", None)
+            st.rerun()
+        if st.button("← All playlists", key="pl_back"):
+            st.session_state.pop("lib_playlist", None)
+            st.rerun()
+        st.markdown(f"### 🎶 {pl['name']}")
+        st.caption(f"{len(pl['paths'])} song(s)")
+        with st.expander("➕ Add songs from your library"):
+            _names = {os.path.basename(m["path"]): m["path"] for m in audio
+                      if m["path"] not in pl["paths"]}
+            _pick = st.multiselect("Songs", list(_names.keys()), key="pl_add_sel",
+                                   label_visibility="collapsed")
+            if st.button("Add selected", key="pl_add_btn") and _pick:
+                playlists.add_paths(pls, pl["id"], [_names[n] for n in _pick])
+                st.rerun()
+        _items = [by_path[p] for p in pl["paths"] if p in by_path]
+        if _items:
+            _lib_song_grid(_items, "plview")
+        else:
+            st.caption("Empty — add songs above.")
+        st.divider()
+        _da, _db = st.columns(2)
+        if pl["paths"]:
+            _rmnames = {os.path.basename(p): p for p in pl["paths"] if p in by_path}
+            _rm = _da.selectbox("Remove a song", ["—"] + list(_rmnames.keys()), key="pl_rm_sel")
+            if _rm != "—" and _da.button("➖ Remove", key="pl_rm_btn"):
+                playlists.remove_path(pls, pl["id"], _rmnames[_rm])
+                st.rerun()
+        if _db.button("🗑️ Delete playlist", key="pl_del"):
+            playlists.delete(pls, pl["id"])
+            st.session_state.pop("lib_playlist", None)
+            st.rerun()
+        return
+
+    _pc = st.columns([3, 1])
+    _new = _pc[0].text_input("New playlist", key="pl_new", label_visibility="collapsed",
+                             placeholder="New playlist name…")
+    if _pc[1].button("➕ Create", key="pl_create", use_container_width=True) and _new.strip():
+        playlists.create(pls, _new.strip())
+        st.rerun()
+    if not pls:
+        st.caption("No playlists yet — name one above and Create, then add songs.")
+        return
+    st.caption(f"{len(pls)} playlist(s)")
+    _cols_n = 6
+    for _s in range(0, len(pls), _cols_n):
+        _cs = st.columns(_cols_n)
+        for _col, _pl in zip(_cs, pls[_s:_s + _cols_n]):
+            with _col:
+                _first = next((p for p in _pl["paths"] if p in by_path), None)
+                _art = _art_for(_first) if _first else None
+                if _art:
+                    st.image(_art, use_container_width=True)
+                else:
+                    st.markdown(_lib_placeholder("audio"), unsafe_allow_html=True)
+                st.markdown(f"**{_pl['name'][:24]}**")
+                st.caption(f"{len(_pl['paths'])} song(s)")
+                if st.button("Open", key=f"plopen_{_pl['id']}", use_container_width=True):
+                    st.session_state["lib_playlist"] = _pl["id"]
+                    st.rerun()
 
 
 @st.fragment(run_every=2.0)  # numeric seconds — avoids Streamlit importing pandas
@@ -1916,12 +1989,14 @@ with _t_clean:
     _lc = st.columns([3, 2])
     _lib_q = _lc[0].text_input("Filter", key="lib_filter", label_visibility="collapsed",
                                placeholder="🔎 Filter by name…")
-    _lib_view = _lc[1].radio("View", ["All", "Songs", "Videos", "Artists"], horizontal=True,
-                             key="lib_view", label_visibility="collapsed")
+    _lib_view = _lc[1].radio("View", ["All", "Songs", "Videos", "Artists", "Playlists"],
+                             horizontal=True, key="lib_view", label_visibility="collapsed")
     if not _media:
         st.caption("No media yet — download something and it'll appear here with its artwork.")
     elif _lib_view == "Artists":
         _lib_artists_view(_media, _lib_q)
+    elif _lib_view == "Playlists":
+        _lib_playlists_view(_media)
     else:
         _items = _media
         if _lib_view == "Songs":
