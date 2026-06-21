@@ -57,6 +57,21 @@ object Playlists {
 
     fun delete(id: String) { items.removeAll { it.id == id }; save() }
 
+    // The AI auto-grouper names its playlists with these emoji prefixes (genre 🎵,
+    // language 🗣, the old mood 💫). That's how we tell them from your own playlists
+    // and from downloaded-playlist groups (which keep the source's real name).
+    private val AUTO_PREFIXES = listOf("🎵 ", "🗣 ", "💫 ")
+    fun isAuto(p: Playlist): Boolean = AUTO_PREFIXES.any { p.name.startsWith(it) }
+
+    /** Delete every AI-auto-grouped playlist (keeps your own + downloaded playlists).
+     *  Songs are never touched. Returns how many playlists were removed. */
+    fun clearAuto(): Int {
+        ensureLoaded()
+        val gone = items.filter { isAuto(it) }
+        items.removeAll(gone); save()
+        return gone.size
+    }
+
     fun addPaths(id: String, paths: List<String>) {
         get(id)?.let { pl ->
             paths.forEach { if (it.isNotBlank() && it !in pl.paths) pl.paths.add(it) }
@@ -65,6 +80,15 @@ object Playlists {
     }
 
     fun removePath(id: String, path: String) { get(id)?.let { it.paths.remove(path); save() } }
+
+    /** Add a path to the playlist named [name] (case-insensitive), creating it if it
+     *  doesn't exist. Keeps a downloaded playlist grouped together in the Library. */
+    fun addToNamed(name: String, path: String) {
+        ensureLoaded()
+        val pl = all().firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
+            ?: create(name.trim().ifBlank { "Playlist" })
+        addPaths(pl.id, listOf(path))
+    }
 
     fun move(id: String, from: Int, to: Int) {
         get(id)?.let { pl ->

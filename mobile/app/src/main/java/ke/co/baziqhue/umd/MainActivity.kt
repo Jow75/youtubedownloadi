@@ -82,6 +82,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -171,6 +175,9 @@ class ChannelUi {
     val formats = mutableStateMapOf<String, String>()
     // Set true (with url) to auto-scan when opened from Discover search → Channel.
     var requestScan by mutableStateOf(false)
+    // The playlist's name when a real playlist (list=) is scanned — its songs are
+    // auto-grouped into one Library playlist as they download.
+    var playlistName by mutableStateOf<String?>(null)
 }
 
 /** Bulk paste-and-go state, hoisted so the queued list survives tab switches. */
@@ -334,20 +341,7 @@ fun App() {
                 AiJobsBar { tab = 3 }
                 DownloadsBar { tab = 1 }
                 MiniPlayer { if (Playback.isVideo) Playback.showVideo = true else showPlayer = true }
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f)) {
-                    listOf(
-                        Triple("Home", Icons.Filled.Home, 0),
-                        Triple("Download", Icons.Filled.Download, 1),
-                        Triple("Channel", Icons.Filled.Subscriptions, 2),
-                        Triple("Library", Icons.Filled.LibraryMusic, 3),
-                        Triple("Assistant", Icons.AutoMirrored.Filled.Chat, 4),
-                    ).forEach { (name, icon, idx) ->
-                        NavigationBarItem(
-                            selected = tab == idx, onClick = { tab = idx },
-                            icon = { Icon(icon, contentDescription = null) },
-                            label = { Text(name) })
-                    }
-                }
+                BrandBottomBar(tab) { tab = it }
             }
         },
         floatingActionButton = {
@@ -419,7 +413,8 @@ fun HomeScreen(onGo: (Int) -> Unit, onOpenLibrary: (Int) -> Unit, onOpenPlayer: 
                 .sortedByDescending { PlayStats.lastPlayed(it.absolutePath) }.take(12)
             recentHist = History.all().take(5)
             songs = aud.size; videos = files.size - aud.size
-            artists = aud.flatMap { MediaMeta.artists(it) }.distinct().size
+            artists = aud.flatMap { MediaMeta.artists(it) }
+                .map { MediaMeta.artistKey(it) }.filter { it.isNotEmpty() }.distinct().size
             playlists = Playlists.all().size
         }
     }
@@ -597,11 +592,12 @@ fun DiscoverScreen(onOpenChannel: (String) -> Unit) {
         Follows.ensureLoaded()
         DownloadedIndex.refresh()
         artists = withContext(Dispatchers.IO) {
-            Library.mediaFiles().filter { isAudioFile(it) }
+            val counts = Library.mediaFiles().filter { isAudioFile(it) }
                 .flatMap { MediaMeta.artists(it) }
                 .filter { it.isNotBlank() && !it.equals("Unknown", true) }
-                .groupingBy { it }.eachCount().entries
-                .sortedByDescending { it.value }.take(3).map { it.key }
+                .groupingBy { it }.eachCount()
+            MediaMeta.collapseArtistCounts(counts)
+                .sortedByDescending { it.second }.take(3).map { it.first }
         }
     }
     // Keep the "already downloaded" ticks fresh when returning to the app.
@@ -1356,7 +1352,8 @@ fun LibraryScreen(jumpTo: Int? = null, onConsumed: () -> Unit = {}) {
             category == 4 && openArtist == null -> ArtistsList(allFiles) { openArtist = it }
             else -> Column(Modifier.fillMaxSize()) {
                 val source = when {
-                    category == 4 -> allFiles.filter { f -> isAudioFile(f) && MediaMeta.artists(f).any { it.equals(openArtist, true) } }
+                    category == 4 -> { val ak = MediaMeta.artistKey(openArtist ?: "")
+                        allFiles.filter { f -> isAudioFile(f) && MediaMeta.artists(f).any { MediaMeta.artistKey(it) == ak } } }
                     category == 1 -> allFiles.filter { !isAudioFile(it) }
                     category == 2 -> { val fav = Favorites.all().toHashSet(); allFiles.filter { it.absolutePath in fav } }
                     else -> allFiles.filter { isAudioFile(it) }
@@ -1512,6 +1509,7 @@ private fun PlaylistsList(
 ) {
     var newDialog by remember { mutableStateOf(false) }
     var renameId by remember { mutableStateOf<String?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
     val lists = Playlists.all()
 
     Column(Modifier.fillMaxSize()) {
@@ -1542,23 +1540,25 @@ private fun PlaylistsList(
                                         }
                                         audioFiles.forEach { f ->
                                             val tg = map[f.nameWithoutExtension] ?: return@forEach
+                                            // Genre + language/region ONLY — never mood (Calm,
+                                            // Chill…). Fewer, meaningful, music-first playlists.
                                             if (tg.genre.isNotBlank() && !tg.genre.equals("other", true))
                                                 add("🎵 ${tg.genre}", f.absolutePath)
-                                            if (tg.language.isNotBlank() && !tg.language.equals("unknown", true))
+                                            if (tg.language.isNotBlank() && !tg.language.equals("unknown", true)
+                                                && !tg.language.equals("mixed", true))
                                                 add("🗣 ${tg.language}", f.absolutePath)
-                                            if (tg.mood.isNotBlank() && !tg.mood.equals("unknown", true))
-                                                add("💫 ${tg.mood}", f.absolutePath)
                                         }
                                         var n = 0
+                                        // Need a few songs to justify a playlist — avoids lots of tiny ones.
                                         groups.forEach { (name, paths) ->
-                                            if (paths.size >= 2) {
+                                            if (paths.size >= 3) {
                                                 val pl = Playlists.all().firstOrNull { it.name == name }
                                                     ?: Playlists.create(name)
                                                 Playlists.addPaths(pl.id, paths); n++
                                             }
                                         }
-                                        AutoPlaylistJob.status = if (n == 0) "Not enough songs to group yet."
-                                        else "Built $n smart playlists by genre, language & mood."
+                                        AutoPlaylistJob.status = if (n == 0) "Need ≥3 songs of a genre to group."
+                                        else "Built $n playlists by genre & language."
                                     },
                                     onFailure = { AutoPlaylistJob.status = "Failed: ${it.message}" }
                                 )
@@ -1582,10 +1582,19 @@ private fun PlaylistsList(
                 Text(AutoPlaylistJob.status, style = MaterialTheme.typography.bodySmall)
             }
         }
+        // Wipe just the AI-made playlists (keeps your own + downloaded-playlist groups).
+        val autoCount = lists.count { Playlists.isAuto(it) }
+        if (autoCount > 0) {
+            TextButton(onClick = { confirmClear = true }) {
+                Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Clear $autoCount AI playlist(s)")
+            }
+        }
         Spacer(Modifier.height(8.dp))
         if (lists.isEmpty()) {
             Text("No playlists yet. Create one, add songs from any list (Select → +), or " +
-                "tap Auto (AI) to group your library by genre, language and mood.",
+                "tap Auto (AI) to group your library by genre and language.",
                 style = MaterialTheme.typography.bodyMedium)
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
@@ -1624,6 +1633,25 @@ private fun PlaylistsList(
         PlaylistNameDialog("Rename playlist", Playlists.get(id)?.name ?: "") { name ->
             if (name != null) Playlists.rename(id, name); renameId = null
         }
+    }
+    if (confirmClear) {
+        val n = lists.count { Playlists.isAuto(it) }
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            icon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+            title = { Text("Clear AI playlists?") },
+            text = { Text("Removes the $n playlist(s) the AI auto-grouped by genre/language " +
+                "(and any old mood ones). Your own playlists and downloaded-playlist groups are " +
+                "kept — and no songs are deleted.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val removed = Playlists.clearAuto()
+                    AutoPlaylistJob.status = "Cleared $removed AI playlist(s)."
+                    confirmClear = false
+                }) { Text("Clear") }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }
+        )
     }
 }
 
@@ -1688,7 +1716,8 @@ private fun ArtistsList(allFiles: List<File>, onOpen: (String) -> Unit) {
             allFiles.filter { isAudioFile(it) }.forEach { f ->
                 MediaMeta.artists(f).forEach { a -> counts[a] = (counts[a] ?: 0) + 1 }
             }
-            counts.map { it.key to it.value }
+            // Collapse case/spacing variants so "BAD BUNNY" and "Bad Bunny" are ONE row.
+            MediaMeta.collapseArtistCounts(counts)
                 .sortedWith(compareByDescending<Pair<String, Int>> { it.second }
                     .thenBy { it.first.lowercase() })
         }
@@ -2347,6 +2376,58 @@ private suspend fun runPlan(
     )
 }
 
+/**
+ * The premium bottom navigation — emoji in rounded "pills". The selected tab is a
+ * BAZIQ HUE gradient capsule; the rest sit in a soft faint oval. Mirrors the look of
+ * the printed guide, which George loved.
+ */
+@Composable
+private fun BrandBottomBar(tab: Int, onSelect: (Int) -> Unit) {
+    val items = listOf(
+        Triple("🏠", "Home", 0),
+        Triple("📥", "Download", 1),
+        Triple("📡", "Channel", 2),
+        Triple("📚", "Library", 3),
+        Triple("🤖", "Assistant", 4),
+    )
+    Surface(
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
+        shadowElevation = 14.dp,
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.fillMaxWidth().navigationBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 9.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items.forEach { (emoji, label, idx) ->
+                val selected = tab == idx
+                Column(
+                    Modifier.weight(1f)
+                        .clip(CircleShape)
+                        .then(
+                            if (selected) Modifier.background(BrandGradient)
+                            else Modifier.background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+                        )
+                        .clickable { onSelect(idx) }
+                        .padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(emoji, fontSize = 19.sp)
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        label, fontSize = 10.sp, maxLines = 1, softWrap = false,
+                        color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+    }
+}
+
 private fun fmtDur(s: Int): String {
     if (s <= 0) return ""
     val h = s / 3600; val m = (s % 3600) / 60; val sec = s % 60
@@ -2397,13 +2478,13 @@ private fun ChannelBody(ui: ChannelUi) {
             token == "Skip" -> {}
             token.startsWith("MP4") -> {
                 val q = when { "720" in token -> "720p"; "480" in token -> "480p"; else -> "Best" }
-                Downloads.enqueue(ctx, e.url, false, q, e.title)
+                Downloads.enqueue(ctx, e.url, false, q, e.title, ui.playlistName)
             }
-            else -> Downloads.enqueue(ctx, e.url, true, "Best", e.title)
+            else -> Downloads.enqueue(ctx, e.url, true, "Best", e.title, ui.playlistName)
         }
     }
     fun queueBulk(list: List<Downloader.Entry>) {
-        list.forEach { Downloads.enqueue(ctx, it.url, ui.audio, ui.quality, it.title) }
+        list.forEach { Downloads.enqueue(ctx, it.url, ui.audio, ui.quality, it.title, ui.playlistName) }
     }
     // Scan the current URL — shared by the Scan button and the auto-scan that fires
     // when a channel is opened from Discover search.
@@ -2415,11 +2496,16 @@ private fun ChannelBody(ui: ChannelUi) {
         // App-scope scan: keeps reading the channel even if you switch tabs.
         Jobs.launch("Scan channel") {
             Downloader.scanEntries(ctx, ui.url.trim()).fold(
-                onSuccess = {
-                    ui.entries.clear(); ui.entries.addAll(it)
-                    ui.uploader = it.firstOrNull { e -> e.uploader.isNotBlank() }?.uploader ?: ""
-                    ui.status = "Found ${it.size} video(s)" +
-                        (if (ui.uploader.isNotBlank()) " · by ${ui.uploader}" else "")
+                onSuccess = { scan ->
+                    ui.entries.clear(); ui.entries.addAll(scan.entries)
+                    ui.uploader = scan.entries.firstOrNull { e -> e.uploader.isNotBlank() }?.uploader ?: ""
+                    // Real playlist → remember its name so its songs stay grouped on download.
+                    ui.playlistName = if (scan.isPlaylist && scan.title.isNotBlank()) scan.title else null
+                    ui.status = "Found ${scan.entries.size} video(s)" + when {
+                        ui.playlistName != null -> " · playlist “${ui.playlistName}”"
+                        ui.uploader.isNotBlank() -> " · by ${ui.uploader}"
+                        else -> ""
+                    }
                 },
                 onFailure = { ui.status = "Scan failed: ${it.message}" })
             ui.scanning = false

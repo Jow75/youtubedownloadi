@@ -69,6 +69,41 @@ object MediaMeta {
         return cleaned
     }
 
+    /** Normalized identity key — collapses case / spacing / punctuation so the same
+     *  artist written differently maps to one key ("BAD BUNNY" == "Bad Bunny"). */
+    fun artistKey(name: String): String = name.lowercase().replace(Regex("[^a-z0-9]"), "")
+
+    /**
+     * Collapse a per-name artist count map so case / spacing / punctuation variants of
+     * the SAME artist merge into ONE entry, shown with their best-looking spelling.
+     * The automatic "one artist = one artist" fix (no AI needed): "BAD BUNNY" and
+     * "Bad Bunny" become a single "Bad Bunny" row with the combined count. Best
+     * spelling = most-used, then nicest case (Title over ALL-CAPS / all-lower), then longest.
+     */
+    fun collapseArtistCounts(counts: Map<String, Int>): List<Pair<String, Int>> {
+        val byKey = LinkedHashMap<String, MutableList<Pair<String, Int>>>()
+        counts.forEach { (name, c) ->
+            val k = artistKey(name)
+            if (k.isNotEmpty()) byKey.getOrPut(k) { mutableListOf() }.add(name to c)
+        }
+        return byKey.values.map { variants ->
+            val total = variants.sumOf { it.second }
+            val best = variants.maxWith(
+                compareBy<Pair<String, Int>> { it.second }
+                    .thenBy { caseScore(it.first) }
+                    .thenBy { it.first.length }
+            ).first
+            best to total
+        }
+    }
+
+    // Nicer-looking spelling scores higher: Mixed/Title > all-lower > ALL CAPS.
+    private fun caseScore(s: String): Int = when {
+        s == s.uppercase() && s != s.lowercase() -> 0
+        s == s.lowercase() -> 1
+        else -> 2
+    }
+
     private fun splitArtists(s: String): List<String> =
         if (s.isBlank()) emptyList()
         else s.split(ARTIST_SPLIT).map { it.trim() }.filter { it.isNotBlank() }

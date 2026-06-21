@@ -15,7 +15,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** One queued/running download, observable by the UI. */
-class DlTask(val id: Long, val label: String, val audio: Boolean, val url: String) {
+class DlTask(val id: Long, val label: String, val audio: Boolean, val url: String, val playlist: String? = null) {
     var status by mutableStateOf("queued")   // queued | running | done | failed
     var progress by mutableStateOf(0f)
     var detail by mutableStateOf("")
@@ -42,9 +42,10 @@ object Downloads {
     fun isActive(url: String): Boolean =
         url.isNotBlank() && tasks.any { it.url == url && (it.status == "queued" || it.status == "running") }
 
-    fun enqueue(ctx: Context, url: String, audio: Boolean, quality: String, label: String): DlTask {
+    fun enqueue(ctx: Context, url: String, audio: Boolean, quality: String, label: String,
+                playlist: String? = null): DlTask {
         val app = ctx.applicationContext
-        val t = DlTask(System.nanoTime(), label.ifBlank { url }, audio, url)
+        val t = DlTask(System.nanoTime(), label.ifBlank { url }, audio, url, playlist)
         tasks.add(0, t)
         // Foreground service keeps the process (and these coroutines) alive so the
         // download survives the screen going off / the app being swiped away.
@@ -64,6 +65,8 @@ object Downloads {
                                 System.currentTimeMillis()))
                             t.filePath = f.absolutePath
                             DownloadedIndex.add(f.nameWithoutExtension)   // green tick in Discover
+                            // Downloaded as part of a playlist → keep them grouped together.
+                            playlist?.takeIf { it.isNotBlank() }?.let { Playlists.addToNamed(it, f.absolutePath) }
                         }
                         t.status = "done"; t.progress = 1f
                         t.detail = out.file?.nameWithoutExtension ?: "Saved"

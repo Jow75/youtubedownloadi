@@ -321,8 +321,8 @@ object Ai {
         return null
     }
 
-    // ---- auto-playlists: classify by genre / language / mood --------------- #
-    data class TrackTags(val genre: String, val language: String, val mood: String)
+    // ---- auto-playlists: classify by genre / language / region ------------- #
+    data class TrackTags(val genre: String, val language: String)
 
     suspend fun classifyTracks(
         ctx: Context,
@@ -340,22 +340,24 @@ object Ai {
         while (i < uniq.size) {
             val chunk = uniq.subList(i, minOf(i + batch, uniq.size))
             val prompt =
-                "Classify each media title. For EACH, return one JSON object IN THE SAME " +
-                "ORDER with: genre (1-2 words, e.g. Afrobeat, Bongo Flava, Amapiano, Gospel, " +
-                "Hip-Hop, R&B, Pop, Reggae, Drill, Dancehall, Country, Classical, or Other), " +
-                "language (main language: Swahili, English, French, Spanish, Hindi, Nigerian, " +
-                "Mixed, or Unknown), mood (one word: Chill, Hype, Happy, Sad, Romantic, Party, " +
-                "Workout, Focus). Return ONLY a JSON array.\n\nTitles:\n" +
+                "You sort music tracks into a FEW meaningful playlists by GENRE and by " +
+                "LANGUAGE/REGION — never by mood or feeling. For EACH title return one JSON " +
+                "object IN THE SAME ORDER with two fields:\n" +
+                "  genre: one of Afrobeats, Amapiano, Bongo Flava, Gengetone, Rhumba, Gospel, " +
+                "Hip-Hop, R&B, Pop, Reggae, Dancehall, Drill, Reggaeton, Bollywood, Country, " +
+                "Classical, Other;\n" +
+                "  language: the main language/region — one of Swahili, English, Nigerian, " +
+                "French, Spanish, Hindi, Bengali, Marathi, Arabic, Kikuyu, Mixed, Unknown.\n" +
+                "Pick the single best fit; do NOT invent new labels. Return ONLY a JSON array.\n\nTitles:\n" +
                 chunk.mapIndexed { j, t -> "${j + 1}. $t" }.joinToString("\n")
             try {
-                val arr = extractJsonArray(chat(key, prompt, maxTokens = 900, model = FAST_MODEL))
+                val arr = extractJsonArray(chat(key, prompt, maxTokens = 700, model = FAST_MODEL))
                 if (arr != null) {
                     for (j in chunk.indices) {
                         val o = arr.optJSONObject(j) ?: continue
                         result[chunk[j]] = TrackTags(
                             genre = o.optString("genre").trim(),
                             language = o.optString("language").trim(),
-                            mood = o.optString("mood").trim(),
                         )
                     }
                 }

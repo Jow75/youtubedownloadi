@@ -260,6 +260,11 @@ object Downloader {
         val uploader: String = "",
     )
 
+    /** Result of scanning a URL: its [title], whether it's a real playlist (vs a whole
+     *  channel), and the [entries]. Only a genuine playlist is auto-grouped into a
+     *  Library playlist on download. */
+    data class Scan(val title: String, val isPlaylist: Boolean, val entries: List<Entry>)
+
     // A bare YouTube channel root lists only its TABS (Videos, Shorts, …) — so a
     // naive scan returns "2 items", not the videos. Point it at the /videos tab
     // (mirrors desktop downloader.normalize_channel_url) so we get every upload.
@@ -318,7 +323,7 @@ object Downloader {
      * (flat extraction — fast). Channel roots are rewritten to /videos and nested
      * tab-playlists are walked, so you get the real videos (not "Videos/Shorts").
      */
-    suspend fun scanEntries(context: Context, url: String): Result<List<Entry>> =
+    suspend fun scanEntries(context: Context, url: String): Result<Scan> =
         withContext(Dispatchers.IO) {
             try {
                 ensureInit(context)
@@ -335,7 +340,11 @@ object Downloader {
                     val u = root.optString("webpage_url").ifBlank { target }
                     list.add(Entry(root.optString("title").ifBlank { u }, u))
                 }
-                Result.success(list)
+                // A real playlist URL carries list= (or /playlist); a channel never does.
+                // Only a genuine playlist becomes an auto-grouped Library playlist.
+                val low = url.lowercase()
+                val isPlaylist = "list=" in low || "/playlist" in low
+                Result.success(Scan(root.optString("title").trim(), isPlaylist, list))
             } catch (e: Exception) {
                 Result.failure(e)
             }
