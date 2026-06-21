@@ -28,6 +28,7 @@ import streamlit as st
 import ai
 import archive
 import branding
+import chats
 import discover
 import downloader as dl
 import downloads
@@ -617,9 +618,157 @@ def discover_panel():
                 _disc_video_grid(items, f"disc_t_{region}_{cat}")
 
 
-_t_dl, _t_discover, _t_hist, _t_insights, _t_arch, _t_clean = st.tabs([
+# =========================================================================== #
+#  ASSISTANT  (a real chatbot with saved history — mirrors the mobile assistant)
+# =========================================================================== #
+def _assistant_run(prompt, history):
+    """One assistant turn -> (reply_text, dl_url, dl_title). Downloads happen
+    immediately (conversational) and are tracked by url so the chat can show
+    progress and play them inline."""
+    if not st.session_state.get("ai_on"):
+        return ("⚠️ Add your AI key in the sidebar → **AI Settings** to use the assistant.",
+                None, None)
+    plan = ai.agent_plan(prompt, context=history[-6:]) or {}
+    action = plan.get("action")
+    is_aud = str(plan.get("fmt", "mp3")).lower() != "mp4"
+    fmt = "audio" if is_aud else "video"
+    quality = None if is_aud else plan.get("quality", "Best Available")
+    flabel = "MP3" if is_aud else f"MP4 {plan.get('quality', '')}".strip()
+
+    def _job(url, title):
+        return {"url": url, "title": title, "fmt": fmt, "quality": quality, "audio_codec": "mp3"}
+
+    if action == "help":
+        return (plan.get("answer") or "I can download a song or video, grab a whole channel, "
+                "or explain a feature — just ask. e.g. *download Sauti Sol Melanin as mp3*.",
+                None, None)
+    if action == "channel" and plan.get("url"):
+        try:
+            res = dl.list_media(plan["url"], cookiefile)
+            n = enqueue([_job(e["url"], e["title"]) for e in res["entries"]], downloads.LANE_BATCH)
+            return (f"📦 Queued **{n}** videos from *{res['title']}* as {flabel} — "
+                    "they're downloading below.", None, None)
+        except Exception as e:  # noqa: BLE001
+            return (f"❌ I couldn't read that channel — {e}", None, None)
+    if action == "download" and plan.get("url"):
+        title = plan.get("query") or plan["url"]
+        enqueue([_job(plan["url"], title)], downloads.LANE_NOW)
+        return (f"⬇️ Downloading **{title}** as {flabel}…", plan["url"], title)
+    # search -> grab the top match, conversationally (like the phone)
+    q = plan.get("query") or prompt
+    try:
+        results = dl.search(q, 1, cookiefile)
+    except Exception:  # noqa: BLE001
+        results = None
+    if results:
+        r = results[0]
+        enqueue([_job(r["url"], r["title"])], downloads.LANE_NOW)
+        return (f"🔎 Found **{r['title']}** — downloading as {flabel}…", r["url"], r["title"])
+    return (f"😕 I couldn't find “{q}”. Try another name, or paste a direct link.", None, None)
+
+
+def _render_chat_download(url, idx):
+    """Show a chat-initiated download's live status + an inline player when done."""
+    job = next((j for j in reversed(downloads.get_manager().snapshot()) if j.url == url), None)
+    if not job:
+        return
+    if job.status in ("queued", "downloading"):
+        p = float(job.progress or 0.0)
+        frac = p / 100.0 if p > 1 else p
+        st.progress(min(1.0, max(0.0, frac)),
+                    text=f"{job.status}…" + (f" {int(frac * 100)}%" if frac else ""))
+    elif job.status == "done" and job.result:
+        path = job.result
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"):
+                st.video(path)
+            else:
+                st.audio(path)
+        except Exception:  # noqa: BLE001
+            st.caption("✅ Downloaded.")
+        if st.button("📂 Show in folder", key=f"chat_open_{idx}"):
+            open_and_select(path)
+    elif job.status == "error":
+        st.error(f"Download failed — {job.error or 'unknown error'}")
+
+
+def assistant_panel():
+    """ChatGPT-style assistant: a list of saved chats + a conversation that can
+    download (and play) media inline, remembering context. Mirrors the mobile app."""
+    if "chat_loaded" not in st.session_state:
+        sessions, current = chats.load()
+        st.session_state["chat_sessions"] = sessions
+        st.session_state["chat_current"] = current
+        st.session_state["chat_loaded"] = True
+    sessions = st.session_state["chat_sessions"]
+
+    def _cur():
+        return next((s for s in sessions if s["id"] == st.session_state.get("chat_current")), None)
+
+    if _cur() is None:
+        if not sessions:
+            sessions.insert(0, chats.new_session())
+        st.session_state["chat_current"] = sessions[0]["id"]
+
+    left, main = st.columns([1, 3.2], gap="medium")
+
+    with left:
+        if st.button("➕  New chat", use_container_width=True, type="primary"):
+            s = chats.new_session()
+            sessions.insert(0, s)
+            st.session_state["chat_current"] = s["id"]
+            chats.save(sessions, s["id"])
+            st.rerun()
+        st.caption("HISTORY")
+        for s in sessions:
+            active = s["id"] == st.session_state["chat_current"]
+            label = ("🟣 " if active else "💬 ") + (s["title"] or "New chat")[:26]
+            if st.button(label, key=f"chat_sel_{s['id']}", use_container_width=True):
+                st.session_state["chat_current"] = s["id"]
+                chats.save(sessions, s["id"])
+                st.rerun()
+        if sessions:
+            st.divider()
+            if st.button("🗑️  Clear all chats", use_container_width=True):
+                chats.clear()
+                for k in ("chat_loaded", "chat_sessions", "chat_current"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+
+    with main:
+        if not st.session_state.get("ai_on"):
+            st.info("🤖 Add your AI key in the sidebar → **AI Settings** to chat.")
+        cur = _cur()
+        for i, m in enumerate(cur["messages"]):
+            with st.chat_message("user" if m.get("user") else "assistant"):
+                st.markdown(m.get("text", ""))
+                if not m.get("user") and m.get("url"):
+                    _render_chat_download(m["url"], i)
+        if not cur["messages"]:
+            st.caption("👋 Ask me to download a song or video, grab a whole channel, or how a "
+                       "feature works. I remember the conversation in this chat.")
+
+        with st.form("asst_form", clear_on_submit=True):
+            fc = st.columns([6, 1])
+            prompt = fc[0].text_input("Message", label_visibility="collapsed",
+                                      placeholder="Message the assistant — e.g. download Sauti Sol Melanin as mp3")
+            sent = fc[1].form_submit_button("Send ➤", use_container_width=True, type="primary")
+        if sent and prompt.strip():
+            history = list(cur["messages"])
+            cur["messages"].append({"user": True, "text": prompt.strip()})
+            if (cur["title"] or "New chat") in ("New chat", ""):
+                cur["title"] = prompt.strip()[:40]
+            reply, url, title = _assistant_run(prompt.strip(), history)
+            cur["messages"].append({"user": False, "text": reply, "url": url, "title": title})
+            chats.save(sessions, st.session_state["chat_current"])
+            st.rerun()
+
+
+_t_dl, _t_discover, _t_assistant, _t_hist, _t_insights, _t_arch, _t_clean = st.tabs([
     "⬇️  Download",
     "🔭  Discover",
+    "🤖  Assistant",
     f"🕓  History ({len(all_hist)})",
     "📊  Insights",
     "🗄️  Archive",
@@ -630,10 +779,12 @@ with _t_discover:
     discover_panel()
     downloads_panel()
 
+with _t_assistant:
+    assistant_panel()
+    downloads_panel()
+
 with _t_dl:
     _mode_opts = ["🔗 Single link", "📺 Channel / Profile", "📚 Bulk (many links)"]
-    if st.session_state.get("ai_on"):
-        _mode_opts.append("🤖 Assistant")
     mode = st.radio("Mode", _mode_opts, horizontal=True)
 
     # =========================================================================== #

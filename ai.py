@@ -289,7 +289,7 @@ def cached_analysis():
 # --------------------------------------------------------------------------- #
 # Wave C: natural-language assistant + troubleshooting
 # --------------------------------------------------------------------------- #
-def agent_plan(instruction):
+def agent_plan(instruction, context=None):
     """Turn a plain-language request into a structured action plan the app can
     run. Returns a dict (or None). Fields:
       action: 'download' | 'search' | 'channel' | 'help'
@@ -300,6 +300,12 @@ def agent_plan(instruction):
       count: how many results to fetch for a search (1-10)
       answer: a helpful reply if action is 'help', else null
     """
+    ctx_txt = ""
+    if context:
+        lines = [f"{'User' if m.get('user') else 'Assistant'}: {m.get('text', '')}"
+                 for m in context[-6:] if m.get("text")]
+        if lines:
+            ctx_txt = "Recent conversation for context:\n" + "\n".join(lines) + "\n\n"
     prompt = (
         "You are the built-in assistant of a media downloader app (YouTube, X, "
         "TikTok, etc.). Convert the user's request into a JSON action plan. "
@@ -311,7 +317,7 @@ def agent_plan(instruction):
         "quality ('Best Available' default, or '720p'/'480p'); count (1-10, how "
         "many search results, default 1); answer (a short helpful reply when "
         "action is 'help', else null). Return ONLY the JSON object.\n\n"
-        f"User: {instruction}")
+        f"{ctx_txt}User: {instruction}")
     try:
         data = _extract_json(_chat(prompt, max_tokens=500))
     except Exception:  # noqa: BLE001
