@@ -177,10 +177,24 @@ def build_payload():
         "customers_cumulative": cust_cum,
         "expiration_forecast": [{"label": b[0], "value": b[1]} for b in buckets],
     }
+
+    # Revenue grouped by how customers paid (M-Pesa / Cash / Bank / …).
+    pay_rev = {}
+    for r in enriched:
+        k = (r.get("payment") or "").strip() or "Unknown"
+        d = pay_rev.setdefault(k, {"amount": 0.0, "count": 0})
+        d["amount"] += r["amount"]
+        d["count"] += 1
+    payment_breakdown = sorted(
+        ({"method": k, "amount": round(v["amount"], 2), "count": v["count"]}
+         for k, v in pay_rev.items()),
+        key=lambda x: x["amount"], reverse=True)
+
     return {
         "machine_id": lic.get_machine_id(),
         "using_dev_secret": lic.using_dev_secret(),
         "durations": DURATIONS, "kpis": kpis, "charts": charts,
+        "payment_breakdown": payment_breakdown,
         "customers": customers,
     }
 
@@ -306,6 +320,20 @@ class Handler(BaseHTTPRequestHandler):
             fmt = (q.get("fmt", ["csv"])[0] or "csv").lower()
             status, body = do_export(fmt)
             self._send(status, body)
+            return
+        if path == "/api/open":
+            # Open a WhatsApp link in the system browser (1-tap renewal reminder).
+            # Restricted to WhatsApp hosts so the local tool can't be made to open
+            # anything arbitrary.
+            url = parse_qs(urlparse(self.path).query).get("url", [""])[0] or ""
+            if url.startswith("https://wa.me/") or url.startswith("https://api.whatsapp.com/"):
+                try:
+                    os.startfile(url)  # noqa: S606
+                except Exception:  # noqa: BLE001
+                    pass
+                self._send(200, {"ok": True})
+            else:
+                self._send(400, {"ok": False, "error": "Blocked URL"})
             return
         self._send(404, {"error": "not found"})
 

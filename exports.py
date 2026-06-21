@@ -11,7 +11,6 @@ viewer — not a "notepad" dump.
 """
 
 import datetime
-import struct
 import zipfile
 from pathlib import Path
 

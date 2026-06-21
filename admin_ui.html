@@ -402,9 +402,9 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 .tpl-row{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
 .tpl-hint{font-size:12px;color:var(--text-3)}
 /* danger button + zone */
-.btn.danger{background:var(--danger-soft);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,transparent)}
-.btn.danger:hover{background:color-mix(in srgb,var(--danger) 24%,transparent);color:var(--danger)}
-.danger-zone{margin-top:22px;border:1px solid color-mix(in srgb,var(--danger) 30%,transparent);background:var(--danger-soft)}
+.btn.danger{background:var(--danger-soft);color:var(--danger);border-color:rgba(251,111,112,.35)}
+.btn.danger:hover{background:rgba(251,111,112,.24);color:var(--danger)}
+.danger-zone{margin-top:22px;border:1px solid rgba(251,111,112,.32);background:var(--danger-soft)}
 .danger-zone .dz-title{display:flex;align-items:center;gap:8px;font-weight:650;color:var(--danger);margin-bottom:12px}
 .danger-zone .dz-title svg{width:16px;height:16px}
 .danger-zone .dz-row{display:flex;align-items:center;gap:18px;justify-content:space-between;flex-wrap:wrap}
@@ -420,6 +420,20 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 .modal-card p{font-size:13.5px;color:var(--text-2);line-height:1.5;margin-bottom:18px}
 .modal-card #dm-pin{text-align:center;letter-spacing:8px;font-size:20px;font-weight:600;margin-bottom:18px}
 .modal-actions{display:flex;gap:10px;justify-content:center}
+/* revenue by payment method */
+.pay-card{margin-top:18px}
+.pay-list{display:flex;flex-direction:column;gap:11px;margin-top:8px}
+.pay-row{display:grid;grid-template-columns:140px 1fr auto;align-items:center;gap:14px}
+.pay-meth{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.pay-meth .pay-n{font-size:11px;color:var(--text-3);background:var(--surface-2);padding:1px 8px;border-radius:20px}
+.pay-bar{height:9px;border-radius:6px;background:var(--surface-2);overflow:hidden}
+.pay-bar>div{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--primary),var(--accent))}
+.pay-amt{font-size:13px;font-weight:650;font-variant-numeric:tabular-nums}
+.muted{color:var(--text-3);font-size:13px}
+.hidden{display:none!important}
+.mt8{margin-top:8px}
+.paste-wrap{margin-bottom:16px}
+.paste-box{min-height:92px}
 @keyframes toastIn{from{opacity:0;transform:translateY(14px) scale(.95)}to{opacity:1;transform:none}}
 .toast.out{animation:toastOut .3s var(--ease) forwards}
 @keyframes toastOut{to{opacity:0;transform:translateY(10px);height:0;margin:0;padding-top:0;padding-bottom:0}}
@@ -505,6 +519,10 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
             <div class="chart-wrap" id="chart-customers"></div>
           </div>
         </div>
+        <div class="card pay-card">
+          <div class="ch-head"><div><div class="ch-title">Revenue by payment method</div><div class="ch-sub">Where your money comes from</div></div></div>
+          <div id="pay-breakdown" class="pay-list"></div>
+        </div>
       </section>
 
       <!-- ===== CUSTOMERS ===== -->
@@ -563,7 +581,12 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 
             <div class="tpl-row">
               <button class="btn sm" type="button" onclick="copyTemplate()"><span class="ic-copy"></span> Copy request template</button>
-              <span class="tpl-hint">Send it to the customer to fill in — name, phone, email &amp; Device ID — then paste their reply back here.</span>
+              <button class="btn sm" type="button" onclick="togglePaste()"><span class="ic-download"></span> Paste customer reply</button>
+              <span class="tpl-hint">Send the template; when they reply, paste it back and the fields fill themselves.</span>
+            </div>
+            <div id="paste-wrap" class="paste-wrap hidden">
+              <textarea class="inp paste-box" id="paste-box" placeholder="Paste the customer's reply here (Name / Phone / Email / Device ID)…"></textarea>
+              <div class="mt8"><button class="btn sm primary" type="button" onclick="pasteFill()">Fill the form</button></div>
             </div>
 
             <div class="field-row">
@@ -603,7 +626,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
                 </select>
               </div>
             </div>
-            <div class="field" id="ref-field" style="display:none">
+            <div class="field hidden" id="ref-field">
               <label class="fl" id="ref-label">Transaction code</label>
               <input class="inp" id="f-reference" placeholder="e.g. M-Pesa code SGH7XK9LMN" style="font-family:var(--mono)" />
             </div>
@@ -693,6 +716,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
       <button class="btn primary sm" onclick="renewFromDrawer()"><span class="ic-renew"></span> Renew License</button>
       <button class="btn sm" onclick="copyText(window._drawerMid,'Machine ID copied')"><span class="ic-copy"></span> Machine ID</button>
       <button class="btn sm" onclick="copyText(window._drawerLast,'Last license copied')"><span class="ic-copy"></span> Last Key</button>
+      <button class="btn sm" onclick="waRemind()"><span class="ic-renew"></span> WhatsApp reminder</button>
     </div>
   </div>
   <div class="drawer-body">
@@ -1201,8 +1225,8 @@ function onPaymentChange(){
   const wrap=$('#ref-field'), lbl=$('#ref-label'), inp=$('#f-reference');
   const map={'M-Pesa':'M-Pesa transaction code','Bank Transfer':'Bank reference / slip no.',
     'Card':'Card reference','PayPal':'PayPal transaction ID','Other':'Payment reference'};
-  if(m==='Cash'){ wrap.style.display='none'; inp.value=''; }
-  else { wrap.style.display=''; lbl.textContent=map[m]||'Transaction code';
+  if(m==='Cash'){ wrap.classList.add('hidden'); inp.value=''; }
+  else { wrap.classList.remove('hidden'); lbl.textContent=map[m]||'Transaction code';
     inp.placeholder='Enter the '+(map[m]||'reference').toLowerCase(); }
 }
 
@@ -1212,7 +1236,7 @@ function dangerClear(){
   _dangerStep=1;
   $('#dm-title').textContent='Clear all users?';
   $('#dm-text').textContent='This permanently deletes EVERY customer & license record (e.g. to wipe your test data before going live). A timestamped backup CSV is saved first.';
-  $('#dm-pin').style.display='none'; $('#dm-pin').value='';
+  $('#dm-pin').classList.add('hidden'); $('#dm-pin').value='';
   $('#dm-confirm').textContent='Continue';
   $('#danger-modal').classList.add('show');
 }
@@ -1221,7 +1245,7 @@ function dangerNext(){
     _dangerStep=2;
     $('#dm-title').textContent='Are you absolutely sure?';
     $('#dm-text').textContent='This cannot be undone. Enter your PIN to permanently clear all data.';
-    $('#dm-pin').style.display=''; $('#dm-confirm').textContent='Clear everything';
+    $('#dm-pin').classList.remove('hidden'); $('#dm-confirm').textContent='Clear everything';
     setTimeout(()=>$('#dm-pin').focus(),50);
     return;
   }
@@ -1241,6 +1265,64 @@ async function doClear(){
 }
 function closeDanger(){ $('#danger-modal').classList.remove('show'); _dangerStep=0; }
 
+/* ===== Paste-to-fill: parse the customer's reply into the form ===== */
+function togglePaste(){ const open=!$('#paste-wrap').classList.toggle('hidden'); if(open) $('#paste-box').focus(); }
+function parseReply(text){
+  const lines=text.split(/\r?\n/);
+  const grab=re=>{ for(const ln of lines){ const m=ln.match(re); if(m&&m[1]&&m[1].trim()) return m[1].trim(); } return ''; };
+  const mid=text.match(/UMD-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}/i);
+  const email=text.match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/);
+  return {
+    name: grab(/name\s*[:\-]\s*(.+)/i),
+    phone: grab(/(?:phone|whatsapp|number|tel|mobile)\s*[:\-]\s*(.+)/i),
+    email: email?email[0]:'',
+    mid: mid?mid[0].toUpperCase():grab(/(?:device|machine)\s*(?:id)?\s*[:\-]\s*(.+)/i),
+  };
+}
+function pasteFill(){
+  const text=$('#paste-box').value||'';
+  if(!text.trim()){ toast('Paste the customer reply first','err'); return; }
+  const p=parseReply(text); let n=0;
+  if(p.name){ $('#f-customer').value=p.name; n++; }
+  if(p.phone){ $('#f-phone').value=p.phone; n++; }
+  if(p.email){ $('#f-email').value=p.email; n++; }
+  if(p.mid){ $('#f-machine').value=p.mid.toUpperCase(); n++; }
+  updatePreview();
+  if(n){ toast('Filled '+n+' field(s) from the reply'); $('#paste-wrap').classList.add('hidden'); $('#paste-box').value=''; }
+  else toast("Couldn't find details — check the reply format",'err');
+}
+
+/* ===== WhatsApp renewal reminder (opens in the system browser) ===== */
+function waNumber(phone){
+  let d=String(phone||'').replace(/[^0-9]/g,'');
+  if(!d) return '';
+  if(d.startsWith('0')) d='254'+d.slice(1);   // Kenya local -> international
+  return d;
+}
+async function waRemind(){
+  const c=window._drawerCust; if(!c) return;
+  const num=waNumber(c.phone);
+  if(!num){ toast('No phone number saved for this customer','err'); return; }
+  const msg=`Hi ${c.customer||''}, your Universal Media Downloader license expires on ${fmtDate(c.expires)} (${c.human_left}). Reply to renew it. — BAZIQ HUE`;
+  const url='https://wa.me/'+num+'?text='+encodeURIComponent(msg);
+  try{ const r=await fetch('/api/open?url='+encodeURIComponent(url)); if((await r.json()).ok){ toast('Opening WhatsApp…'); return; } }catch(e){}
+  copyText(url,'WhatsApp link copied — open it in your browser');
+}
+
+/* ===== Revenue by payment method ===== */
+function renderPayments(){
+  const el=$('#pay-breakdown'); if(!el) return;
+  const data=state.payment_breakdown||[];
+  if(!data.length){ el.innerHTML='<div class="muted">No payments recorded yet.</div>'; return; }
+  const max=Math.max(...data.map(d=>d.amount),1);
+  el.innerHTML=data.map(d=>`
+    <div class="pay-row">
+      <div class="pay-meth">${esc(d.method)}<span class="pay-n">${d.count}</span></div>
+      <div class="pay-bar"><div style="width:${Math.max(4,Math.round(d.amount/max*100))}%"></div></div>
+      <div class="pay-amt">${moneyFull(d.amount)}</div>
+    </div>`).join('');
+}
+
 /* ============================ BOOTSTRAP ============================ */
 async function refresh(){
   const res=await fetch('/api/bootstrap'); const data=await res.json();
@@ -1249,7 +1331,7 @@ async function refresh(){
   $('#my-machine-id').textContent=state.machine_id||'—';
   $('#nav-cust').textContent=state.customers.length;
   $('#dev-banner').classList.toggle('show', !!state.using_dev_secret);
-  renderKPIs(); renderChips(); renderTable(); renderCharts();
+  renderKPIs(); renderChips(); renderTable(); renderCharts(); renderPayments();
   if(firstLoad){ fillDurations(); onDurationChange(); updatePreview(); onPaymentChange(); }
 }
 async function init(){
@@ -1264,10 +1346,10 @@ init();
     <div class="modal-ic"><span class="ic-warn"></span></div>
     <h3 id="dm-title">Clear all users?</h3>
     <p id="dm-text">This permanently deletes every customer &amp; license record. A timestamped backup is saved first.</p>
-    <input class="inp" id="dm-pin" type="password" inputmode="numeric" placeholder="• • • •" style="display:none" onkeydown="if(event.key==='Enter')dangerNext()" />
+    <input class="inp hidden" id="dm-pin" type="password" inputmode="numeric" placeholder="• • • •" onkeydown="if(event.key==='Enter')dangerNext()" />
     <div class="modal-actions">
-      <button class="btn" onclick="closeDanger()">Cancel</button>
-      <button class="btn danger" id="dm-confirm" onclick="dangerNext()">Continue</button>
+      <button class="btn" type="button" onclick="closeDanger()">Cancel</button>
+      <button class="btn danger" type="button" id="dm-confirm" onclick="dangerNext()">Continue</button>
     </div>
   </div>
 </div>
