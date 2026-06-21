@@ -27,6 +27,7 @@ import streamlit as st
 
 import ai
 import archive
+import artists
 import branding
 import chats
 import discover
@@ -476,6 +477,101 @@ def _art_for(path):
         return _cover_art(path, os.path.getmtime(path))
     except Exception:  # noqa: BLE001
         return None
+
+
+def _lib_placeholder(fmt):
+    return ("<div style='aspect-ratio:1;border-radius:12px;display:flex;align-items:center;"
+            "justify-content:center;font-size:34px;background:linear-gradient(135deg,#2a2342,#171128);'>"
+            f"{'🎬' if fmt == 'video' else '🎵'}</div>")
+
+
+@st.cache_data(show_spinner=False, max_entries=5000)
+def _artists_cached(path, _sig):
+    """All artists for a file (cached per path+mtime) — see artists.artists_of."""
+    return artists.artists_of(path)
+
+
+def _lib_song_grid(items, key_prefix, cols=6):
+    """Grid of media cards (cover art + name + meta + open), lazy 'show more'."""
+    items = sorted(items, key=lambda m: m.get("mtime", 0), reverse=True)
+    show = st.session_state.get(key_prefix + "_show", 24)
+    page = items[:show]
+    for s in range(0, len(page), cols):
+        cs = st.columns(cols)
+        for col, it in zip(cs, page[s:s + cols]):
+            with col:
+                art = _art_for(it["path"])
+                if art:
+                    st.image(art, use_container_width=True)
+                else:
+                    st.markdown(_lib_placeholder(it["fmt"]), unsafe_allow_html=True)
+                nm = os.path.splitext(os.path.basename(it["path"]))[0]
+                st.markdown(f"**{nm[:34]}**")
+                st.caption(f"{it['ext'][1:].upper()} · {fmt_size(it['size'])}")
+                if st.button("📂 Open", key=f"{key_prefix}_open_{it['path']}", use_container_width=True):
+                    open_and_select(it["path"])
+    if len(items) > show:
+        if st.button(f"⬇️ Show more ({len(items) - show} left)", key=f"{key_prefix}_more",
+                     use_container_width=True):
+            st.session_state[key_prefix + "_show"] = show + 24
+            st.rerun()
+
+
+def _lib_artists_view(media, q):
+    """Spotify-style Artists: each artist's image (a track's cover art) + track
+    count; click to drill into their songs. Collabs count for EACH artist; case
+    variants merge — via artists.py (mobile parity)."""
+    audio = [m for m in media if m["fmt"] == "audio"]
+    counts, rep = {}, {}
+    for m in audio:
+        for a in _artists_cached(m["path"], m.get("mtime", 0)):
+            counts[a] = counts.get(a, 0) + 1
+            k = artists.artist_key(a)
+            if k and k not in rep:
+                rep[k] = m["path"]
+
+    open_artist = st.session_state.get("lib_artist")
+    if open_artist:
+        if st.button("← All artists", key="lib_artist_back"):
+            st.session_state.pop("lib_artist", None)
+            st.rerun()
+        st.markdown(f"### 🎤 {open_artist}")
+        ak = artists.artist_key(open_artist)
+        songs = [m for m in audio
+                 if ak in {artists.artist_key(x) for x in _artists_cached(m["path"], m.get("mtime", 0))}]
+        st.caption(f"{len(songs)} track(s)")
+        _lib_song_grid(songs, "libart")
+        return
+
+    collapsed = artists.collapse_artist_counts(counts)
+    if q.strip():
+        ql = q.strip().lower()
+        collapsed = [(n, c) for n, c in collapsed if ql in n.lower()]
+    collapsed = sorted(collapsed, key=lambda x: (-x[1], x[0].lower()))
+    st.caption(f"{len(collapsed)} artist(s)")
+    cols_n = 6
+    show = st.session_state.get("lib_art_show", 30)
+    page = collapsed[:show]
+    for s in range(0, len(page), cols_n):
+        cs = st.columns(cols_n)
+        for col, (name, n) in zip(cs, page[s:s + cols_n]):
+            with col:
+                rp = rep.get(artists.artist_key(name))
+                art = _art_for(rp) if rp else None
+                if art:
+                    st.image(art, use_container_width=True)
+                else:
+                    st.markdown(_lib_placeholder("audio"), unsafe_allow_html=True)
+                st.markdown(f"**{name[:26]}**")
+                st.caption(f"{n} track(s)")
+                if st.button("Open", key=f"libartist_{artists.artist_key(name)}", use_container_width=True):
+                    st.session_state["lib_artist"] = name
+                    st.rerun()
+    if len(collapsed) > show:
+        if st.button(f"⬇️ Show more ({len(collapsed) - show} left)", key="lib_art_more",
+                     use_container_width=True):
+            st.session_state["lib_art_show"] = show + 30
+            st.rerun()
 
 
 @st.fragment(run_every=2.0)  # numeric seconds — avoids Streamlit importing pandas
@@ -1814,15 +1910,19 @@ with _t_clean:
                 _scan_roots.add(_d)
     scan_folders = library.collapse_folders(_scan_roots)
 
-    # ---- Visual media browser (real cover-art cards) --------------------- #
+    # ---- Visual media browser (cover-art cards, Spotify-style) ----------- #
     _media = library.media_files(scan_folders)
     st.markdown("#### 🎵 Your library")
     _lc = st.columns([3, 2])
     _lib_q = _lc[0].text_input("Filter", key="lib_filter", label_visibility="collapsed",
                                placeholder="🔎 Filter by name…")
-    _lib_view = _lc[1].radio("View", ["All", "Songs", "Videos"], horizontal=True,
+    _lib_view = _lc[1].radio("View", ["All", "Songs", "Videos", "Artists"], horizontal=True,
                              key="lib_view", label_visibility="collapsed")
-    if _media:
+    if not _media:
+        st.caption("No media yet — download something and it'll appear here with its artwork.")
+    elif _lib_view == "Artists":
+        _lib_artists_view(_media, _lib_q)
+    else:
         _items = _media
         if _lib_view == "Songs":
             _items = [m for m in _items if m["fmt"] == "audio"]
@@ -1831,38 +1931,8 @@ with _t_clean:
         if _lib_q.strip():
             _ql = _lib_q.strip().lower()
             _items = [m for m in _items if _ql in os.path.basename(m["path"]).lower()]
-        _items = sorted(_items, key=lambda m: m.get("mtime", 0), reverse=True)
         st.caption(f"{len(_items)} item(s)")
-        _show = st.session_state.get("lib_show", 24)
-        _cols_n = 6
-        _page = _items[:_show]
-        for _s in range(0, len(_page), _cols_n):
-            _cs = st.columns(_cols_n)
-            for _col, _it in zip(_cs, _page[_s:_s + _cols_n]):
-                with _col:
-                    _art = _art_for(_it["path"])
-                    if _art:
-                        st.image(_art, use_container_width=True)
-                    else:
-                        st.markdown(
-                            "<div style='aspect-ratio:1;border-radius:12px;display:flex;"
-                            "align-items:center;justify-content:center;font-size:34px;"
-                            "background:linear-gradient(135deg,#2a2342,#171128);'>"
-                            f"{'🎬' if _it['fmt'] == 'video' else '🎵'}</div>",
-                            unsafe_allow_html=True)
-                    _nm = os.path.splitext(os.path.basename(_it["path"]))[0]
-                    st.markdown(f"**{_nm[:34]}**")
-                    st.caption(f"{_it['ext'][1:].upper()} · {fmt_size(_it['size'])}")
-                    if st.button("📂 Open", key=f"lib_open_{_it['path']}",
-                                 use_container_width=True):
-                        open_and_select(_it["path"])
-        if len(_items) > _show:
-            if st.button(f"⬇️ Show more ({len(_items) - _show} left)", key="lib_more",
-                         use_container_width=True):
-                st.session_state["lib_show"] = _show + 24
-                st.rerun()
-    else:
-        st.caption("No media yet — download something and it'll appear here with its artwork.")
+        _lib_song_grid(_items, "lib")
     st.divider()
 
     with st.expander("🔧 Rebuild library index"):
