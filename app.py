@@ -71,9 +71,64 @@ ENFORCE_LICENSE = os.environ.get("UMD_ENFORCE_LICENSE", "0") == "1"
 st.set_page_config(
     page_title="Universal Media Downloader",
     page_icon="⬇️",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# BAZIQ HUE app-icon mark (gradient square + download arrow) — same artwork as mobile.
+_BRAND_SVG = (
+    '<svg width="56" height="56" viewBox="0 0 108 108" xmlns="http://www.w3.org/2000/svg">'
+    '<defs><linearGradient id="umdg" x1="0" y1="0" x2="108" y2="108" gradientUnits="userSpaceOnUse">'
+    '<stop offset="0" stop-color="#7C6CFF"/><stop offset="1" stop-color="#22D3EE"/></linearGradient></defs>'
+    '<rect width="108" height="108" rx="24" fill="url(#umdg)"/>'
+    '<path d="M50,34 L58,34 L58,52 L66,52 L54,68 L42,52 L50,52 Z" fill="#fff"/>'
+    '<path d="M41,73 L67,73 A2,2 0 0 1 67,79 L41,79 A2,2 0 0 1 41,73 Z" fill="#fff"/></svg>')
+
+
+def _inject_brand_css():
+    """Premium BAZIQ HUE styling on top of the dark theme — readable width, brand
+    tabs/buttons, rounded cards, and the gradient hero used on the Home screen."""
+    st.markdown("""
+    <style>
+      #MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { visibility:hidden; height:0; }
+      .block-container { padding-top:1.6rem; padding-bottom:3rem; max-width:1200px; }
+      button[data-baseweb="tab"] { font-weight:600; font-size:14.5px; }
+      [data-baseweb="tab-highlight"] { background-color:#8B6CFF !important; }
+      .stButton > button { border-radius:12px; font-weight:600; transition:all .15s ease; }
+      .stButton > button:hover { border-color:#8B6CFF; transform:translateY(-1px); }
+      [data-testid="stMetric"] { background:#171128; border:1px solid #2a2342; border-radius:16px; padding:14px 18px; }
+      .stTextInput input, .stTextArea textarea { border-radius:10px; }
+      h1, h2, h3 { letter-spacing:-.3px; }
+      .umd-hero { background:linear-gradient(125deg,#7C5CFF 0%,#B44DFF 48%,#18C8FF 100%);
+        border-radius:24px; padding:26px 30px; color:#fff; margin:2px 0 18px;
+        box-shadow:0 16px 44px -14px rgba(124,92,255,.55); }
+      .umd-hero h1 { font-size:30px; margin:0; color:#fff; letter-spacing:-.5px; }
+      .umd-hero p { opacity:.95; margin:6px 0 0; font-size:15px; }
+      .umd-chip { display:inline-block; background:rgba(255,255,255,.18); border:1px solid rgba(255,255,255,.32);
+        padding:5px 13px; border-radius:999px; font-size:12.5px; font-weight:600; margin:12px 8px 0 0; }
+    </style>""", unsafe_allow_html=True)
+
+
+_inject_brand_css()
+
+
+def _home_hero():
+    st.markdown(f"""
+    <div class="umd-hero">
+      <div style="display:flex;align-items:center;gap:16px;">
+        {_BRAND_SVG}
+        <div>
+          <h1>Universal Media Downloader</h1>
+          <p>Download anything · organise it beautifully · play it anywhere — by <b>BAZIQ HUE</b></p>
+        </div>
+      </div>
+      <div>
+        <span class="umd-chip">🎵 MP3 &amp; 🎬 MP4</span>
+        <span class="umd-chip">🔭 Discover</span>
+        <span class="umd-chip">🤖 AI Assistant</span>
+        <span class="umd-chip">📚 Smart library</span>
+      </div>
+    </div>""", unsafe_allow_html=True)
 
 DEFAULT_DOWNLOAD_DIR = str(Path.home() / "Downloads")
 
@@ -765,7 +820,8 @@ def assistant_panel():
             st.rerun()
 
 
-_t_dl, _t_discover, _t_assistant, _t_hist, _t_insights, _t_arch, _t_clean = st.tabs([
+_t_home, _t_dl, _t_discover, _t_assistant, _t_hist, _t_insights, _t_arch, _t_clean = st.tabs([
+    "🏠  Home",
     "⬇️  Download",
     "🔭  Discover",
     "🤖  Assistant",
@@ -774,6 +830,43 @@ _t_dl, _t_discover, _t_assistant, _t_hist, _t_insights, _t_arch, _t_clean = st.t
     "🗄️  Archive",
     "🗂️  Library & Cleanup",
 ])
+
+with _t_home:
+    _home_hero()
+    _on_disk = sum(1 for _h in all_hist if _h.get("path") and os.path.isfile(_h["path"]))
+    _size = sum((_h.get("size") or 0) for _h in all_hist)
+    _c = downloads.get_manager().counts()
+    _m = st.columns(4)
+    _m[0].metric("Downloads", len(all_hist))
+    _m[1].metric("In your library", _on_disk)
+    _m[2].metric("Total size", fmt_size(_size))
+    _m[3].metric("In queue", _c.get("active", 0) + _c.get("queued", 0))
+
+    st.markdown("#### ⚡ Quick download")
+    _q = st.columns([6, 1, 1])
+    _qurl = _q[0].text_input("Quick link", key="home_q", label_visibility="collapsed",
+                             placeholder="Paste any link — YouTube, TikTok, X, Instagram…")
+    if _q[1].button("🎵 MP3", key="home_mp3", use_container_width=True) and _qurl.strip():
+        enqueue([{"url": _qurl.strip(), "fmt": "audio", "title": ""}], downloads.LANE_NOW)
+        st.toast("Queued MP3 — see the queue below.")
+    if _q[2].button("🎬 MP4", key="home_mp4", use_container_width=True) and _qurl.strip():
+        enqueue([{"url": _qurl.strip(), "fmt": "video", "title": ""}], downloads.LANE_NOW)
+        st.toast("Queued MP4 — see the queue below.")
+
+    st.markdown("#### 🕘 Recent")
+    _recent = sorted(all_hist, key=lambda h: h.get("ts", ""), reverse=True)[:6]
+    if not _recent:
+        st.caption("Nothing yet — paste a link above, or open the 🔭 Discover tab.")
+    for _i, _h in enumerate(_recent):
+        _rc = st.columns([6, 2, 1.4])
+        _t = (_h.get("title") or _h.get("filename") or _h.get("url", ""))[:64]
+        _rc[0].markdown(f"{'🎬' if _h.get('fmt') == 'video' else '🎵'} **{_t}**")
+        _rc[1].caption(when_label(_h.get("ts", "")) or "")
+        _p = _h.get("path", "")
+        if _p and os.path.isfile(_p):
+            if _rc[2].button("📂 Open", key=f"home_open_{_i}", use_container_width=True):
+                open_and_select(_p)
+    downloads_panel()
 
 with _t_discover:
     discover_panel()

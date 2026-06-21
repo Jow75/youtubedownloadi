@@ -1,0 +1,10 @@
+# BAZIQ HUE desktop theme — the desktop sibling of the mobile app's dark
+# violet→cyan identity. Applies to the Universal Media Downloader Streamlit app.
+[theme]
+base = "dark"
+primaryColor = "#8B6CFF"
+backgroundColor = "#0D0A1A"
+secondaryBackgroundColor = "#171128"
+textColor = "#ECEAF6"
+linkColor = "#9FE6FF"
+font = "sans serif"
