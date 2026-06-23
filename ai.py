@@ -96,8 +96,9 @@ def load_settings():
         return {}
 
 
-def save_settings(provider=None, model=None, key=None):
-    """Persist AI settings. `key` is encrypted before writing; pass "" to clear."""
+def save_settings(provider=None, model=None, key=None, enabled=None):
+    """Persist AI settings. `key` is encrypted before writing; pass "" to clear.
+    `enabled` remembers the 'Enable AI features' toggle across restarts."""
     with _LOCK:
         d = load_settings()
         if provider is not None:
@@ -106,10 +107,17 @@ def save_settings(provider=None, model=None, key=None):
             d["model"] = model
         if key is not None:
             d["key"] = _protect(key) if key else ""
+        if enabled is not None:
+            d["enabled"] = bool(enabled)
         try:
             _settings_file().write_text(json.dumps(d), encoding="utf-8")
         except OSError:
             pass
+
+
+def is_enabled():
+    """Whether AI features are turned on — persisted, so it survives a restart."""
+    return bool(load_settings().get("enabled", False))
 
 
 def clear_key():

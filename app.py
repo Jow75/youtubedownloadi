@@ -110,6 +110,11 @@ def _inject_brand_css():
       .umd-hero p { opacity:.95; margin:6px 0 0; font-size:15px; }
       .umd-chip { display:inline-block; background:rgba(255,255,255,.18); border:1px solid rgba(255,255,255,.32);
         padding:5px 13px; border-radius:999px; font-size:12.5px; font-weight:600; margin:12px 8px 0 0; }
+      /* Assistant — ChatGPT/Claude-style chat bubbles + history list */
+      [data-testid="stChatMessage"] { background:rgba(23,17,40,.55); border:1px solid #241c3e;
+        border-radius:16px; padding:10px 15px; margin-bottom:9px; }
+      [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p { font-size:14.5px; line-height:1.55; }
+      [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p:last-child { margin-bottom:0; }
     </style>""", unsafe_allow_html=True)
 
 
@@ -269,10 +274,15 @@ with st.sidebar:
             mk = ai.masked_key()
             st.caption((f"Key `{mk}`" if mk else "Using a developer key")
                        + f"  ·  {pinfo['label']}  ·  model `{ai.current_model()}`")
+            if "ai_on" not in st.session_state:
+                st.session_state.ai_on = ai.is_enabled()   # remembered across restarts
+            _prev_on = st.session_state.ai_on
             st.session_state.ai_on = st.checkbox(
-                "Enable AI features", value=st.session_state.get("ai_on", False),
-                help="Turn on Smart Library and other AI tools. Only titles are "
+                "Enable AI features", value=_prev_on,
+                help="Turn on the AI tools. Stays on across restarts. Only titles are "
                      "sent online — never your media files.")
+            if st.session_state.ai_on != _prev_on:
+                ai.save_settings(enabled=st.session_state.ai_on)
         else:
             st.session_state.ai_on = False
             st.info("AI is off. Add an API key to unlock AI features. Your license "
@@ -298,18 +308,21 @@ with st.sidebar:
                 with st.spinner("Checking the key…"):
                     ok, res = ai.validate_key(sel, k)
                 if ok:
-                    ai.save_settings(provider=sel, key=k)
-                    st.success(f"Saved ✓ — {len(res)} models available.")
+                    ai.save_settings(provider=sel, key=k, enabled=True)
+                    st.session_state.ai_on = True
+                    st.success(f"Saved ✓ — {len(res)} models available. AI is now on.")
                     st.rerun()
                 elif "rejected" in str(res).lower():
                     st.error(res)
                 else:
-                    ai.save_settings(provider=sel, key=k)
+                    ai.save_settings(provider=sel, key=k, enabled=True)
+                    st.session_state.ai_on = True
                     st.warning(f"Saved, but couldn't verify right now ({res}). "
                                "It'll be used once you're online.")
                     st.rerun()
         if kc2.button("🗑️ Remove key", use_container_width=True):
             ai.clear_key()
+            ai.save_settings(enabled=False)
             st.session_state.ai_on = False
             st.rerun()
 
@@ -520,9 +533,56 @@ def _artists_cached(path, _sig):
     return artists.artists_of(path)
 
 
-def _lib_song_grid(items, key_prefix, cols=6):
-    """Grid of media cards (cover art + name + meta + open), lazy 'show more'."""
-    items = sorted(items, key=lambda m: m.get("mtime", 0), reverse=True)
+_LIB_SORTS = ["Newest", "Oldest", "A → Z", "Z → A", "Most songs", "Fewest songs"]
+
+
+def _sort_songs(items, sort):
+    if sort == "Oldest":
+        return sorted(items, key=lambda m: m.get("mtime", 0))
+    if sort == "A → Z":
+        return sorted(items, key=lambda m: os.path.basename(m["path"]).lower())
+    if sort == "Z → A":
+        return sorted(items, key=lambda m: os.path.basename(m["path"]).lower(), reverse=True)
+    if sort == "Most songs":            # for songs: biggest files first
+        return sorted(items, key=lambda m: m.get("size", 0), reverse=True)
+    if sort == "Fewest songs":
+        return sorted(items, key=lambda m: m.get("size", 0))
+    return sorted(items, key=lambda m: m.get("mtime", 0), reverse=True)
+
+
+def _sort_artist_rows(rows, sort, recency):
+    def rec(n):
+        return recency.get(artists.artist_key(n), 0)
+    if sort == "Fewest songs":
+        return sorted(rows, key=lambda x: (x[1], x[0].lower()))
+    if sort == "A → Z":
+        return sorted(rows, key=lambda x: x[0].lower())
+    if sort == "Z → A":
+        return sorted(rows, key=lambda x: x[0].lower(), reverse=True)
+    if sort == "Newest":
+        return sorted(rows, key=lambda x: (-rec(x[0]), x[0].lower()))
+    if sort == "Oldest":
+        return sorted(rows, key=lambda x: (rec(x[0]), x[0].lower()))
+    return sorted(rows, key=lambda x: (-x[1], x[0].lower()))
+
+
+def _sort_playlists(pls, sort):
+    if sort == "Fewest songs":
+        return sorted(pls, key=lambda p: (len(p["paths"]), p["name"].lower()))
+    if sort == "A → Z":
+        return sorted(pls, key=lambda p: p["name"].lower())
+    if sort == "Z → A":
+        return sorted(pls, key=lambda p: p["name"].lower(), reverse=True)
+    if sort == "Oldest":
+        return sorted(pls, key=lambda p: p["id"])
+    if sort == "Most songs":
+        return sorted(pls, key=lambda p: (len(p["paths"]), p["name"].lower()), reverse=True)
+    return sorted(pls, key=lambda p: p["id"], reverse=True)   # Newest (id = creation time)
+
+
+def _lib_song_grid(items, key_prefix, sort="Newest", cols=6):
+    """Grid of media cards (cover art + name + duration + play/open), lazy 'show more'."""
+    items = _sort_songs(items, sort)
     show = st.session_state.get(key_prefix + "_show", 24)
     page = items[:show]
     for s in range(0, len(page), cols):
@@ -554,18 +614,21 @@ def _lib_song_grid(items, key_prefix, cols=6):
             st.rerun()
 
 
-def _lib_artists_view(media, q):
+def _lib_artists_view(media, q, sort="Most songs"):
     """Spotify-style Artists: each artist's image (a track's cover art) + track
     count; click to drill into their songs. Collabs count for EACH artist; case
     variants merge — via artists.py (mobile parity)."""
     audio = [m for m in media if m["fmt"] == "audio"]
-    counts, rep = {}, {}
+    counts, rep, recency = {}, {}, {}
     for m in audio:
-        for a in _artists_cached(m["path"], m.get("mtime", 0)):
+        _mt = m.get("mtime", 0)
+        for a in _artists_cached(m["path"], _mt):
             counts[a] = counts.get(a, 0) + 1
             k = artists.artist_key(a)
             if k and k not in rep:
                 rep[k] = m["path"]
+            if k:
+                recency[k] = max(recency.get(k, 0), _mt)
 
     open_artist = st.session_state.get("lib_artist")
     if open_artist:
@@ -584,7 +647,7 @@ def _lib_artists_view(media, q):
     if q.strip():
         ql = q.strip().lower()
         collapsed = [(n, c) for n, c in collapsed if ql in n.lower()]
-    collapsed = sorted(collapsed, key=lambda x: (-x[1], x[0].lower()))
+    collapsed = _sort_artist_rows(collapsed, sort, recency)
     st.caption(f"{len(collapsed)} artist(s)")
     cols_n = 6
     show = st.session_state.get("lib_art_show", 30)
@@ -611,7 +674,7 @@ def _lib_artists_view(media, q):
             st.rerun()
 
 
-def _lib_playlists_view(media):
+def _lib_playlists_view(media, sort="Newest"):
     """User playlists — create, open, add/remove songs, delete. Mirrors mobile."""
     pls = st.session_state.setdefault("desk_playlists", playlists.load())
     by_path = {m["path"]: m for m in media}
@@ -693,9 +756,10 @@ def _lib_playlists_view(media):
         return
     st.caption(f"{len(pls)} playlist(s)")
     _cols_n = 6
-    for _s in range(0, len(pls), _cols_n):
+    _pls_view = _sort_playlists(pls, sort)
+    for _s in range(0, len(_pls_view), _cols_n):
         _cs = st.columns(_cols_n)
-        for _col, _pl in zip(_cs, pls[_s:_s + _cols_n]):
+        for _col, _pl in zip(_cs, _pls_view[_s:_s + _cols_n]):
             with _col:
                 _first = next((p for p in _pl["paths"] if p in by_path), None)
                 _art = _art_for(_first) if _first else None
@@ -1803,66 +1867,6 @@ with _t_hist:
                                              help="Open & highlight"):
                                     open_and_select(it["path"])
 
-    # --- Wave D: semantic search across the library ---------------------------- #
-    if ai_on and all_hist:
-        with st.expander("🔮 Smart Search — find by meaning"):
-            st.caption("Search by what things *are*, not exact words — e.g. "
-                       "*live concert on stage*, *sad love song*, *behind the "
-                       "scenes*. Build the index once (it's cached); then search.")
-            _titles = [h.get("title") or h.get("filename") for h in all_hist]
-            ix1, ix2 = st.columns([3, 1])
-            ix1.caption(f"Indexed **{ai.embeds_count()}** item(s) · "
-                        f"{len(_titles)} in your library.")
-            if ix2.button("⚙️ Build / update index", use_container_width=True):
-                bar = st.progress(0.0)
-                note = st.empty()
-
-                def _ep(d, n, _b=bar, _n=note):
-                    _b.progress(d / max(n, 1))
-                    _n.caption(f"Embedding… {d}/{n}")
-
-                with st.spinner("Indexing your library by meaning… (one-time, cached)"):
-                    ai.build_embeddings(_titles, progress=_ep)
-                note.empty()
-                st.rerun()
-
-            sq = st.text_input("Search by meaning", key="sem_q",
-                               placeholder="e.g. live performance on stage")
-            if sq.strip():
-                with st.spinner("Searching by meaning…"):
-                    try:
-                        results = ai.semantic_search(sq.strip(), _titles, top_k=25)
-                    except Exception as exc:  # noqa: BLE001
-                        results = []
-                        st.error(f"Search failed: {exc}")
-                if not results:
-                    st.info("Nothing indexed yet — click **Build / update index** "
-                            "first.")
-                else:
-                    _by_title = {}
-                    for h in all_hist:
-                        _by_title.setdefault(h.get("title") or h.get("filename"), h)
-                    for t, score in results:
-                        h = _by_title.get(t)
-                        if not h:
-                            continue
-                        on_disk = bool(h.get("path") and os.path.isfile(h["path"]))
-                        r1, r2, r3 = st.columns([7, 1, 1])
-                        r1.markdown(
-                            f"{'🎬' if h.get('fmt') == 'video' else '🎵'} **{t}**  \n"
-                            f"<span style='color:#888;font-size:.8em'>"
-                            f"match {score:.0%} · {h.get('site', '')} · "
-                            f"{fmt_size(h.get('size', 0))}"
-                            f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
-                            unsafe_allow_html=True)
-                        if r2.button("📂", key=f"sem_o_{h['id']}", disabled=not on_disk,
-                                     help="Open & highlight"):
-                            open_and_select(h["path"])
-                        if r3.button("⤓", key=f"sem_r_{h['id']}",
-                                     disabled=not h.get("url"), help="Re-download"):
-                            enqueue([media_job(h)], downloads.LANE_NOW)
-                            st.success(f"⚡ Re-downloading **{t}**.")
-
     if not all_hist:
         st.caption("Your downloads will appear here and stay saved between sessions.")
     else:
@@ -2141,11 +2145,13 @@ with _t_clean:
     # ---- Visual media browser (cover-art cards, Spotify-style) ----------- #
     _media = library.media_files(scan_folders)
     st.markdown("#### 🎵 Your library")
-    _lc = st.columns([3, 2])
+    _lc = st.columns([3, 2.4, 1.4])
     _lib_q = _lc[0].text_input("Filter", key="lib_filter", label_visibility="collapsed",
                                placeholder="🔎 Filter by name…")
     _lib_view = _lc[1].radio("View", ["All", "Songs", "Videos", "Artists", "Playlists"],
                              horizontal=True, key="lib_view", label_visibility="collapsed")
+    _lib_sort = _lc[2].selectbox("Sort", _LIB_SORTS, key="lib_sort",
+                                 label_visibility="collapsed")
     _play = st.session_state.get("lib_play")
     if _play and os.path.isfile(_play):
         _pcol = st.columns([6, 1])
@@ -2160,9 +2166,9 @@ with _t_clean:
     if not _media:
         _empty("🎵", "Your library is empty", "Download something and it'll show up here with its artwork.")
     elif _lib_view == "Artists":
-        _lib_artists_view(_media, _lib_q)
+        _lib_artists_view(_media, _lib_q, _lib_sort)
     elif _lib_view == "Playlists":
-        _lib_playlists_view(_media)
+        _lib_playlists_view(_media, _lib_sort)
     else:
         _items = _media
         if _lib_view == "Songs":
@@ -2173,7 +2179,7 @@ with _t_clean:
             _ql = _lib_q.strip().lower()
             _items = [m for m in _items if _ql in os.path.basename(m["path"]).lower()]
         st.caption(f"{len(_items)} item(s)")
-        _lib_song_grid(_items, "lib")
+        _lib_song_grid(_items, "lib", _lib_sort)
     st.divider()
 
     with st.expander("🔧 Rebuild library index"):
@@ -2435,8 +2441,7 @@ with _t_insights:
 # --------------------------------------------------------------------------- #
 st.divider()
 fcol1, fcol2 = st.columns([3, 2])
-fcol1.caption("Built with Streamlit + yt-dlp + ffmpeg, running locally. "
-              "Only download content you have the rights to.")
+fcol1.caption("Please only download content you have the rights to.")
 fcol2.markdown(
     f"<div style='text-align:right;font-size:0.82em;color:#888'>"
     f"{branding.APP_NAME} v{branding.VERSION} · Published by "
