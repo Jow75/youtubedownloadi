@@ -2097,8 +2097,11 @@ with _t_hist:
                     return ai_cache.get(h.get("title") or h.get("filename")) or {}
 
                 cats = Counter(ai_cache[t]["category"] for t in analyzed)
-                arts = Counter(ai_cache[t]["artist"] for t in analyzed
-                               if ai_cache[t].get("artist"))
+                # Merge artist variants the same way Insights + Library Artists do,
+                # so History shows ONE "Bad Bunny", not split counts.
+                _raw_arts = Counter(ai_cache[t]["artist"] for t in analyzed
+                                    if ai_cache[t].get("artist"))
+                arts = Counter(dict(artists.collapse_artist_counts(dict(_raw_arts))))
                 st.caption("👇 Click any category or artist to see those exact files — "
                            "then open each in its folder (highlighted) or re-download it.")
                 g1, g2 = st.columns(2)
@@ -2116,15 +2119,18 @@ with _t_hist:
                 pick = st.session_state.get("smart_pick")
                 if pick:
                     kind, val = pick
-                    items = [h for h in all_hist
-                             if _ai_of(h).get(kind) == val] if kind == "category" \
-                        else [h for h in all_hist if _ai_of(h).get("artist") == val]
+                    if kind == "artist":       # match every spelling/case/accent variant
+                        _ak = artists.artist_key(val)
+                        items = [h for h in all_hist
+                                 if artists.artist_key(_ai_of(h).get("artist") or "") == _ak]
+                    else:
+                        items = [h for h in all_hist if _ai_of(h).get(kind) == val]
                     pk1, pk2 = st.columns([4, 1])
                     pk1.markdown(f"#### {val} — {len(items)} file(s)")
                     if pk2.button("Close", key="smart_close"):
                         st.session_state.pop("smart_pick", None)
                         st.rerun()
-                    for it in items[:150]:
+                    for it in _paginate(items, "smart_items"):
                         on_disk = bool(it.get("path") and os.path.isfile(it["path"]))
                         e1, e2, e3 = st.columns([7, 1, 1])
                         e1.markdown(
