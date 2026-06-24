@@ -768,11 +768,38 @@ def _sort_playlists(pls, sort):
     return sorted(pls, key=lambda p: p["id"], reverse=True)   # Newest (id = creation time)
 
 
+_PAGE_SIZES = {"10": 10, "20": 20, "30": 30, "50": 50, "All": 10 ** 9}
+
+
+def _paginate(items, key, default="20"):
+    """Compact paginator: per-page selector + Prev / 'Page x of N' / Next. Returns
+    the current page's slice; page-size and page persist per `key`. Used for big
+    Artists / Playlists / Collections / History / Search lists."""
+    total = len(items)
+    top = st.columns([3, 1.4])
+    top[0].caption(f"{total} item(s)")
+    _sizes = list(_PAGE_SIZES)
+    per = _PAGE_SIZES[top[1].selectbox("Per page", _sizes, index=_sizes.index(default),
+                                       key=f"{key}_per", label_visibility="collapsed")]
+    pages = max(1, (total + per - 1) // per)
+    pk = f"{key}_pg"
+    pg = min(st.session_state.get(pk, 1), pages)
+    if pages > 1:
+        nav = st.columns([1, 2, 1])
+        if nav[0].button("← Prev", key=f"{key}_prev", disabled=pg <= 1, width="stretch"):
+            st.session_state[pk] = pg - 1; st.rerun()
+        nav[1].markdown(f"<div style='text-align:center;padding-top:6px'>Page "
+                        f"<b>{pg}</b> of <b>{pages}</b></div>", unsafe_allow_html=True)
+        if nav[2].button("Next →", key=f"{key}_next", disabled=pg >= pages, width="stretch"):
+            st.session_state[pk] = pg + 1; st.rerun()
+    start = (pg - 1) * per
+    return items[start:start + per]
+
+
 def _lib_song_grid(items, key_prefix, sort="Newest", cols=6):
-    """Grid of media cards (cover art + name + duration + play/open), lazy 'show more'."""
+    """Grid of media cards (cover art + name + duration + play/open), paginated."""
     items = _sort_songs(items, sort)
-    show = st.session_state.get(key_prefix + "_show", 24)
-    page = items[:show]
+    page = _paginate(items, key_prefix)
     for s in range(0, len(page), cols):
         cs = st.columns(cols)
         for col, it in zip(cs, page[s:s + cols]):
@@ -796,11 +823,6 @@ def _lib_song_grid(items, key_prefix, sort="Newest", cols=6):
                 if _b[1].button("📂", key=f"{key_prefix}_open_{it['path']}",
                                 width="stretch", help="Open folder"):
                     open_and_select(it["path"])
-    if len(items) > show:
-        if st.button(f"⬇️ Show more ({len(items) - show} left)", key=f"{key_prefix}_more",
-                     width="stretch"):
-            st.session_state[key_prefix + "_show"] = show + 24
-            st.rerun()
 
 
 def _lib_artists_view(media, q, sort="Most songs"):
@@ -837,10 +859,8 @@ def _lib_artists_view(media, q, sort="Most songs"):
         ql = q.strip().lower()
         collapsed = [(n, c) for n, c in collapsed if ql in n.lower()]
     collapsed = _sort_artist_rows(collapsed, sort, recency)
-    st.caption(f"{len(collapsed)} artist(s)")
     cols_n = 6
-    show = st.session_state.get("lib_art_show", 30)
-    page = collapsed[:show]
+    page = _paginate(collapsed, "lib_art")
     for s in range(0, len(page), cols_n):
         cs = st.columns(cols_n)
         for col, (name, n) in zip(cs, page[s:s + cols_n]):
@@ -856,11 +876,6 @@ def _lib_artists_view(media, q, sort="Most songs"):
                 if st.button("Open", key=f"libartist_{artists.artist_key(name)}", width="stretch"):
                     st.session_state["lib_artist"] = name
                     st.rerun()
-    if len(collapsed) > show:
-        if st.button(f"⬇️ Show more ({len(collapsed) - show} left)", key="lib_art_more",
-                     width="stretch"):
-            st.session_state["lib_art_show"] = show + 30
-            st.rerun()
 
 
 def _lib_playlists_view(media, sort="Newest"):
@@ -943,9 +958,8 @@ def _lib_playlists_view(media, sort="Newest"):
     if not pls:
         st.caption("No playlists yet — name one above and Create, then add songs.")
         return
-    st.caption(f"{len(pls)} playlist(s)")
     _cols_n = 6
-    _pls_view = _sort_playlists(pls, sort)
+    _pls_view = _paginate(_sort_playlists(pls, sort), "lib_pls")
     for _s in range(0, len(_pls_view), _cols_n):
         _cs = st.columns(_cols_n)
         for _col, _pl in zip(_cs, _pls_view[_s:_s + _cols_n]):
@@ -1327,7 +1341,7 @@ def discover_panel():
                     st.rerun()
         if res["videos"]:
             st.markdown("##### ▶️ Videos — tap to download")
-            _disc_video_grid(res["videos"], "disc_v")
+            _disc_video_grid(_paginate(res["videos"], "disc_v"), "disc_v")
         if not (res["videos"] or res["channels"] or res["playlists"]):
             _empty("🔎", "No results", f"Nothing found for “{query}” — try another search.")
     elif not (open_ch or open_pl):
@@ -2687,7 +2701,7 @@ with _t_insights:
                         key="coll_redl"):
                     nn = enqueue([media_job(h) for h in credl], downloads.LANE_BATCH)
                     st.success(f"⚡ Queued **{nn}** — see **Downloads** above.")
-                for it in citems[:150]:
+                for it in _paginate(citems, "coll_items"):
                     on_disk = bool(it.get("path") and os.path.isfile(it["path"]))
                     r1, r2, r3 = st.columns([7, 1, 1])
                     r1.markdown(
