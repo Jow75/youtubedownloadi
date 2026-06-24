@@ -974,6 +974,16 @@ def downloads_panel():
     active = [j for j in jobs if j.status in ("downloading", "queued")]
     finished = [j for j in jobs if j.status in ("done", "error", "canceled")]
 
+    # PHASE ECHO — when a download FINISHES, rerun the WHOLE app once (not just this
+    # fragment) so the Assistant's in-chat card, Library, Recent and artist/playlist
+    # collections flip to "done" on their own. This fragment already ticks every 2s,
+    # so it notices completion within ~2s — no extra message or manual reload needed.
+    _settled = c["done"] + c["error"]
+    _prev_settled = st.session_state.get("_dl_settled")
+    st.session_state["_dl_settled"] = _settled
+    if _prev_settled is not None and _settled > _prev_settled:
+        st.rerun()                       # full-app rerun (default scope) from the fragment
+
     with st.container(border=True):
         h1, h2, h3 = st.columns([5, 1.1, 1.1])
         bits = []
