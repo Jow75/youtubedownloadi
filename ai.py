@@ -258,16 +258,18 @@ def analyze_titles(titles, progress=None, batch=12):
     for i in range(0, len(todo), batch):
         chunk = todo[i:i + batch]
         prompt = (
-            "You clean up media download titles for a library. For EACH title "
+            "You clean up media download titles for a library. Work ONLY from what "
+            "is written in each title — do NOT guess or invent facts. For EACH title "
             "return one JSON object, in the SAME ORDER, with fields: "
-            "artist (performer/channel as a string, or null), "
+            "artist (the performer/channel ONLY if it is clearly present in the title, "
+            "e.g. 'Artist - Song' or 'Song by Artist'; otherwise null — never guess), "
             "clean_title (the work's name without 'Official Video', tags, etc.), "
-            f"category (exactly one of {CATEGORIES}), "
+            f"category (exactly one of {CATEGORIES}; use 'Other' if you are not sure), "
             "is_official (true if it looks like an official release, else false). "
             "Return ONLY a JSON array, nothing else.\n\nTitles:\n"
             + "\n".join(f"{j + 1}. {t}" for j, t in enumerate(chunk)))
         try:
-            data = _extract_json(_chat(prompt))
+            data = _extract_json(_chat(prompt, temperature=0))
         except Exception:  # noqa: BLE001
             data = None
         if isinstance(data, list):
@@ -306,10 +308,12 @@ def classify_tracks(titles, progress=None, batch=10):
             "Classical, Other;\n"
             "  language: the main language/region — one of Swahili, English, Nigerian, "
             "French, Spanish, Hindi, Bengali, Marathi, Arabic, Kikuyu, Mixed, Unknown.\n"
-            "Pick the single best fit; do NOT invent new labels. Return ONLY a JSON array.\n\nTitles:\n"
+            "Pick the single best fit; do NOT invent new labels. If you are not "
+            "confident, use genre 'Other' and language 'Unknown' — never guess. "
+            "Return ONLY a JSON array.\n\nTitles:\n"
             + "\n".join(f"{j + 1}. {t}" for j, t in enumerate(chunk)))
         try:
-            data = _extract_json(_chat(prompt, max_tokens=700))
+            data = _extract_json(_chat(prompt, max_tokens=700, temperature=0))
         except Exception:  # noqa: BLE001
             data = None
         if isinstance(data, list):
