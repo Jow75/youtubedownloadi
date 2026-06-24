@@ -36,6 +36,7 @@ import chats
 import discover
 import downloader as dl
 import downloads
+import follows
 import history as hist
 import library
 import licensing
@@ -1241,6 +1242,7 @@ def discover_panel():
         st.session_state.pop("disc_results", None)
         st.rerun()
     query = (q or "").strip()
+    _follows = st.session_state.setdefault("desk_follows", follows.load())
 
     # An opened channel/playlist shows its videos at the top (above results/trending).
     open_ch = st.session_state.get("disc_open_channel")
@@ -1253,10 +1255,12 @@ def discover_panel():
 
     if open_ch:
         info, _ie = _disc_chinfo(open_ch)
-        hc = st.columns([1, 5, 1])
-        if info and info.get("thumb"):
-            hc[0].image(info["thumb"], width="stretch")
-        hc[1].markdown(f"### 📡 {(info or {}).get('title') or st.session_state.get('disc_open_title', 'Channel')}")
+        _ch_title = (info or {}).get("title") or st.session_state.get("disc_open_title", "Channel")
+        _ch_thumb = (info or {}).get("thumb") or ""
+        hc = st.columns([1, 4, 1.3, 1])
+        if _ch_thumb:
+            hc[0].image(_ch_thumb, width="stretch")
+        hc[1].markdown(f"### 📡 {_ch_title}")
         _meta = []
         if info and info.get("subs"):
             _meta.append(f"👥 {_fmt_count(info['subs'])} subscribers")
@@ -1264,7 +1268,14 @@ def discover_panel():
             _meta.append(f"🎬 {_fmt_count(info['videos'])} videos")
         if _meta:
             hc[1].caption("  ·  ".join(_meta))
-        _disc_close_btn(hc[2])
+        # ⭐ Follow toggle — stored locally; powers the "New from <channel>" shelves.
+        _following = follows.is_following(_follows, open_ch)
+        if hc[2].button("⭐ Following" if _following else "☆ Follow", key="disc_follow",
+                        width="stretch", type="secondary" if _following else "primary"):
+            now = follows.toggle(_follows, open_ch, _ch_title, _ch_thumb)
+            st.toast(("⭐ Following " if now else "Unfollowed ") + _ch_title[:30])
+            st.rerun()
+        _disc_close_btn(hc[3])
         st.markdown("##### ▶️ Recent uploads")
         _ups, _uerr = _disc_uploads(open_ch)
         if _ups:
@@ -1316,13 +1327,20 @@ def discover_panel():
                 st.rerun()
             return
         if res["channels"]:
-            st.markdown("##### 📡 Channels — open to browse & download their uploads")
+            st.markdown("##### 📡 Channels — follow, or open to browse & download")
             for ch in res["channels"]:
-                cc = st.columns([1, 4, 2])
+                cc = st.columns([1, 3.4, 1.3, 1.6])
                 if ch["thumb"]:
                     cc[0].image(ch["thumb"], width="stretch")
                 cc[1].markdown(f"**{ch['title']}**")
-                if cc[2].button("Latest uploads", key=f"disc_ch_{ch['channel_id']}"):
+                _f = follows.is_following(_follows, ch["channel_id"])
+                if cc[2].button("⭐" if _f else "☆ Follow", key=f"disc_fol_{ch['channel_id']}",
+                                width="stretch", help="Following" if _f else "Follow this channel"):
+                    now = follows.toggle(_follows, ch["channel_id"], ch["title"], ch["thumb"])
+                    st.toast(("⭐ Following " if now else "Unfollowed ") + ch["title"][:30])
+                    st.rerun()
+                if cc[3].button("Latest uploads", key=f"disc_ch_{ch['channel_id']}",
+                                width="stretch"):
                     st.session_state["disc_open_channel"] = ch["channel_id"]
                     st.session_state.pop("disc_open_playlist", None)
                     st.session_state["disc_open_title"] = ch["title"]
@@ -1345,6 +1363,19 @@ def discover_panel():
         if not (res["videos"] or res["channels"] or res["playlists"]):
             _empty("🔎", "No results", f"Nothing found for “{query}” — try another search.")
     elif not (open_ch or open_pl):
+        # ⭐ Following — newest uploads from channels you follow, one shelf each.
+        for _fc in _follows[:6]:
+            _fu, _ = _disc_uploads(_fc["id"])
+            if not _fu:
+                continue
+            _fh = st.columns([5, 1])
+            _fh[0].markdown(f"### ⭐ New from {_fc['title']}")
+            if _fh[1].button("Open channel", key=f"disc_fopen_{_fc['id']}", width="stretch"):
+                st.session_state["disc_open_channel"] = _fc["id"]
+                st.session_state.pop("disc_open_playlist", None)
+                st.session_state["disc_open_title"] = _fc["title"]
+                st.rerun()
+            _disc_video_grid(_fu[:8], f"disc_fol_{_fc['id']}")
         for label, region, cat in (("🔥 Trending in Kenya", "KE", None),
                                     ("🌍 Trending Worldwide", "US", None),
                                     ("🎵 Trending Music", "KE", "10")):
