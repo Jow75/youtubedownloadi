@@ -19,11 +19,14 @@ Requirements: streamlit, yt-dlp, yt-dlp-ejs; ffmpeg + Node.js on PATH;
 aria2c optional (turbo downloads).
 """
 
+import base64
 import os
+import random
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import ai
 import archive
@@ -36,6 +39,7 @@ import downloads
 import history as hist
 import library
 import licensing
+import player
 import playlists
 
 
@@ -110,11 +114,25 @@ def _inject_brand_css():
       .umd-hero p { opacity:.95; margin:6px 0 0; font-size:15px; }
       .umd-chip { display:inline-block; background:rgba(255,255,255,.18); border:1px solid rgba(255,255,255,.32);
         padding:5px 13px; border-radius:999px; font-size:12.5px; font-weight:600; margin:12px 8px 0 0; }
-      /* Assistant — ChatGPT/Claude-style chat bubbles + history list */
-      [data-testid="stChatMessage"] { background:rgba(23,17,40,.55); border:1px solid #241c3e;
-        border-radius:16px; padding:10px 15px; margin-bottom:9px; }
-      [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p { font-size:14.5px; line-height:1.55; }
-      [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p:last-child { margin-bottom:0; }
+      /* ---- Persistent floating mini-player (hidden control bridge) ---- */
+      .st-key-mp_controls { display:none !important; }
+
+      /* ---- Assistant — natural chat flow (Gemini / Claude style) ---- */
+      /* User → right, ONE subtle bubble that hugs its text. */
+      [class*="st-key-umsg_"] { width:fit-content !important; max-width:76% !important;
+        align-self:flex-end !important; margin:6px 0 18px auto !important;
+        background:#272140 !important; border:1px solid #332b54; border-radius:18px 18px 6px 18px;
+        padding:2px 17px !important; }
+      [class*="st-key-umsg_"] [data-testid="stMarkdownContainer"] p { color:#F2EFFB !important; }
+      /* Assistant → left, NO box at all: just text that breathes. */
+      [class*="st-key-amsg_"] { background:transparent !important; border:none !important;
+        padding:0 !important; margin:6px 0 22px 2px !important; max-width:94% !important; }
+      [class*="st-key-umsg_"] [data-testid="stMarkdownContainer"] p,
+      [class*="st-key-amsg_"] [data-testid="stMarkdownContainer"] p { font-size:15px; line-height:1.7; }
+      [class*="st-key-amsg_"] [data-testid="stMarkdownContainer"] p:first-child { margin-top:0; }
+      [class*="st-key-amsg_"] code, [class*="st-key-umsg_"] code { background:#241a3a;
+        padding:1px 6px; border-radius:6px; font-size:13.5px; }
+      [data-testid="stChatInput"] { border-radius:16px; }
     </style>""", unsafe_allow_html=True)
 
 
@@ -527,6 +545,176 @@ def _lib_placeholder(fmt):
             f"{'🎬' if fmt == 'video' else '🎵'}</div>")
 
 
+# --------------------------------------------------------------------------- #
+# In-app player queue — drives the persistent floating mini-player.            #
+# The IDM-proof blob engine lives in player.py; here we only manage the queue. #
+# --------------------------------------------------------------------------- #
+def _mp_state():
+    ss = st.session_state
+    ss.setdefault("mp_queue", [])        # list of file paths
+    ss.setdefault("mp_index", 0)
+    ss.setdefault("mp_open", False)
+    ss.setdefault("mp_shuf", False)      # shuffle on?  (key differs from the button)
+    ss.setdefault("mp_rep", "off")       # repeat: off | all | one
+    ss.setdefault("mp_order", [])        # play order (indices) — shuffled when on
+    return ss
+
+
+def _mp_reshuffle():
+    """Rebuild the play order, keeping the current track first when shuffling."""
+    ss = _mp_state()
+    n = len(ss.mp_queue)
+    order = list(range(n))
+    if ss.mp_shuf and n > 1:
+        rest = [i for i in order if i != ss.mp_index]
+        random.shuffle(rest)
+        order = [ss.mp_index] + rest
+    ss.mp_order = order
+
+
+def _mp_play(paths, index=0):
+    """Start a queue and play the chosen track in the floating mini-player.
+    (Videos open in the expanded view automatically — the iframe decides that.)"""
+    paths = [p for p in paths if p and os.path.isfile(p)]
+    if not paths:
+        return
+    ss = _mp_state()
+    ss.mp_queue = paths
+    ss.mp_index = max(0, min(index, len(paths) - 1))
+    ss.mp_open = True
+    _mp_reshuffle()
+
+
+def _mp_step(delta):
+    """Move within the play order, honoring shuffle + repeat. Stops politely at
+    the end when repeat is off (the iframe handles that case without looping)."""
+    ss = _mp_state()
+    n = len(ss.mp_queue)
+    if n == 0:
+        ss.mp_open = False
+        return
+    order = ss.mp_order or list(range(n))
+    try:
+        pos = order.index(ss.mp_index)
+    except ValueError:
+        pos = 0
+    pos += delta
+    if pos < 0:
+        pos = n - 1 if ss.mp_rep == "all" else 0
+    elif pos >= n:
+        pos = 0 if ss.mp_rep == "all" else n - 1
+    ss.mp_index = order[pos % n]
+
+
+def _mp_has_next():
+    """Is there a track after the current one (given shuffle + repeat)?"""
+    ss = _mp_state()
+    n = len(ss.mp_queue)
+    if n == 0:
+        return False
+    if ss.mp_rep in ("all", "one"):
+        return True
+    order = ss.mp_order or list(range(n))
+    try:
+        return order.index(ss.mp_index) < n - 1
+    except ValueError:
+        return False
+
+
+def _mp_current():
+    ss = _mp_state()
+    if not ss.mp_open or not ss.mp_queue:
+        return None
+    if ss.mp_index >= len(ss.mp_queue):
+        ss.mp_index = 0
+    p = ss.mp_queue[ss.mp_index]
+    return p if os.path.isfile(p) else None
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _media_data_uri(path, _sig):
+    """Whole media file as a base64 data: URI (IDM-proof). Cached small so only a
+    few recent tracks live in memory."""
+    return player.media_data_uri(path)
+
+
+def _art_data_uri(path):
+    art = _art_for(path)
+    if not art:
+        return ""
+    return "data:image/jpeg;base64," + base64.b64encode(art).decode("ascii")
+
+
+_MP_QUEUE_CAP = 40        # Up-Next rows + their hidden jump-buttons (keeps reruns light)
+
+
+@st.fragment
+def _mini_player():
+    """The persistent now-playing UI, rendered once at the top level (outside the
+    tabs) so it floats over every screen. It's a @st.fragment so transport actions
+    rerun ONLY this player — never the whole 8-tab app, which is what made playback
+    snappy instead of re-scanning the library each time. The visible card is ONE
+    player.py iframe (mini + full share one <audio>/<video>, so Expand never stops
+    the music); the hidden buttons below are the bridge its in-iframe controls click."""
+    ss = _mp_state()
+    order = ss.mp_order or list(range(len(ss.mp_queue)))
+
+    # Hidden control bridge — the iframe clicks these via `.st-key-<key> button`.
+    # (Expand/collapse + dragging happen inside the iframe with no rerun at all.)
+    with st.container(key="mp_controls"):
+        if st.button("prev", key="mp_prev"):
+            _mp_step(-1); st.rerun(scope="fragment")
+        if st.button("next", key="mp_next"):
+            _mp_step(+1); st.rerun(scope="fragment")
+        if st.button("close", key="mp_close"):
+            ss.mp_open = False; st.rerun(scope="fragment")
+        if st.button("shuffle", key="mp_shuffle"):
+            ss.mp_shuf = not ss.mp_shuf; _mp_reshuffle(); st.rerun(scope="fragment")
+        if st.button("repeat", key="mp_repeat"):
+            ss.mp_rep = {"off": "all", "all": "one", "one": "off"}[ss.mp_rep]
+            st.rerun(scope="fragment")
+        if st.button("openfile", key="mp_openfile"):
+            cur = _mp_current()
+            if cur:
+                open_and_select(cur)
+        # One jump-button per visible Up-Next row; the iframe clicks mpq_<index>.
+        for qi in order[:_MP_QUEUE_CAP]:
+            if st.button("jump", key=f"mpq_{qi}"):
+                ss.mp_index = qi; st.rerun(scope="fragment")
+
+    path = _mp_current()
+    if not path:
+        return
+
+    title = os.path.splitext(os.path.basename(path))[0]
+    try:
+        artist = artists.primary_artist(path) or "Now playing"
+    except Exception:  # noqa: BLE001
+        artist = "Now playing"
+    is_vid = player.is_video(path)
+    key = player.track_key(path)
+    at_end = not _mp_has_next()
+    thumb = _art_data_uri(path)
+    inlineable = player.can_inline(path)
+    try:
+        src = _media_data_uri(path, os.path.getmtime(path)) if inlineable else ""
+    except OSError:
+        src = ""
+
+    # Build the Up-Next list (in play order) for inside the iframe.
+    qitems = []
+    for qi in order[:_MP_QUEUE_CAP]:
+        qp = ss.mp_queue[qi]
+        nm = os.path.splitext(os.path.basename(qp))[0][:48]
+        qitems.append((qi, nm, player.is_video(qp), qi == ss.mp_index))
+    qhtml = player.queue_items_html(qitems)
+
+    html_doc = player.player_html(title, artist, thumb, src, key, qhtml,
+                                  is_vid=is_vid, inlineable=inlineable,
+                                  shuffle=ss.mp_shuf, repeat=ss.mp_rep, at_end=at_end)
+    components.html(html_doc, height=0, scrolling=False)
+
+
 @st.cache_data(show_spinner=False, max_entries=5000)
 def _artists_cached(path, _sig):
     """All artists for a file (cached per path+mtime) — see artists.artists_of."""
@@ -602,7 +790,8 @@ def _lib_song_grid(items, key_prefix, sort="Newest", cols=6):
                 _b = st.columns(2)
                 if _b[0].button("▶", key=f"{key_prefix}_play_{it['path']}",
                                 use_container_width=True, help="Play in app"):
-                    st.session_state["lib_play"] = it["path"]
+                    _queue = [m["path"] for m in items]
+                    _mp_play(_queue, _queue.index(it["path"]))
                     st.rerun()
                 if _b[1].button("📂", key=f"{key_prefix}_open_{it['path']}",
                                 use_container_width=True, help="Open folder"):
@@ -882,6 +1071,7 @@ def downloads_panel():
 # --------------------------------------------------------------------------- #
 st.title("⬇️ Universal Media Downloader")
 downloads_panel()
+_mini_player()          # persistent floating now-playing bar (lives above all tabs)
 
 
 all_hist = hist.load_history()
@@ -1190,29 +1380,43 @@ def _render_chat_download(url, idx):
                     text=f"{job.status}…" + (f" {int(frac * 100)}%" if frac else ""))
     elif job.status == "done" and job.result:
         path = job.result
-        ext = os.path.splitext(path)[1].lower()
-        try:
-            if ext in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"):
-                st.video(path)
-            else:
-                st.audio(path)
-        except Exception:  # noqa: BLE001
-            st.caption("✅ Downloaded.")
-        if st.button("📂 Show in folder", key=f"chat_open_{idx}"):
+        _cc = st.columns(2)
+        if _cc[0].button("▶ Play", key=f"chat_play_{idx}", use_container_width=True):
+            _mp_play([path], 0)            # plays in the floating mini-player (IDM-proof)
+            st.rerun()
+        if _cc[1].button("📂 Show in folder", key=f"chat_open_{idx}", use_container_width=True):
             open_and_select(path)
     elif job.status == "error":
         st.error(f"Download failed — {job.error or 'unknown error'}")
 
 
+def _chat_send(prompt):
+    """Append the user's message and flag that a reply is owed, then rerun at once
+    so the message shows INSTANTLY. The slow AI call runs on the next rerun (behind
+    a spinner) — so your text never waits on the model to appear."""
+    sessions = st.session_state["chat_sessions"]
+    cur = next((s for s in sessions if s["id"] == st.session_state.get("chat_current")), None)
+    if cur is None:
+        return
+    cur["messages"].append({"user": True, "text": prompt})
+    if (cur["title"] or "New chat") in ("New chat", ""):
+        cur["title"] = prompt[:40]
+    chats.save(sessions, st.session_state["chat_current"])
+    st.session_state["chat_pending"] = True
+    st.rerun()
+
+
 def assistant_panel():
-    """ChatGPT-style assistant: a list of saved chats + a conversation that can
-    download (and play) media inline, remembering context. Mirrors the mobile app."""
+    """ChatGPT/Claude-style assistant: a saved-chat history rail + a conversation
+    that can download (and play) media inline, remembering context. The input is a
+    bottom-pinned st.chat_input. Mirrors the mobile app."""
     if "chat_loaded" not in st.session_state:
         sessions, current = chats.load()
         st.session_state["chat_sessions"] = sessions
         st.session_state["chat_current"] = current
         st.session_state["chat_loaded"] = True
     sessions = st.session_state["chat_sessions"]
+    ai_on = bool(st.session_state.get("ai_on"))
 
     def _cur():
         return next((s for s in sessions if s["id"] == st.session_state.get("chat_current")), None)
@@ -1222,7 +1426,7 @@ def assistant_panel():
             sessions.insert(0, chats.new_session())
         st.session_state["chat_current"] = sessions[0]["id"]
 
-    left, main = st.columns([1, 3.2], gap="medium")
+    left, mainc = st.columns([1, 3], gap="medium")
 
     with left:
         if st.button("➕  New chat", use_container_width=True, type="primary"):
@@ -1234,46 +1438,78 @@ def assistant_panel():
         st.caption("HISTORY")
         for s in sessions:
             active = s["id"] == st.session_state["chat_current"]
-            label = ("🟣 " if active else "💬 ") + (s["title"] or "New chat")[:26]
-            if st.button(label, key=f"chat_sel_{s['id']}", use_container_width=True):
+            row = st.columns([5, 1.1])
+            label = ("🟣  " if active else "💬  ") + (s["title"] or "New chat")[:22]
+            if row[0].button(label, key=f"chat_sel_{s['id']}", use_container_width=True,
+                             type="primary" if active else "secondary"):
                 st.session_state["chat_current"] = s["id"]
                 chats.save(sessions, s["id"])
                 st.rerun()
-        if sessions:
-            st.divider()
-            if st.button("🗑️  Clear all chats", use_container_width=True):
-                chats.clear()
-                for k in ("chat_loaded", "chat_sessions", "chat_current"):
-                    st.session_state.pop(k, None)
-                st.rerun()
+            with row[1].popover("⋯", use_container_width=True):
+                nm = st.text_input("Rename chat", value=s["title"], key=f"chat_rn_{s['id']}")
+                if st.button("Save name", key=f"chat_rnb_{s['id']}", use_container_width=True):
+                    s["title"] = (nm or s["title"]).strip() or s["title"]
+                    chats.save(sessions, st.session_state["chat_current"])
+                    st.rerun()
+                if st.button("🗑️  Delete chat", key=f"chat_del_{s['id']}", use_container_width=True):
+                    sessions[:] = [x for x in sessions if x["id"] != s["id"]]
+                    if not sessions:
+                        sessions.insert(0, chats.new_session())
+                    if st.session_state["chat_current"] == s["id"]:
+                        st.session_state["chat_current"] = sessions[0]["id"]
+                    chats.save(sessions, st.session_state["chat_current"])
+                    st.rerun()
 
-    with main:
-        if not st.session_state.get("ai_on"):
+    with mainc:
+        if not ai_on:
             st.info("🤖 Add your AI key in the sidebar → **AI Settings** to chat.")
         cur = _cur()
-        for i, m in enumerate(cur["messages"]):
-            with st.chat_message("user" if m.get("user") else "assistant"):
-                st.markdown(m.get("text", ""))
-                if not m.get("user") and m.get("url"):
-                    _render_chat_download(m["url"], i)
         if not cur["messages"]:
-            st.caption("👋 Ask me to download a song or video, grab a whole channel, or how a "
-                       "feature works. I remember the conversation in this chat.")
+            st.markdown(
+                "<div style='text-align:center;padding:24px 10px 8px;'>"
+                "<div style='font-size:42px;line-height:1'>🤖</div>"
+                "<div style='font-size:20px;font-weight:700;color:#ECEAF6;margin-top:10px'>How can I help?</div>"
+                "<div style='font-size:13.5px;color:#9a93b5;margin-top:5px'>"
+                "Ask me to grab a song, pull a whole channel, or how a feature works — "
+                "I remember this chat.</div></div>", unsafe_allow_html=True)
+            sugg = ["Download Sauti Sol — Melanin as mp3",
+                    "Get Diamond Platnumz's latest video",
+                    "How does the library organise my music?"]
+            sc = st.columns(len(sugg))
+            for i, q in enumerate(sugg):
+                if sc[i].button(q, key=f"chat_sg_{i}", use_container_width=True, disabled=not ai_on):
+                    _chat_send(q)
+        else:
+            for i, m in enumerate(cur["messages"]):
+                if m.get("user"):
+                    # User → right side, subtle bubble.
+                    with st.container(key=f"umsg_{i}"):
+                        st.markdown(m.get("text", ""))
+                else:
+                    # Assistant → left side, plain text (no box); a download card
+                    # sits just beneath it.
+                    with st.container(key=f"amsg_{i}"):
+                        st.markdown(m.get("text", ""))
+                    if m.get("url"):
+                        _render_chat_download(m["url"], i)
 
-        with st.form("asst_form", clear_on_submit=True):
-            fc = st.columns([6, 1])
-            prompt = fc[0].text_input("Message", label_visibility="collapsed",
-                                      placeholder="Message the assistant — e.g. download Sauti Sol Melanin as mp3")
-            sent = fc[1].form_submit_button("Send ➤", use_container_width=True, type="primary")
-        if sent and prompt.strip():
-            history = list(cur["messages"])
-            cur["messages"].append({"user": True, "text": prompt.strip()})
-            if (cur["title"] or "New chat") in ("New chat", ""):
-                cur["title"] = prompt.strip()[:40]
-            reply, url, title = _assistant_run(prompt.strip(), history)
-            cur["messages"].append({"user": False, "text": reply, "url": url, "title": title})
+        # The AI reply runs HERE — after your message is already on screen — so the
+        # spinner shows while the model thinks, not while your own text waits.
+        if (ai_on and st.session_state.get("chat_pending")
+                and cur["messages"] and cur["messages"][-1].get("user")):
+            with st.spinner("Thinking…"):
+                _last = cur["messages"][-1]["text"]
+                _reply, _url, _title = _assistant_run(_last, cur["messages"][:-1])
+            cur["messages"].append({"user": False, "text": _reply, "url": _url, "title": _title})
             chats.save(sessions, st.session_state["chat_current"])
+            st.session_state["chat_pending"] = False
             st.rerun()
+
+    prompt = st.chat_input(
+        "Message the assistant — e.g. download Sauti Sol Melanin as mp3",
+        disabled=not ai_on)
+    if prompt and prompt.strip():
+        _chat_send(prompt.strip())
 
 
 _t_home, _t_dl, _t_discover, _t_assistant, _t_hist, _t_insights, _t_arch, _t_clean = st.tabs([
@@ -1313,14 +1549,19 @@ with _t_home:
     _recent = sorted(all_hist, key=lambda h: h.get("ts", ""), reverse=True)[:6]
     if not _recent:
         st.caption("Nothing yet — paste a link above, or open the 🔭 Discover tab.")
+    _recent_paths = [h.get("path", "") for h in _recent
+                     if h.get("path") and os.path.isfile(h["path"])]
     for _i, _h in enumerate(_recent):
-        _rc = st.columns([6, 2, 1.4])
+        _rc = st.columns([6, 1.6, 1, 1])
         _t = (_h.get("title") or _h.get("filename") or _h.get("url", ""))[:64]
         _rc[0].markdown(f"{'🎬' if _h.get('fmt') == 'video' else '🎵'} **{_t}**")
         _rc[1].caption(when_label(_h.get("ts", "")) or "")
         _p = _h.get("path", "")
         if _p and os.path.isfile(_p):
-            if _rc[2].button("📂 Open", key=f"home_open_{_i}", use_container_width=True):
+            if _rc[2].button("▶", key=f"home_play_{_i}", use_container_width=True, help="Play"):
+                _mp_play(_recent_paths, _recent_paths.index(_p))
+                st.rerun()
+            if _rc[3].button("📂", key=f"home_open_{_i}", use_container_width=True, help="Open folder"):
                 open_and_select(_p)
 
 with _t_discover:
@@ -2152,17 +2393,7 @@ with _t_clean:
                              horizontal=True, key="lib_view", label_visibility="collapsed")
     _lib_sort = _lc[2].selectbox("Sort", _LIB_SORTS, key="lib_sort",
                                  label_visibility="collapsed")
-    _play = st.session_state.get("lib_play")
-    if _play and os.path.isfile(_play):
-        _pcol = st.columns([6, 1])
-        _pcol[0].markdown(f"**▶ {os.path.splitext(os.path.basename(_play))[0][:64]}**")
-        if _pcol[1].button("✕ Stop", key="lib_stop", use_container_width=True):
-            st.session_state.pop("lib_play", None)
-            st.rerun()
-        if os.path.splitext(_play)[1].lower() in (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"):
-            st.video(_play)
-        else:
-            st.audio(_play)
+    # Playback now happens in the persistent floating mini-player (▶ on any card).
     if not _media:
         _empty("🎵", "Your library is empty", "Download something and it'll show up here with its artwork.")
     elif _lib_view == "Artists":
