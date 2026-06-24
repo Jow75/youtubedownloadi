@@ -232,7 +232,7 @@ with st.sidebar:
     else:
         video_dir = audio_dir = main_dir
 
-    if st.button("📂 Open main folder", use_container_width=True):
+    if st.button("📂 Open main folder", width="stretch"):
         if not open_in_explorer(main_dir):
             st.warning("Couldn't open that folder — check the path.")
 
@@ -249,7 +249,7 @@ with st.sidebar:
         if lib_on != library.is_enabled():
             library.save(enabled=lib_on)
             st.rerun()
-        if st.button("🏗️ Create / repair folders", use_container_width=True):
+        if st.button("🏗️ Create / repair folders", width="stretch"):
             n = len(library.ensure_structure())
             st.success(f"Library ready ({n} folders) at {library.get_root()}")
         st.caption("Music/MP3 · Music/M4A · Videos/MP4 · Images · Downloads · "
@@ -318,7 +318,7 @@ with st.sidebar:
         new_key = st.text_input("API key", type="password", value="",
                                 placeholder=f"{pinfo['key_prefix']}…  paste, then Save")
         kc1, kc2 = st.columns(2)
-        if kc1.button("💾 Save key", use_container_width=True):
+        if kc1.button("💾 Save key", width="stretch"):
             k = new_key.strip()
             if not k:
                 st.warning("Paste a key first.")
@@ -338,7 +338,7 @@ with st.sidebar:
                     st.warning(f"Saved, but couldn't verify right now ({res}). "
                                "It'll be used once you're online.")
                     st.rerun()
-        if kc2.button("🗑️ Remove key", use_container_width=True):
+        if kc2.button("🗑️ Remove key", width="stretch"):
             ai.clear_key()
             ai.save_settings(enabled=False)
             st.session_state.ai_on = False
@@ -362,10 +362,10 @@ with st.sidebar:
         _key = st.text_input("Paste your license key", value="",
                              placeholder="UMDL-...")
         cga, cgb = st.columns(2)
-        if cga.button("Activate", use_container_width=True):
+        if cga.button("Activate", width="stretch"):
             ok, msg = lm.activate(_key)
             (st.success if ok else st.error)(msg)
-        if cgb.button("Remove", use_container_width=True):
+        if cgb.button("Remove", width="stretch"):
             lm.deactivate()
             st.info("License removed.")
 
@@ -415,13 +415,13 @@ if not library.is_configured():
                "folder, and files each download into the right place.")
     w1, w2 = st.columns(2)
     if w1.button("✅ Set up my library here", type="primary",
-                 use_container_width=True):
+                 width="stretch"):
         library.save(root=(loc.strip() or library.default_root()),
                      enabled=True, configured=True)
         library.ensure_structure()
         st.success("Library ready! Loading the app…")
         st.rerun()
-    if w2.button("Not now — use my Downloads folder", use_container_width=True):
+    if w2.button("Not now — use my Downloads folder", width="stretch"):
         library.save(configured=True, enabled=False)
         st.rerun()
     st.caption("You can change this anytime in the sidebar → **Managed Library**.")
@@ -779,7 +779,7 @@ def _lib_song_grid(items, key_prefix, sort="Newest", cols=6):
             with col:
                 art = _art_for(it["path"])
                 if art:
-                    st.image(art, use_container_width=True)
+                    st.image(art, width="stretch")
                 else:
                     st.markdown(_lib_placeholder(it["fmt"]), unsafe_allow_html=True)
                 nm = os.path.splitext(os.path.basename(it["path"]))[0]
@@ -789,16 +789,16 @@ def _lib_song_grid(items, key_prefix, sort="Newest", cols=6):
                            + (f" · {_dur}" if _dur else ""))
                 _b = st.columns(2)
                 if _b[0].button("▶", key=f"{key_prefix}_play_{it['path']}",
-                                use_container_width=True, help="Play in app"):
+                                width="stretch", help="Play in app"):
                     _queue = [m["path"] for m in items]
                     _mp_play(_queue, _queue.index(it["path"]))
                     st.rerun()
                 if _b[1].button("📂", key=f"{key_prefix}_open_{it['path']}",
-                                use_container_width=True, help="Open folder"):
+                                width="stretch", help="Open folder"):
                     open_and_select(it["path"])
     if len(items) > show:
         if st.button(f"⬇️ Show more ({len(items) - show} left)", key=f"{key_prefix}_more",
-                     use_container_width=True):
+                     width="stretch"):
             st.session_state[key_prefix + "_show"] = show + 24
             st.rerun()
 
@@ -848,17 +848,17 @@ def _lib_artists_view(media, q, sort="Most songs"):
                 rp = rep.get(artists.artist_key(name))
                 art = _art_for(rp) if rp else None
                 if art:
-                    st.image(art, use_container_width=True)
+                    st.image(art, width="stretch")
                 else:
                     st.markdown(_lib_placeholder("audio"), unsafe_allow_html=True)
                 st.markdown(f"**{name[:26]}**")
                 st.caption(f"{n} track(s)")
-                if st.button("Open", key=f"libartist_{artists.artist_key(name)}", use_container_width=True):
+                if st.button("Open", key=f"libartist_{artists.artist_key(name)}", width="stretch"):
                     st.session_state["lib_artist"] = name
                     st.rerun()
     if len(collapsed) > show:
         if st.button(f"⬇️ Show more ({len(collapsed) - show} left)", key="lib_art_more",
-                     use_container_width=True):
+                     width="stretch"):
             st.session_state["lib_art_show"] = show + 30
             st.rerun()
 
@@ -910,10 +910,10 @@ def _lib_playlists_view(media, sort="Newest"):
     _pc = st.columns([3, 1, 1.4])
     _new = _pc[0].text_input("New playlist", key="pl_new", label_visibility="collapsed",
                              placeholder="New playlist name…")
-    if _pc[1].button("➕ Create", key="pl_create", use_container_width=True) and _new.strip():
+    if _pc[1].button("➕ Create", key="pl_create", width="stretch") and _new.strip():
         playlists.create(pls, _new.strip())
         st.rerun()
-    if _pc[2].button("🪄 Auto-group", key="pl_auto", use_container_width=True,
+    if _pc[2].button("🪄 Auto-group", key="pl_auto", width="stretch",
                      help="AI: group your library into genre & language/region playlists"):
         if not st.session_state.get("ai_on"):
             st.warning("Turn on AI in the sidebar → AI Settings first.")
@@ -953,12 +953,12 @@ def _lib_playlists_view(media, sort="Newest"):
                 _first = next((p for p in _pl["paths"] if p in by_path), None)
                 _art = _art_for(_first) if _first else None
                 if _art:
-                    st.image(_art, use_container_width=True)
+                    st.image(_art, width="stretch")
                 else:
                     st.markdown(_lib_placeholder("audio"), unsafe_allow_html=True)
                 st.markdown(f"**{_pl['name'][:24]}**")
                 st.caption(f"{len(_pl['paths'])} song(s)")
-                if st.button("Open", key=f"plopen_{_pl['id']}", use_container_width=True):
+                if st.button("Open", key=f"plopen_{_pl['id']}", width="stretch"):
                     st.session_state["lib_playlist"] = _pl["id"]
                     st.rerun()
 
@@ -998,11 +998,11 @@ def downloads_panel():
         h1.markdown("**Downloads** — " + (" · ".join(bits) if bits
                     else "idle — queue anything; it keeps going while you browse"))
         if active and h2.button("Cancel all", key="dl_cancel_all",
-                                use_container_width=True):
+                                width="stretch"):
             mgr.cancel_all()
             st.rerun(scope="fragment")
         if finished and h3.button("Clear done", key="dl_clear",
-                                  use_container_width=True):
+                                  width="stretch"):
             mgr.clear_finished()
             st.session_state.pop("dl_page", None)
             st.rerun(scope="fragment")
@@ -1022,14 +1022,14 @@ def downloads_panel():
             if total_pages > 1:
                 nv1, nv2, nv3 = st.columns([1, 2, 1])
                 if nv1.button("← Prev", key="dl_prev", disabled=page <= 1,
-                              use_container_width=True):
+                              width="stretch"):
                     st.session_state.dl_page = page - 1
                     st.rerun(scope="fragment")
                 nv2.markdown(f"<div style='text-align:center;padding-top:6px'>"
                              f"Page **{page}** of **{total_pages}**</div>",
                              unsafe_allow_html=True)
                 if nv3.button("Next →", key="dl_next", disabled=page >= total_pages,
-                              use_container_width=True):
+                              width="stretch"):
                     st.session_state.dl_page = page + 1
                     st.rerun(scope="fragment")
             start = (page - 1) * per
@@ -1136,16 +1136,16 @@ def _disc_video_grid(items, key_prefix, cols=4):
             gi = start + idx
             with col:
                 if it.get("thumb"):
-                    st.image(it["thumb"], use_container_width=True)
+                    st.image(it["thumb"], width="stretch")
                 dur = it.get("duration_sec") or 0
                 meta = f"{dur // 60}:{dur % 60:02d}" if dur else ""
                 st.markdown(f"**{it['title'][:70]}**")
                 st.caption(it["channel"] + (f"  ·  {meta}" if meta else ""))
                 b = st.columns(2)
-                if b[0].button("🎵 MP3", key=f"{key_prefix}_a_{gi}_{it['video_id']}", use_container_width=True):
+                if b[0].button("🎵 MP3", key=f"{key_prefix}_a_{gi}_{it['video_id']}", width="stretch"):
                     enqueue([{"url": it["url"], "fmt": "audio", "title": it["title"]}])
                     st.toast(f"Queued MP3 · {it['title'][:36]}")
-                if b[1].button("🎬 MP4", key=f"{key_prefix}_v_{gi}_{it['video_id']}", use_container_width=True):
+                if b[1].button("🎬 MP4", key=f"{key_prefix}_v_{gi}_{it['video_id']}", width="stretch"):
                     enqueue([{"url": it["url"], "fmt": "video", "title": it["title"]}])
                     st.toast(f"Queued MP4 · {it['title'][:36]}")
 
@@ -1220,7 +1220,7 @@ def discover_panel():
     # Manual refresh — the ONLY thing that re-queries YouTube; everything else is
     # served from the snapshot/cache so leaving and returning never re-fetches.
     if sc[2].button("🔄", key="disc_refresh", help="Refresh Discover (re-query YouTube)",
-                    use_container_width=True):
+                    width="stretch"):
         for _fn in (_disc_search, _disc_trending, _disc_uploads, _disc_playlist,
                     _disc_chinfo, _disc_chpls, _disc_artist):
             _fn.clear()
@@ -1241,7 +1241,7 @@ def discover_panel():
         info, _ie = _disc_chinfo(open_ch)
         hc = st.columns([1, 5, 1])
         if info and info.get("thumb"):
-            hc[0].image(info["thumb"], use_container_width=True)
+            hc[0].image(info["thumb"], width="stretch")
         hc[1].markdown(f"### 📡 {(info or {}).get('title') or st.session_state.get('disc_open_title', 'Channel')}")
         _meta = []
         if info and info.get("subs"):
@@ -1263,7 +1263,7 @@ def discover_panel():
             for _cpl in _chpls:
                 _pcc = st.columns([1, 4, 2])
                 if _cpl["thumb"]:
-                    _pcc[0].image(_cpl["thumb"], use_container_width=True)
+                    _pcc[0].image(_cpl["thumb"], width="stretch")
                 _pcc[1].markdown(f"**{_cpl['title']}**")
                 if _pcc[2].button("Open", key=f"disc_cpl_{_cpl['playlist_id']}"):
                     st.session_state["disc_open_playlist"] = _cpl["playlist_id"]
@@ -1306,7 +1306,7 @@ def discover_panel():
             for ch in res["channels"]:
                 cc = st.columns([1, 4, 2])
                 if ch["thumb"]:
-                    cc[0].image(ch["thumb"], use_container_width=True)
+                    cc[0].image(ch["thumb"], width="stretch")
                 cc[1].markdown(f"**{ch['title']}**")
                 if cc[2].button("Latest uploads", key=f"disc_ch_{ch['channel_id']}"):
                     st.session_state["disc_open_channel"] = ch["channel_id"]
@@ -1318,7 +1318,7 @@ def discover_panel():
             for pl in res["playlists"]:
                 pc = st.columns([1, 4, 2])
                 if pl["thumb"]:
-                    pc[0].image(pl["thumb"], use_container_width=True)
+                    pc[0].image(pl["thumb"], width="stretch")
                 pc[1].markdown(f"**{pl['title']}**")
                 if pc[2].button("Open playlist", key=f"disc_pl_{pl['playlist_id']}"):
                     st.session_state["disc_open_playlist"] = pl["playlist_id"]
@@ -1410,10 +1410,10 @@ def _render_chat_download(url, idx):
     elif job.status == "done" and job.result:
         path = job.result
         _cc = st.columns(2)
-        if _cc[0].button("▶ Play", key=f"chat_play_{idx}", use_container_width=True):
+        if _cc[0].button("▶ Play", key=f"chat_play_{idx}", width="stretch"):
             _mp_play([path], 0)            # plays in the floating mini-player (IDM-proof)
             st.rerun()
-        if _cc[1].button("📂 Show in folder", key=f"chat_open_{idx}", use_container_width=True):
+        if _cc[1].button("📂 Show in folder", key=f"chat_open_{idx}", width="stretch"):
             open_and_select(path)
     elif job.status == "error":
         st.error(f"Download failed — {job.error or 'unknown error'}")
@@ -1458,7 +1458,7 @@ def assistant_panel():
     left, mainc = st.columns([1, 3], gap="medium")
 
     with left:
-        if st.button("➕  New chat", use_container_width=True, type="primary"):
+        if st.button("➕  New chat", width="stretch", type="primary"):
             s = chats.new_session()
             sessions.insert(0, s)
             st.session_state["chat_current"] = s["id"]
@@ -1469,18 +1469,18 @@ def assistant_panel():
             active = s["id"] == st.session_state["chat_current"]
             row = st.columns([5, 1.1])
             label = ("🟣  " if active else "💬  ") + (s["title"] or "New chat")[:22]
-            if row[0].button(label, key=f"chat_sel_{s['id']}", use_container_width=True,
+            if row[0].button(label, key=f"chat_sel_{s['id']}", width="stretch",
                              type="primary" if active else "secondary"):
                 st.session_state["chat_current"] = s["id"]
                 chats.save(sessions, s["id"])
                 st.rerun()
-            with row[1].popover("⋯", use_container_width=True):
+            with row[1].popover("⋯", width="stretch"):
                 nm = st.text_input("Rename chat", value=s["title"], key=f"chat_rn_{s['id']}")
-                if st.button("Save name", key=f"chat_rnb_{s['id']}", use_container_width=True):
+                if st.button("Save name", key=f"chat_rnb_{s['id']}", width="stretch"):
                     s["title"] = (nm or s["title"]).strip() or s["title"]
                     chats.save(sessions, st.session_state["chat_current"])
                     st.rerun()
-                if st.button("🗑️  Delete chat", key=f"chat_del_{s['id']}", use_container_width=True):
+                if st.button("🗑️  Delete chat", key=f"chat_del_{s['id']}", width="stretch"):
                     sessions[:] = [x for x in sessions if x["id"] != s["id"]]
                     if not sessions:
                         sessions.insert(0, chats.new_session())
@@ -1506,7 +1506,7 @@ def assistant_panel():
                     "How does the library organise my music?"]
             sc = st.columns(len(sugg))
             for i, q in enumerate(sugg):
-                if sc[i].button(q, key=f"chat_sg_{i}", use_container_width=True, disabled=not ai_on):
+                if sc[i].button(q, key=f"chat_sg_{i}", width="stretch", disabled=not ai_on):
                     _chat_send(q)
         else:
             for i, m in enumerate(cur["messages"]):
@@ -1567,10 +1567,10 @@ with _t_home:
     _q = st.columns([6, 1, 1])
     _qurl = _q[0].text_input("Quick link", key="home_q", label_visibility="collapsed",
                              placeholder="Paste any link — YouTube, TikTok, X, Instagram…")
-    if _q[1].button("🎵 MP3", key="home_mp3", use_container_width=True) and _qurl.strip():
+    if _q[1].button("🎵 MP3", key="home_mp3", width="stretch") and _qurl.strip():
         enqueue([{"url": _qurl.strip(), "fmt": "audio", "title": ""}], downloads.LANE_NOW)
         st.toast("Queued MP3 — see the queue below.")
-    if _q[2].button("🎬 MP4", key="home_mp4", use_container_width=True) and _qurl.strip():
+    if _q[2].button("🎬 MP4", key="home_mp4", width="stretch") and _qurl.strip():
         enqueue([{"url": _qurl.strip(), "fmt": "video", "title": ""}], downloads.LANE_NOW)
         st.toast("Queued MP4 — see the queue below.")
 
@@ -1587,10 +1587,10 @@ with _t_home:
         _rc[1].caption(when_label(_h.get("ts", "")) or "")
         _p = _h.get("path", "")
         if _p and os.path.isfile(_p):
-            if _rc[2].button("▶", key=f"home_play_{_i}", use_container_width=True, help="Play"):
+            if _rc[2].button("▶", key=f"home_play_{_i}", width="stretch", help="Play"):
                 _mp_play(_recent_paths, _recent_paths.index(_p))
                 st.rerun()
-            if _rc[3].button("📂", key=f"home_open_{_i}", use_container_width=True, help="Open folder"):
+            if _rc[3].button("📂", key=f"home_open_{_i}", width="stretch", help="Open folder"):
                 open_and_select(_p)
 
 with _t_discover:
@@ -1636,7 +1636,7 @@ with _t_dl:
                     st.write(f"**Source:** {metadata['extractor']}")
             with c2:
                 if metadata["thumbnail"]:
-                    st.image(metadata["thumbnail"], use_container_width=True)
+                    st.image(metadata["thumbnail"], width="stretch")
 
             st.divider()
 
@@ -1671,7 +1671,7 @@ with _t_dl:
                 st.caption("Leave blank to download the whole thing. "
                            "(Trimming turns off turbo for accuracy.)")
 
-            if st.button("⬇️ Download", type="primary", use_container_width=True):
+            if st.button("⬇️ Download", type="primary", width="stretch"):
                 if whole_playlist:
                     with st.spinner("Reading playlist…"):
                         try:
@@ -1727,7 +1727,7 @@ with _t_dl:
             date_before = dcol2.text_input("To (YYYY-MM-DD)", value="",
                                            placeholder="2026-12-31")
 
-        if sc1.button("🔎 Scan channel / profile", type="primary", use_container_width=True):
+        if sc1.button("🔎 Scan channel / profile", type="primary", width="stretch"):
             if not ch_url.strip():
                 st.warning("Paste a channel or profile link first.")
             else:
@@ -1758,12 +1758,12 @@ with _t_dl:
             st.markdown("#### ⚡ Grab everything")
             gq = st.selectbox("Video quality (for MP4)", ["Best Available", "720p", "480p"])
             ga, gb = st.columns(2)
-            if ga.button("🎵 Download ALL as MP3", use_container_width=True):
+            if ga.button("🎵 Download ALL as MP3", width="stretch"):
                 n = enqueue([{"url": e["url"], "title": e["title"], "fmt": "audio",
                               "audio_codec": "mp3"} for e in entries],
                             downloads.LANE_BATCH)
                 st.success(f"📦 Queued **{n}** as MP3 — see **Downloads** above.")
-            if gb.button("🎬 Download ALL as MP4", use_container_width=True):
+            if gb.button("🎬 Download ALL as MP4", width="stretch"):
                 n = enqueue([{"url": e["url"], "title": e["title"], "fmt": "video",
                               "quality": gq} for e in entries], downloads.LANE_BATCH)
                 st.success(f"📦 Queued **{n}** as MP4 — see **Downloads** above.")
@@ -1813,7 +1813,7 @@ with _t_dl:
                         st.write(f"**{len(chosen)}** video(s) match your picks.")
                         if st.button(f"📦 Queue {len(chosen)} AI-picked video(s)",
                                      type="primary", key="triage_go",
-                                     disabled=not chosen, use_container_width=True):
+                                     disabled=not chosen, width="stretch"):
                             is_aud = tfmt.startswith("🎵")
                             jobs = [{"url": e["url"], "title": e["title"],
                                      "fmt": "audio" if is_aud else "video",
@@ -1840,7 +1840,7 @@ with _t_dl:
             total_pages = max(1, (len(indexed) + PER_PAGE - 1) // PER_PAGE)
             page = min(st.session_state.get("ch_page", 1), total_pages)
             nav1, nav2, nav3 = st.columns([1, 2, 1])
-            if nav1.button("← Prev", disabled=page <= 1, use_container_width=True):
+            if nav1.button("← Prev", disabled=page <= 1, width="stretch"):
                 st.session_state.ch_page = page - 1
                 st.rerun()
             page = min(st.session_state.get("ch_page", 1), total_pages)
@@ -1852,7 +1852,7 @@ with _t_dl:
                           f"{' matching' if srch.strip() else ''}</div>",
                           unsafe_allow_html=True)
             if nav3.button("Next →", disabled=page >= total_pages,
-                           use_container_width=True):
+                           width="stretch"):
                 st.session_state.ch_page = page + 1
                 st.rerun()
 
@@ -1867,7 +1867,7 @@ with _t_dl:
 
             bc1, bc2 = st.columns(2)
             if bc1.button("⬇️ Download chosen (all pages)", type="primary",
-                          use_container_width=True):
+                          width="stretch"):
                 jobs = []
                 for gi, e in enumerate(entries):
                     choice = st.session_state.get(f"ch_fmt_{gi}", "🎵 MP3")
@@ -1890,7 +1890,7 @@ with _t_dl:
                     n = enqueue(jobs, downloads.LANE_BATCH)
                     st.success(f"📦 Queued **{n}** chosen video(s) — see **Downloads** "
                                "above.")
-            if bc2.button("↺ Reset all picks to Skip", use_container_width=True):
+            if bc2.button("↺ Reset all picks to Skip", width="stretch"):
                 for gi in range(len(entries)):
                     st.session_state[f"ch_fmt_{gi}"] = "⛔ Skip"
                 st.rerun()
@@ -1934,7 +1934,7 @@ with _t_dl:
                                            label_visibility="collapsed",
                                            placeholder="https://...\nhttps://...")
 
-            if st.button("⬇️ Download all", type="primary", use_container_width=True):
+            if st.button("⬇️ Download all", type="primary", width="stretch"):
                 jobs = ([{"url": u, "fmt": "video", "quality": bulk_quality}
                          for u in _parse(video_links)]
                         + [{"url": u, "fmt": "audio", "audio_codec": "mp3"}
@@ -1987,7 +1987,7 @@ with _t_dl:
                                   label_visibility="collapsed")
 
                 if st.button("⬇️ Download selected", type="primary",
-                             use_container_width=True):
+                             width="stretch"):
                     jobs = []
                     for idx, it in enumerate(items):
                         if not it["ok"]:
@@ -2019,7 +2019,7 @@ with _t_hist:
                        "**category**, so your downloads become a real library. "
                        "Only titles are sent online.")
             ac1, ac2 = st.columns(2)
-            if ac1.button("✨ Analyze with AI", use_container_width=True,
+            if ac1.button("✨ Analyze with AI", width="stretch",
                           help="Analyzes any titles not done yet (cached, so it's "
                                "one-time). Large histories take a little while."):
                 bar = st.progress(0.0)
@@ -2032,7 +2032,7 @@ with _t_hist:
                 with st.spinner("Asking the AI to clean up your titles…"):
                     ai.analyze_titles(titles_all, progress=_prog)
                 st.rerun()
-            if ac2.button("🏷️ Write tags to files", use_container_width=True,
+            if ac2.button("🏷️ Write tags to files", width="stretch",
                           help="Writes artist/title/genre into the actual files "
                                "(only where the file still exists)."):
                 done = 0
@@ -2060,12 +2060,12 @@ with _t_hist:
                 g1.markdown("**By category**")
                 for c, n in cats.most_common():
                     if g1.button(f"{c} · {n}", key=f"smcat_{c}",
-                                 use_container_width=True):
+                                 width="stretch"):
                         st.session_state.smart_pick = ("category", c)
                 g2.markdown("**Top artists**")
                 for a, n in arts.most_common(12):
                     if g2.button(f"{a} · {n}", key=f"smart_{a}",
-                                 use_container_width=True):
+                                 width="stretch"):
                         st.session_state.smart_pick = ("artist", a)
 
                 pick = st.session_state.get("smart_pick")
@@ -2248,8 +2248,8 @@ with _t_hist:
                                 key="hist_per_page", label_visibility="collapsed")
         pc3.download_button("⬇️ Export", _hist_csv(filtered),
                             file_name="umd_history.csv", mime="text/csv",
-                            use_container_width=True, disabled=not filtered)
-        if pc4.button("🗑️ Clear all", use_container_width=True,
+                            width="stretch", disabled=not filtered)
+        if pc4.button("🗑️ Clear all", width="stretch",
                       help="Permanently remove every VISIBLE history entry "
                            "(your permanent archive is kept)"):
             hist.clear_history()
@@ -2272,14 +2272,14 @@ with _t_hist:
                 cur_page = min(st.session_state.get("hist_page", 1), total_pages)
                 n1, n2, n3 = st.columns([1, 2, 1])
                 if n1.button("← Prev", key="hist_prev", disabled=cur_page <= 1,
-                             use_container_width=True):
+                             width="stretch"):
                     st.session_state.hist_page = cur_page - 1
                     st.rerun()
                 n2.markdown(f"<div style='text-align:center;padding-top:6px'>Page "
                             f"**{cur_page}** of **{total_pages}**</div>",
                             unsafe_allow_html=True)
                 if n3.button("Next →", key="hist_next", disabled=cur_page >= total_pages,
-                             use_container_width=True):
+                             width="stretch"):
                     st.session_state.hist_page = cur_page + 1
                     st.rerun()
                 start = (cur_page - 1) * per
@@ -2357,10 +2357,10 @@ with _t_arch:
                        f"download(s) · {fmt_size(sum(r.get('size', 0) for r in af))}")
             s2.download_button("⬇️ Export CSV", archive.to_csv(af),
                                file_name="umd_archive.csv", mime="text/csv",
-                               use_container_width=True, disabled=not af)
+                               width="stretch", disabled=not af)
             ap = af[:200]
             if ap and s3.button(f"⤓ Re-download ({len(ap)})", key="arch_redl_all",
-                                use_container_width=True,
+                                width="stretch",
                                 help="Re-fetch the shown records from their links"):
                 jobs = [{"url": r["url"], "title": r.get("title", ""),
                          "fmt": r.get("fmt", "audio"),
@@ -2469,7 +2469,7 @@ with _t_clean:
                                or "no valid folder"))
     sc1, sc2 = st.columns([2, 1])
     if sc1.button("🔍 Scan for duplicates", disabled=not scan_folders,
-                  use_container_width=True):
+                  width="stretch"):
         bar = st.progress(0.0)
         note = st.empty()
 
@@ -2512,7 +2512,7 @@ with _t_clean:
                                f"reclaims {fmt_size(g['recover'])}")
             q1, q2 = st.columns([2, 1])
             if q1.button("🛡️ Move duplicates to Quarantine", type="primary",
-                         use_container_width=True,
+                         width="stretch",
                          help="Moves (not deletes) the duplicates into "
                               "Quarantine/Duplicates — fully restorable"):
                 to_move = [d for g in dup_groups for d in g["dups"]]
@@ -2520,7 +2520,7 @@ with _t_clean:
                 st.success(f"Moved **{moved}** duplicate(s) to Quarantine "
                            f"(`{batch}`). Restore anytime below.")
                 st.session_state.pop("dup_groups", None)
-            if q2.button("Keep all", use_container_width=True):
+            if q2.button("Keep all", width="stretch"):
                 st.session_state.pop("dup_groups", None)
                 st.rerun()
 
@@ -2538,13 +2538,13 @@ with _t_clean:
                     bc1.markdown(f"**{b['name']}** · {len(b['items'])} file(s) · "
                                  f"{fmt_size(b['bytes'])}")
                     if bc2.button("♻️ Restore", key=f"qr_{b['name']}",
-                                  use_container_width=True):
+                                  width="stretch"):
                         n = library.restore_batch(b["batch"])
                         st.success(f"Restored **{n}** file(s) to their original "
                                    "locations.")
                         st.rerun()
                     if bc3.button("🗑️ Delete", key=f"qp_{b['name']}",
-                                  use_container_width=True,
+                                  width="stretch",
                                   help="Permanently remove this batch (to Recycle Bin)"):
                         n = library.purge_batch(b["batch"])
                         st.success(f"Permanently removed **{n}** file(s) "
@@ -2659,7 +2659,7 @@ with _t_insights:
             cc = st.columns(3)
             for i, (label, kind, val, cnt) in enumerate(colls):
                 if cc[i % 3].button(f"{label} · {cnt}", key=f"coll_{kind}_{val}",
-                                    use_container_width=True):
+                                    width="stretch"):
                     st.session_state.coll_pick = (kind, val)
 
             cp = st.session_state.get("coll_pick")
