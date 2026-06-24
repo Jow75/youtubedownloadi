@@ -1082,6 +1082,7 @@ ai_cache = ai.cached_analysis() if ai_on else {}
 #  DISCOVER  (YouTube Data API v3 — mirrors the mobile app's Discover)
 # =========================================================================== #
 @st.cache_data(ttl=discover.TRENDING_TTL, show_spinner="Loading trending…")
+@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
 def _disc_trending(region, cat):
     try:
         return [v.as_dict() for v in discover.trending(region, cat)], None
@@ -1199,13 +1200,22 @@ def discover_panel():
                 "(place your key in a `youtube.key` file next to the app).")
         return
 
-    sc = st.columns([5, 2])
+    sc = st.columns([5, 1.7, 0.8])
     q = sc[0].text_input("Search", key="disc_q", label_visibility="collapsed",
                          placeholder="🔎 Search artists, songs, channels…")
     order = sc[1].selectbox("Sort", ["relevance", "date", "viewCount"],
                             format_func=lambda o: {"relevance": "Relevance", "date": "Newest",
                                                    "viewCount": "Most viewed"}[o],
                             key="disc_order", label_visibility="collapsed")
+    # Manual refresh — the ONLY thing that re-queries YouTube; everything else is
+    # served from the snapshot/cache so leaving and returning never re-fetches.
+    if sc[2].button("🔄", key="disc_refresh", help="Refresh Discover (re-query YouTube)",
+                    use_container_width=True):
+        for _fn in (_disc_search, _disc_trending, _disc_uploads, _disc_playlist,
+                    _disc_chinfo, _disc_chpls, _disc_artist):
+            _fn.clear()
+        st.session_state.pop("disc_results", None)
+        st.rerun()
     query = (q or "").strip()
 
     # An opened channel/playlist shows its videos at the top (above results/trending).
@@ -1265,11 +1275,20 @@ def discover_panel():
         st.divider()
 
     if query:
-        res, err = _disc_search(query, order)
+        # Snapshot the results in session_state so returning to Discover shows the
+        # exact same page without re-querying — we only fetch when the query/order
+        # actually changes (or you hit 🔄 Refresh, which clears the snapshot).
+        snap = st.session_state.get("disc_results")
+        if not snap or snap.get("q") != query or snap.get("order") != order:
+            res, err = _disc_search(query, order)
+            snap = {"q": query, "order": order, "res": res, "err": err}
+            st.session_state["disc_results"] = snap
+        res, err = snap["res"], snap["err"]
         if err:
             st.warning(err)
             if st.button("🔄 Try again", key="disc_retry"):
                 _disc_search.clear()
+                st.session_state.pop("disc_results", None)
                 st.rerun()
             return
         if res["channels"]:
