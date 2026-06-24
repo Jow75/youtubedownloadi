@@ -10,6 +10,7 @@ case/spacing variants merge into one ("BAD BUNNY" == "Bad Bunny").
 
 import os
 import re
+import unicodedata
 
 # Separators that join collaborating artists. "x"/"and"/"vs" only as whole words.
 _SPLIT = re.compile(
@@ -19,8 +20,11 @@ _FNAME = re.compile(r"^(.{1,60}?)\s[-–—]\s+.+")
 
 
 def artist_key(name):
-    """Normalized identity — collapses case/spacing/punctuation."""
-    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+    """Normalized identity — collapses case, spacing, punctuation AND accents, so
+    'Beyoncé' == 'Beyonce' and 'BAD BUNNY' == 'Bad Bunny' map to one key."""
+    s = unicodedata.normalize("NFKD", (name or "").lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))   # fold accents é→e
+    return re.sub(r"[^a-z0-9]", "", s)
 
 
 def _case_score(s):

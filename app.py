@@ -2574,8 +2574,13 @@ with _t_insights:
         aud = sum(1 for h in all_hist if h.get("fmt") == "audio")
         vid = n - aud
         sites = Counter(h.get("site") or "Other" for h in all_hist)
-        arts = Counter(_ai_meta(h).get("artist") for h in all_hist
-                       if _ai_meta(h).get("artist"))
+        # Merge artist case/spacing/accent variants the SAME way Library Artists
+        # does (artists.collapse_artist_counts), so "Bad Bunny" never splits into
+        # two rows with different counts. `arts` stays a Counter for the rest of
+        # the code (most_common); it just holds the canonical, merged names.
+        _raw_arts = Counter(_ai_meta(h).get("artist") for h in all_hist
+                            if _ai_meta(h).get("artist"))
+        arts = Counter(dict(artists.collapse_artist_counts(dict(_raw_arts))))
         cats = Counter(_ai_meta(h).get("category") for h in all_hist
                        if _ai_meta(h).get("category"))
         hours, wdays = Counter(), Counter()
@@ -2665,7 +2670,12 @@ with _t_insights:
             cp = st.session_state.get("coll_pick")
             if cp:
                 ckind, cval = cp
-                citems = [h for h in all_hist if _ai_meta(h).get(ckind) == cval]
+                if ckind == "artist":          # match every spelling/case/accent variant
+                    _ck = artists.artist_key(cval)
+                    citems = [h for h in all_hist
+                              if artists.artist_key(_ai_meta(h).get("artist") or "") == _ck]
+                else:
+                    citems = [h for h in all_hist if _ai_meta(h).get(ckind) == cval]
                 t1, t2 = st.columns([4, 1])
                 t1.markdown(f"#### {cval} — {len(citems)} item(s)")
                 if t2.button("Close", key="coll_close"):
