@@ -8,7 +8,10 @@
 #    winget install Gyan.FFmpeg aria2.aria2 OpenJS.NodeJS.LTS
 #    python license_tool.py --init        # creates secret.key (kept private)
 # ============================================================================
-$ErrorActionPreference = "Stop"
+# "Continue" (not "Stop") so PyInstaller's INFO lines on stderr don't abort the
+# build under PowerShell's native-stderr handling. Real failures are still caught:
+# every gate below uses an explicit `throw`, which terminates regardless.
+$ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
             [System.Environment]::GetEnvironmentVariable("Path","User")
@@ -78,6 +81,12 @@ python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --add-data "archive.py;." `
     --add-data "library.py;." `
     --add-data "licensing.py;." `
+    --add-data "artists.py;." `
+    --add-data "chats.py;." `
+    --add-data "discover.py;." `
+    --add-data "follows.py;." `
+    --add-data "player.py;." `
+    --add-data "playlists.py;." `
     --add-data "secret.key;."
 
 # 3) Drop the media binaries next to the exe (loaded onto PATH at runtime).
