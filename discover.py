@@ -31,8 +31,8 @@ BASE = "https://www.googleapis.com/youtube/v3"
 # shorten further once you have several keys IN SEPARATE Google Cloud projects
 # (real extra quota). Trending/uploads/channel calls cost 1 unit each (cheap, so
 # 2h); search costs 100 units (kept at 6h to protect quota).
-TRENDING_TTL = 2 * 60 * 60        # 2h  (was 6h) — trending, uploads, channel info
-SEARCH_TTL = 6 * 60 * 60          # 6h  (was 24h) — search (100 units/call)
+TRENDING_TTL = 1 * 60 * 60        # 1h — trending/uploads/channel (1 unit/call, cheap)
+SEARCH_TTL = 4 * 60 * 60          # 4h — search (100 units/call, so kept longer)
 
 
 # --------------------------------------------------------------------------- #
@@ -237,13 +237,21 @@ def _http_get_once(url):
     raise last or IOError("Couldn't reach YouTube.")
 
 
+_rr = 0  # round-robin cursor — spreads load across projects instead of draining one
+
+
 def _http_get(url):
-    """Fetch with transient-retry, AND automatic key rotation: if a key's daily
-    quota is exhausted (403), fall through to the next configured key so Discover
-    keeps working. With a single key this behaves exactly as before."""
+    """Fetch with transient-retry AND key rotation. Each call starts at a different
+    key (round-robin) so multiple projects share the traffic; on a 403 quota error
+    it falls through to the next key, so an exhausted project never breaks Discover.
+    With a single key this behaves exactly as before."""
+    global _rr
     keys = api_keys() or [""]
+    n = len(keys)
+    _rr = (_rr + 1) % n
+    order = keys[_rr:] + keys[:_rr]                   # rotate the starting point
     last = None
-    for key in keys:
+    for key in order:
         try:
             return _http_get_once(_swap_key(url, key))
         except _QuotaExceeded as e:
