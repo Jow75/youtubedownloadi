@@ -87,6 +87,7 @@ python -m PyInstaller desktop.py --name UMD --noconfirm --windowed `
     --add-data "follows.py;." `
     --add-data "player.py;." `
     --add-data "playlists.py;." `
+    --add-data "youtube.key;." `
     --add-data "secret.key;."
 
 # 3) Drop the media binaries next to the exe (loaded onto PATH at runtime).

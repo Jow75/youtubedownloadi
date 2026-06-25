@@ -82,7 +82,7 @@ class DiscoverPlaylist:
 # --------------------------------------------------------------------------- #
 #  API key (embedded, like the mobile build)
 # --------------------------------------------------------------------------- #
-_key_cache = None
+_keys_cache = None
 
 
 def _from_secret_properties():
@@ -99,28 +99,48 @@ def _from_secret_properties():
     return ""
 
 
-def api_key():
-    global _key_cache
-    if _key_cache is not None:
-        return _key_cache
-    k = (os.environ.get("UMD_YOUTUBE_KEY") or "").strip()
-    if not k:
+def api_keys():
+    """ALL configured YouTube keys, in priority order, for quota failover.
+    Sources: env UMD_YOUTUBE_KEY (comma/space separated) -> youtube.key (ONE KEY
+    PER LINE; '#' lines ignored) -> mobile/secret.properties. De-duped, ordered.
+    Add more keys = paste more lines into youtube.key; rotation is automatic."""
+    global _keys_cache
+    if _keys_cache is not None:
+        return _keys_cache
+    out = []
+    env = (os.environ.get("UMD_YOUTUBE_KEY") or "").strip()
+    if env:
+        out += [k.strip() for k in re.split(r"[,\s]+", env) if k.strip()]
+    if not out:
         for p in (HERE / "youtube.key", licensing.config_dir() / "youtube.key"):
             try:
                 if p.is_file():
-                    k = p.read_text(encoding="utf-8").strip()
-                    if k:
+                    out += [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines()
+                            if ln.strip() and not ln.strip().startswith("#")]
+                    if out:
                         break
             except OSError:
                 pass
-    if not k:
-        k = _from_secret_properties()
-    _key_cache = k
-    return k
+    if not out:
+        sp = _from_secret_properties()
+        if sp:
+            out.append(sp)
+    seen, uniq = set(), []
+    for k in out:
+        if k not in seen:
+            seen.add(k)
+            uniq.append(k)
+    _keys_cache = uniq
+    return uniq
+
+
+def api_key():
+    ks = api_keys()
+    return ks[0] if ks else ""
 
 
 def has_key():
-    return bool(api_key())
+    return bool(api_keys())
 
 
 # --------------------------------------------------------------------------- #
@@ -160,7 +180,11 @@ def _write_cache(key, body):
 #  HTTP with retry for transient failures (port of the Kotlin retry)
 # --------------------------------------------------------------------------- #
 class _PermanentHttp(Exception):
-    """A 4xx the caller shouldn't retry (bad request / quota / forbidden)."""
+    """A 4xx the caller shouldn't retry (bad request / forbidden)."""
+
+
+class _QuotaExceeded(_PermanentHttp):
+    """403 quota/limit — rotate to the next API key if we have one."""
 
 
 def _parse_err(body, code):
@@ -173,7 +197,17 @@ def _parse_err(body, code):
         return f"Couldn't reach YouTube (HTTP {code})."
 
 
-def _http_get(url):
+def _swap_key(url, key):
+    """Put `key` into the URL's key= param (keys rotate; the rest of the URL —
+    and therefore the cache key — stays the same)."""
+    if not key:
+        return url
+    if re.search(r"[?&]key=", url):
+        return re.sub(r"([?&]key=)[^&]*", lambda m: m.group(1) + key, url)
+    return url + ("&" if "?" in url else "?") + "key=" + key
+
+
+def _http_get_once(url):
     last = None
     for attempt in range(3):
         try:
@@ -187,6 +221,8 @@ def _http_get(url):
             except Exception:
                 pass
             msg = _parse_err(body, e.code)
+            if e.code == 403:
+                raise _QuotaExceeded(msg)             # spent key → caller rotates
             if 400 <= e.code < 500 and e.code not in (408, 429):
                 raise _PermanentHttp(msg)            # permanent → don't retry
             last = IOError(msg)                       # 5xx / 408 / 429 → retry
@@ -195,6 +231,21 @@ def _http_get(url):
         if attempt < 2:
             time.sleep(0.5 * (attempt + 1))
     raise last or IOError("Couldn't reach YouTube.")
+
+
+def _http_get(url):
+    """Fetch with transient-retry, AND automatic key rotation: if a key's daily
+    quota is exhausted (403), fall through to the next configured key so Discover
+    keeps working. With a single key this behaves exactly as before."""
+    keys = api_keys() or [""]
+    last = None
+    for key in keys:
+        try:
+            return _http_get_once(_swap_key(url, key))
+        except _QuotaExceeded as e:
+            last = e                                  # this key is spent — try next
+            continue
+    raise last or _QuotaExceeded("YouTube daily limit reached on all keys.")
 
 
 def _cached_fetch(cache_key, url, ttl):

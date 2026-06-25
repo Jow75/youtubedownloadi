@@ -98,6 +98,12 @@ def _inject_brand_css():
     st.markdown("""
     <style>
       #MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"] { visibility:hidden; height:0; }
+      /* Always keep the sidebar show/hide control reachable (the arrow that
+         reopens the left panel after you collapse it). */
+      [data-testid="stSidebarCollapsedControl"], [data-testid="collapsedControl"],
+      [data-testid="stSidebarCollapseButton"], [data-testid="stExpandSidebarButton"],
+      [data-testid="stSidebarCollapsedControl"] button, [data-testid="stSidebarHeader"] button {
+        visibility:visible !important; opacity:1 !important; z-index:1000000 !important; }
       .block-container { padding-top:1.6rem; padding-bottom:3rem; max-width:1200px; }
       button[data-baseweb="tab"] { font-weight:600; font-size:14.5px; }
       [data-baseweb="tab-highlight"] { background-color:#8B6CFF !important; }
