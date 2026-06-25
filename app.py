@@ -22,6 +22,7 @@ aria2c optional (turbo downloads).
 import base64
 import os
 import random
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -140,6 +141,22 @@ def _inject_brand_css():
       [class*="st-key-amsg_"] code, [class*="st-key-umsg_"] code { background:#241a3a;
         padding:1px 6px; border-radius:6px; font-size:13.5px; }
       [data-testid="stChatInput"] { border-radius:16px; }
+
+      /* ---- Discover library-awareness (✅ downloaded · 🔄 downloading) ---- */
+      .umd-thumb { position:relative; line-height:0; }
+      .umd-thumb img { width:100%; border-radius:12px; display:block; }
+      .umd-badge { position:absolute; top:7px; right:7px; width:26px; height:26px;
+        border-radius:50%; display:flex; align-items:center; justify-content:center;
+        font-size:15px; font-weight:800; box-shadow:0 2px 8px rgba(0,0,0,.5); }
+      .umd-have { background:#16a34a; color:#fff; }
+      .umd-busy { background:rgba(0,0,0,.62); }
+      .umd-have-txt { color:#3ad07a; font-weight:600; font-size:13px; }
+      .umd-busy-txt { color:#cbb9ff; font-weight:600; font-size:13px;
+        display:inline-flex; align-items:center; gap:7px; }
+      .umd-spinner { width:14px; height:14px; border:2px solid rgba(255,255,255,.35);
+        border-top-color:#fff; border-radius:50%; display:inline-block;
+        animation:umd-spin .8s linear infinite; }
+      @keyframes umd-spin { to { transform:rotate(360deg); } }
     </style>""", unsafe_allow_html=True)
 
 
@@ -1156,27 +1173,105 @@ def _disc_playlist(playlist_id):
         return [], str(e)
 
 
+def _disc_norm(s):
+    """Title/filename identity — lowercase, alphanumerics only (mirrors mobile
+    DownloadedIndex.norm), so a Discover title matches its saved file name."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _yt_id(url):
+    """Extract the 11-char YouTube video id from a URL (or '')."""
+    m = re.search(r"(?:v=|/shorts/|youtu\.be/|/embed/|/v/)([A-Za-z0-9_-]{11})", url or "")
+    return m.group(1) if m else ""
+
+
+@st.cache_data(show_spinner=False)
+def _disc_lib_index(_sig):
+    """What's already in the library, for Discover ticks: (video_ids, title_norms)
+    from history entries whose file still exists on disk. Cached on _sig (history
+    size) so it rebuilds when a download finishes — Phase Echo reruns the app then,
+    so the ✅ appears instantly with no manual refresh. A deleted file drops out."""
+    vids, norms = set(), set()
+    for h in all_hist:
+        p = h.get("path")
+        if not (p and os.path.isfile(p)):
+            continue
+        v = _yt_id(h.get("url", ""))
+        if v:
+            vids.add(v)
+        for s in (h.get("title"), os.path.splitext(os.path.basename(p))[0]):
+            n = _disc_norm(s)
+            if n:
+                norms.add(n)
+    return vids, norms
+
+
+def _disc_active():
+    """URLs / video_ids currently downloading or queued (for the 🔄 state)."""
+    urls, vids = set(), set()
+    try:
+        for j in downloads.get_manager().snapshot():
+            if j.status in ("queued", "downloading"):
+                urls.add(j.url)
+                v = _yt_id(j.url)
+                if v:
+                    vids.add(v)
+    except Exception:  # noqa: BLE001
+        pass
+    return urls, vids
+
+
+def _disc_thumb(thumb, state):
+    """Thumbnail with a corner badge: state 'have' = green ✅, 'busy' = spinner."""
+    badge = ""
+    if state == "have":
+        badge = "<span class='umd-badge umd-have'>✓</span>"
+    elif state == "busy":
+        badge = "<span class='umd-badge umd-busy'><span class='umd-spinner'></span></span>"
+    inner = (f"<img src='{thumb}'>" if thumb
+             else "<div style='aspect-ratio:16/9;background:linear-gradient(135deg,#2a2342,#171128);"
+                  "border-radius:12px;display:flex;align-items:center;justify-content:center;"
+                  "font-size:30px'>🎬</div>")
+    st.markdown(f"<div class='umd-thumb'>{inner}{badge}</div>", unsafe_allow_html=True)
+
+
 def _disc_video_grid(items, key_prefix, cols=4):
-    """A row-wrapped grid of video cards — thumbnail, title, channel, MP3/MP4."""
+    """A grid of video cards that KNOWS the library: every card is in exactly one
+    state — ✅ already downloaded · 🔄 downloading · ⬇️ MP3/MP4. Works on every
+    Discover surface (search, trending, channel, playlist, artist/follow shelves)."""
+    have_vids, have_norms = _disc_lib_index(len(all_hist))
+    busy_urls, busy_vids = _disc_active()
     for start in range(0, len(items), cols):
         row = items[start:start + cols]
         columns = st.columns(cols)
         for idx, (col, it) in enumerate(zip(columns, row)):
             gi = start + idx
             with col:
-                if it.get("thumb"):
-                    st.image(it["thumb"], width="stretch")
+                vid = it.get("video_id", "")
+                downloaded = vid in have_vids or _disc_norm(it.get("title", "")) in have_norms
+                downloading = (not downloaded) and (it.get("url") in busy_urls or vid in busy_vids)
+                _disc_thumb(it.get("thumb"),
+                            "have" if downloaded else "busy" if downloading else "none")
                 dur = it.get("duration_sec") or 0
                 meta = f"{dur // 60}:{dur % 60:02d}" if dur else ""
                 st.markdown(f"**{it['title'][:70]}**")
                 st.caption(it["channel"] + (f"  ·  {meta}" if meta else ""))
-                b = st.columns(2)
-                if b[0].button("🎵 MP3", key=f"{key_prefix}_a_{gi}_{it['video_id']}", width="stretch"):
-                    enqueue([{"url": it["url"], "fmt": "audio", "title": it["title"]}])
-                    st.toast(f"Queued MP3 · {it['title'][:36]}")
-                if b[1].button("🎬 MP4", key=f"{key_prefix}_v_{gi}_{it['video_id']}", width="stretch"):
-                    enqueue([{"url": it["url"], "fmt": "video", "title": it["title"]}])
-                    st.toast(f"Queued MP4 · {it['title'][:36]}")
+                if downloaded:
+                    st.markdown("<span class='umd-have-txt'>✓ In your library</span>",
+                                unsafe_allow_html=True)
+                elif downloading:
+                    st.markdown("<span class='umd-busy-txt'><span class='umd-spinner'></span>"
+                                " Downloading…</span>", unsafe_allow_html=True)
+                else:
+                    b = st.columns(2)
+                    if b[0].button("🎵 MP3", key=f"{key_prefix}_a_{gi}_{vid}", width="stretch"):
+                        enqueue([{"url": it["url"], "fmt": "audio", "title": it["title"]}])
+                        st.toast(f"Queued MP3 · {it['title'][:36]}")
+                        st.rerun()
+                    if b[1].button("🎬 MP4", key=f"{key_prefix}_v_{gi}_{vid}", width="stretch"):
+                        enqueue([{"url": it["url"], "fmt": "video", "title": it["title"]}])
+                        st.toast(f"Queued MP4 · {it['title'][:36]}")
+                        st.rerun()
 
 
 @st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
