@@ -1020,15 +1020,16 @@ def downloads_panel():
     active = [j for j in jobs if j.status in ("downloading", "queued")]
     finished = [j for j in jobs if j.status in ("done", "error", "canceled")]
 
-    # PHASE ECHO — when a download FINISHES, rerun the WHOLE app once (not just this
-    # fragment) so the Assistant's in-chat card, Library, Recent and artist/playlist
-    # collections flip to "done" on their own. This fragment already ticks every 2s,
-    # so it notices completion within ~2s — no extra message or manual reload needed.
-    _settled = c["done"] + c["error"]
-    _prev_settled = st.session_state.get("_dl_settled")
-    st.session_state["_dl_settled"] = _settled
-    if _prev_settled is not None and _settled > _prev_settled:
-        st.rerun()                       # full-app rerun (default scope) from the fragment
+    # PHASE ECHO (refined) — refresh the rest of the app ONCE, when the queue fully
+    # DRAINS (everything finished), so the Assistant card / Library / Discover ticks
+    # update on their own. Doing it per-song caused the page you're on (e.g. a
+    # Discover search) to flicker/rebuild repeatedly during a batch — so we now only
+    # rerun on the active→idle transition, never mid-batch.
+    _active_now = c["active"] + c["queued"]
+    _prev_active = st.session_state.get("_dl_active_prev", 0)
+    st.session_state["_dl_active_prev"] = _active_now
+    if _prev_active and _active_now == 0:
+        st.rerun()                       # queue just drained — one full-app refresh
 
     with st.container(border=True):
         h1, h2, h3 = st.columns([5, 1.1, 1.1])
@@ -1326,6 +1327,16 @@ def _top_artists(n=3, limit=150):
     return [name for name, _c in sorted(collapsed, key=lambda x: -x[1])[:n]]
 
 
+def _disc_on_search():
+    """Fires ONLY when YOU edit the search box (not on background reruns). Sets the
+    sticky active query and forces a fresh fetch — so downloading never changes the
+    view, and the search stays put until you search again or hit Discover Home."""
+    st.session_state["disc_query"] = (st.session_state.get("disc_q") or "").strip()
+    st.session_state.pop("disc_results", None)
+    for k in ("disc_open_channel", "disc_open_playlist", "disc_open_title"):
+        st.session_state.pop(k, None)
+
+
 def discover_panel():
     """Download-first 'mini YouTube' — trending shelves + mixed search, mirroring
     the mobile Discover. Every result is one tap to MP3/MP4 via the same engine."""
@@ -1334,15 +1345,20 @@ def discover_panel():
                 "(place your key in a `youtube.key` file next to the app).")
         return
 
+    # Honour a "Discover Home" click from last run: clear the box BEFORE the widget
+    # is created (you can't set a widget value after it's instantiated).
+    if st.session_state.pop("_disc_clear_box", False):
+        st.session_state["disc_q"] = ""
     sc = st.columns([5, 1.7, 0.8])
-    q = sc[0].text_input("Search", key="disc_q", label_visibility="collapsed",
-                         placeholder="🔎 Search artists, songs, channels…")
+    sc[0].text_input("Search", key="disc_q", on_change=_disc_on_search,
+                     label_visibility="collapsed",
+                     placeholder="🔎 Search artists, songs, channels…")
     order = sc[1].selectbox("Sort", ["relevance", "date", "viewCount"],
                             format_func=lambda o: {"relevance": "Relevance", "date": "Newest",
                                                    "viewCount": "Most viewed"}[o],
                             key="disc_order", label_visibility="collapsed")
-    # Manual refresh — the ONLY thing that re-queries YouTube; everything else is
-    # served from the snapshot/cache so leaving and returning never re-fetches.
+    # Manual refresh — re-queries YouTube; everything else is served from the
+    # snapshot/cache so leaving and returning never re-fetches.
     if sc[2].button("🔄", key="disc_refresh", help="Refresh Discover (re-query YouTube)",
                     width="stretch"):
         for _fn in (_disc_search, _disc_trending, _disc_uploads, _disc_playlist,
@@ -1350,12 +1366,26 @@ def discover_panel():
             _fn.clear()
         st.session_state.pop("disc_results", None)
         st.rerun()
-    query = (q or "").strip()
+    # STICKY: the view is driven by this session value, set only when you edit the
+    # box — never by a background rerun. Downloads can't change what you're viewing.
+    query = st.session_state.get("disc_query", "").strip()
     _follows = st.session_state.setdefault("desk_follows", follows.load())
 
     # An opened channel/playlist shows its videos at the top (above results/trending).
     open_ch = st.session_state.get("disc_open_channel")
     open_pl = st.session_state.get("disc_open_playlist")
+
+    # One-click return to default Discover — only shown when you're in a search or
+    # an opened channel/playlist (so there's somewhere to go back from).
+    if query or open_ch or open_pl:
+        if st.button("🏠  Discover Home — trending, music & your follows",
+                     key="disc_home", width="stretch"):
+            for k in ("disc_query", "disc_results", "disc_open_channel",
+                      "disc_open_playlist", "disc_open_title"):
+                st.session_state.pop(k, None)
+            st.session_state["_disc_clear_box"] = True
+            st.rerun()
+
     def _disc_close_btn(col):
         if col.button("✕ Close", key="disc_close"):
             for k in ("disc_open_channel", "disc_open_playlist", "disc_open_title"):
