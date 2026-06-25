@@ -27,8 +27,12 @@ import licensing
 
 HERE = Path(__file__).resolve().parent
 BASE = "https://www.googleapis.com/youtube/v3"
-TRENDING_TTL = 6 * 60 * 60        # 6h (seconds)
-SEARCH_TTL = 24 * 60 * 60         # 24h (search costs 100 quota units)
+# Cache lifetimes (seconds). Shorter = fresher content but more API calls. Safe to
+# shorten further once you have several keys IN SEPARATE Google Cloud projects
+# (real extra quota). Trending/uploads/channel calls cost 1 unit each (cheap, so
+# 2h); search costs 100 units (kept at 6h to protect quota).
+TRENDING_TTL = 2 * 60 * 60        # 2h  (was 6h) — trending, uploads, channel info
+SEARCH_TTL = 6 * 60 * 60          # 6h  (was 24h) — search (100 units/call)
 
 
 # --------------------------------------------------------------------------- #

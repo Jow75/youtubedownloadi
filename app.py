@@ -778,35 +778,43 @@ def _sort_playlists(pls, sort):
 _PAGE_SIZES = {"10": 10, "20": 20, "30": 30, "50": 50, "All": 10 ** 9}
 
 
-def _paginate(items, key, default="20"):
-    """Compact paginator: per-page selector + Prev / 'Page x of N' / Next. Returns
-    the current page's slice; page-size and page persist per `key`. Used for big
-    Artists / Playlists / Collections / History / Search lists."""
+def _paginate(items, key, default="20", noun="item"):
+    """Paginator with a HARD-TO-MISS page indicator, so users realise more items
+    live on other pages (a short Artists page once read as 'artist missing').
+    Per-page selector + Prev / 'Page x of N' / Next; state persists per `key`."""
     total = len(items)
-    top = st.columns([3, 1.4])
-    top[0].caption(f"{total} item(s)")
     _sizes = list(_PAGE_SIZES)
+    top = st.columns([3, 1.4])
     per = _PAGE_SIZES[top[1].selectbox("Per page", _sizes, index=_sizes.index(default),
                                        key=f"{key}_per", label_visibility="collapsed")]
     pages = max(1, (total + per - 1) // per)
     pk = f"{key}_pg"
     pg = min(st.session_state.get(pk, 1), pages)
+    start = (pg - 1) * per
+    lo, hi = (start + 1 if total else 0), min(start + per, total)
+    plural = noun + ("" if total == 1 else "s")
     if pages > 1:
+        top[0].markdown(
+            f"<div style='padding-top:7px'><b>{total} {plural}</b> · showing "
+            f"<b>{lo}–{hi}</b> · <span style='color:#9b86ff'>page <b>{pg} of {pages}</b></span>"
+            f" — use ← / → for the rest</div>", unsafe_allow_html=True)
         nav = st.columns([1, 2, 1])
         if nav[0].button("← Prev", key=f"{key}_prev", disabled=pg <= 1, width="stretch"):
             st.session_state[pk] = pg - 1; st.rerun()
-        nav[1].markdown(f"<div style='text-align:center;padding-top:6px'>Page "
-                        f"<b>{pg}</b> of <b>{pages}</b></div>", unsafe_allow_html=True)
+        nav[1].markdown(f"<div style='text-align:center;padding-top:6px;font-weight:700'>"
+                        f"Page {pg} / {pages}</div>", unsafe_allow_html=True)
         if nav[2].button("Next →", key=f"{key}_next", disabled=pg >= pages, width="stretch"):
             st.session_state[pk] = pg + 1; st.rerun()
-    start = (pg - 1) * per
+    else:
+        top[0].markdown(f"<div style='padding-top:7px'><b>{total} {plural}</b></div>",
+                        unsafe_allow_html=True)
     return items[start:start + per]
 
 
 def _lib_song_grid(items, key_prefix, sort="Newest", cols=6):
     """Grid of media cards (cover art + name + duration + play/open), paginated."""
     items = _sort_songs(items, sort)
-    page = _paginate(items, key_prefix)
+    page = _paginate(items, key_prefix, noun="song")
     for s in range(0, len(page), cols):
         cs = st.columns(cols)
         for col, it in zip(cs, page[s:s + cols]):
@@ -867,7 +875,7 @@ def _lib_artists_view(media, q, sort="Most songs"):
         collapsed = [(n, c) for n, c in collapsed if ql in n.lower()]
     collapsed = _sort_artist_rows(collapsed, sort, recency)
     cols_n = 6
-    page = _paginate(collapsed, "lib_art")
+    page = _paginate(collapsed, "lib_art", noun="artist")
     for s in range(0, len(page), cols_n):
         cs = st.columns(cols_n)
         for col, (name, n) in zip(cs, page[s:s + cols_n]):
@@ -966,7 +974,7 @@ def _lib_playlists_view(media, sort="Newest"):
         st.caption("No playlists yet — name one above and Create, then add songs.")
         return
     _cols_n = 6
-    _pls_view = _paginate(_sort_playlists(pls, sort), "lib_pls")
+    _pls_view = _paginate(_sort_playlists(pls, sort), "lib_pls", noun="playlist")
     for _s in range(0, len(_pls_view), _cols_n):
         _cs = st.columns(_cols_n)
         for _col, _pl in zip(_cs, _pls_view[_s:_s + _cols_n]):
@@ -1365,7 +1373,7 @@ def discover_panel():
                     st.rerun()
         if res["videos"]:
             st.markdown("##### ▶️ Videos — tap to download")
-            _disc_video_grid(_paginate(res["videos"], "disc_v"), "disc_v")
+            _disc_video_grid(_paginate(res["videos"], "disc_v", noun="video"), "disc_v")
         if not (res["videos"] or res["channels"] or res["playlists"]):
             _empty("🔎", "No results", f"Nothing found for “{query}” — try another search.")
     elif not (open_ch or open_pl):
