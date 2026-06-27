@@ -1265,14 +1265,17 @@ def _disc_video_grid(items, key_prefix, cols=4):
                                 " Downloading…</span>", unsafe_allow_html=True)
                 else:
                     b = st.columns(2)
+                    # NO explicit st.rerun() here: the button click already reruns
+                    # once (which preserves the Discover tab). A second programmatic
+                    # rerun per click let rapid clicks "ghost" onto Home widgets —
+                    # flipping the tab and auto-playing a Recent song. The toast is
+                    # the confirmation; the ✅/spinner badge updates on the next run.
                     if b[0].button("🎵 MP3", key=f"{key_prefix}_a_{gi}_{vid}", width="stretch"):
                         enqueue([{"url": it["url"], "fmt": "audio", "title": it["title"]}])
                         st.toast(f"Queued MP3 · {it['title'][:36]}")
-                        st.rerun()
                     if b[1].button("🎬 MP4", key=f"{key_prefix}_v_{gi}_{vid}", width="stretch"):
                         enqueue([{"url": it["url"], "fmt": "video", "title": it["title"]}])
                         st.toast(f"Queued MP4 · {it['title'][:36]}")
-                        st.rerun()
 
 
 @st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
