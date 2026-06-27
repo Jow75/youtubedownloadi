@@ -1,4 +1,7 @@
-streamlit>=1.33
+# Pinned below 1.59: the floating player uses st.components.v1.html (a JS iframe),
+# which Streamlit deprecates and plans to remove. Keep a version that still has it
+# until the player is migrated off it. 1.58.x is the tested baseline.
+streamlit>=1.58,<1.59
 yt-dlp
 yt-dlp-ejs
 pywebview>=5

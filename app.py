@@ -20,6 +20,7 @@ aria2c optional (turbo downloads).
 """
 
 import base64
+import logging
 import os
 import random
 import re
@@ -28,6 +29,19 @@ from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
+
+# Silence Streamlit's deprecation log spam for `st.components.v1.html` and
+# `use_container_width`. We KEEP components.html on purpose: the floating player
+# needs a sandboxed iframe with JavaScript (window.frameElement to drag/float,
+# and isolated CSS). st.html renders INLINE — it would leak the player's CSS into
+# the whole app and null out frameElement — so it isn't a drop-in replacement.
+# Streamlit is pinned (requirements.txt) to a version that still ships
+# components.html; a proper player migration is tracked as a separate task.
+_dep_logger = logging.getLogger("streamlit.deprecation_util")
+if not getattr(_dep_logger, "_umd_quiet", False):
+    _DEPREC_NEEDLES = ("components.v1.html", "use_container_width", "st.iframe")
+    _dep_logger.addFilter(lambda r: not any(n in r.getMessage() for n in _DEPREC_NEEDLES))
+    _dep_logger._umd_quiet = True
 
 import ai
 import archive
