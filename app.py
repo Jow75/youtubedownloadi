@@ -809,10 +809,12 @@ def _sort_playlists(pls, sort):
 _PAGE_SIZES = {"10": 10, "20": 20, "30": 30, "50": 50, "All": 10 ** 9}
 
 
-def _paginate(items, key, default="20", noun="item"):
+def _paginate(items, key, default="20", noun="item", scope="app"):
     """Paginator with a HARD-TO-MISS page indicator, so users realise more items
     live on other pages (a short Artists page once read as 'artist missing').
-    Per-page selector + Prev / 'Page x of N' / Next; state persists per `key`."""
+    Per-page selector + Prev / 'Page x of N' / Next; state persists per `key`.
+    `scope="fragment"` when called inside a fragment (Discover) so paging doesn't
+    flash the whole app."""
     total = len(items)
     _sizes = list(_PAGE_SIZES)
     top = st.columns([3, 1.4])
@@ -831,11 +833,11 @@ def _paginate(items, key, default="20", noun="item"):
             f" — use ← / → for the rest</div>", unsafe_allow_html=True)
         nav = st.columns([1, 2, 1])
         if nav[0].button("← Prev", key=f"{key}_prev", disabled=pg <= 1, width="stretch"):
-            st.session_state[pk] = pg - 1; st.rerun()
+            st.session_state[pk] = pg - 1; st.rerun(scope=scope)
         nav[1].markdown(f"<div style='text-align:center;padding-top:6px;font-weight:700'>"
                         f"Page {pg} / {pages}</div>", unsafe_allow_html=True)
         if nav[2].button("Next →", key=f"{key}_next", disabled=pg >= pages, width="stretch"):
-            st.session_state[pk] = pg + 1; st.rerun()
+            st.session_state[pk] = pg + 1; st.rerun(scope=scope)
     else:
         top[0].markdown(f"<div style='padding-top:7px'><b>{total} {plural}</b></div>",
                         unsafe_allow_html=True)
@@ -1354,6 +1356,7 @@ def _disc_on_search():
         st.session_state.pop(k, None)
 
 
+@st.fragment   # clicks inside Discover rerun ONLY here -> no full-page flash
 def discover_panel():
     """Download-first 'mini YouTube' — trending shelves + mixed search, mirroring
     the mobile Discover. Every result is one tap to MP3/MP4 via the same engine."""
@@ -1382,7 +1385,7 @@ def discover_panel():
                     _disc_chinfo, _disc_chpls, _disc_artist):
             _fn.clear()
         st.session_state.pop("disc_results", None)
-        st.rerun()
+        st.rerun(scope="fragment")
     # STICKY: the view is driven by this session value, set only when you edit the
     # box — never by a background rerun. Downloads can't change what you're viewing.
     query = st.session_state.get("disc_query", "").strip()
@@ -1401,13 +1404,13 @@ def discover_panel():
                       "disc_open_playlist", "disc_open_title"):
                 st.session_state.pop(k, None)
             st.session_state["_disc_clear_box"] = True
-            st.rerun()
+            st.rerun(scope="fragment")
 
     def _disc_close_btn(col):
         if col.button("✕ Close", key="disc_close"):
             for k in ("disc_open_channel", "disc_open_playlist", "disc_open_title"):
                 st.session_state.pop(k, None)
-            st.rerun()
+            st.rerun(scope="fragment")
 
     if open_ch:
         info, _ie = _disc_chinfo(open_ch)
@@ -1430,7 +1433,7 @@ def discover_panel():
                         width="stretch", type="secondary" if _following else "primary"):
             now = follows.toggle(_follows, open_ch, _ch_title, _ch_thumb)
             st.toast(("⭐ Following " if now else "Unfollowed ") + _ch_title[:30])
-            st.rerun()
+            st.rerun(scope="fragment")
         _disc_close_btn(hc[3])
         st.markdown("##### ▶️ Recent uploads")
         _ups, _uerr = _disc_uploads(open_ch)
@@ -1450,7 +1453,7 @@ def discover_panel():
                     st.session_state["disc_open_playlist"] = _cpl["playlist_id"]
                     st.session_state.pop("disc_open_channel", None)
                     st.session_state["disc_open_title"] = _cpl["title"]
-                    st.rerun()
+                    st.rerun(scope="fragment")
         st.divider()
     elif open_pl:
         hc = st.columns([6, 1])
@@ -1480,7 +1483,7 @@ def discover_panel():
             if st.button("🔄 Try again", key="disc_retry"):
                 _disc_search.clear()
                 st.session_state.pop("disc_results", None)
-                st.rerun()
+                st.rerun(scope="fragment")
             return
         if res["channels"]:
             st.markdown("##### 📡 Channels — follow, or open to browse & download")
@@ -1494,13 +1497,13 @@ def discover_panel():
                                 width="stretch", help="Following" if _f else "Follow this channel"):
                     now = follows.toggle(_follows, ch["channel_id"], ch["title"], ch["thumb"])
                     st.toast(("⭐ Following " if now else "Unfollowed ") + ch["title"][:30])
-                    st.rerun()
+                    st.rerun(scope="fragment")
                 if cc[3].button("Latest uploads", key=f"disc_ch_{ch['channel_id']}",
                                 width="stretch"):
                     st.session_state["disc_open_channel"] = ch["channel_id"]
                     st.session_state.pop("disc_open_playlist", None)
                     st.session_state["disc_open_title"] = ch["title"]
-                    st.rerun()
+                    st.rerun(scope="fragment")
         if res["playlists"]:
             st.markdown("##### 🎶 Playlists — open to grab the whole list")
             for pl in res["playlists"]:
@@ -1512,10 +1515,11 @@ def discover_panel():
                     st.session_state["disc_open_playlist"] = pl["playlist_id"]
                     st.session_state.pop("disc_open_channel", None)
                     st.session_state["disc_open_title"] = pl["title"]
-                    st.rerun()
+                    st.rerun(scope="fragment")
         if res["videos"]:
             st.markdown("##### ▶️ Videos — tap to download")
-            _disc_video_grid(_paginate(res["videos"], "disc_v", noun="video"), "disc_v")
+            _disc_video_grid(_paginate(res["videos"], "disc_v", noun="video",
+                                       scope="fragment"), "disc_v")
         if not (res["videos"] or res["channels"] or res["playlists"]):
             _empty("🔎", "No results", f"Nothing found for “{query}” — try another search.")
     elif not (open_ch or open_pl):
@@ -1530,7 +1534,7 @@ def discover_panel():
                 st.session_state["disc_open_channel"] = _fc["id"]
                 st.session_state.pop("disc_open_playlist", None)
                 st.session_state["disc_open_title"] = _fc["title"]
-                st.rerun()
+                st.rerun(scope="fragment")
             _disc_video_grid(_fu[:8], f"disc_fol_{_fc['id']}")
         for label, region, cat in (("🔥 Trending in Kenya", "KE", None),
                                     ("🌍 Trending Worldwide", "US", None),
