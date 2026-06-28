@@ -1203,11 +1203,13 @@ def _yt_id(url):
 
 
 @st.cache_data(show_spinner=False)
-def _disc_lib_index(_sig):
+def _disc_lib_index(sig):
     """What's already in the library, for Discover ticks: (video_ids, title_norms)
-    from history entries whose file still exists on disk. Cached on _sig (history
-    size) so it rebuilds when a download finishes — Phase Echo reruns the app then,
-    so the ✅ appears instantly with no manual refresh. A deleted file drops out."""
+    from history entries whose file still exists on disk. Cached on `sig` =
+    len(all_hist) (NO leading underscore — leading-underscore args are excluded
+    from st.cache_data's key, which previously froze this index), so it rebuilds
+    when history grows. A deleted file drops out on the next rebuild."""
+    _ = sig  # cache key only
     vids, norms = set(), set()
     for h in all_hist:
         p = h.get("path")
@@ -1231,11 +1233,14 @@ def _safe_mtime(p):
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def _media_files_cached(folders, _sig):
-    """The Library disk scan, CACHED. `_sig` (history size + folder mtimes) changes
-    whenever a download lands or a file is added/removed, so the list stays current
-    — but a plain rerun (e.g. pressing ▶ Play) is a cache HIT and doesn't re-walk
-    the disk, so playback starts instantly instead of 'thinking / preparing'."""
+def _media_files_cached(folders, sig):
+    """The Library disk scan, CACHED. `sig` = (history size + folder mtimes) and is
+    part of the cache key (NO leading underscore — that would exclude it and was
+    the bug that made new downloads never appear). It changes whenever a download
+    lands or a file is added/removed, so the list stays current; a plain rerun
+    (e.g. pressing ▶ Play) keeps the same sig -> cache HIT -> no disk re-walk ->
+    instant playback."""
+    _ = sig  # cache key only
     return library.media_files(list(folders))
 
 
