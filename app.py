@@ -20,6 +20,7 @@ aria2c optional (turbo downloads).
 """
 
 import base64
+import html
 import logging
 import os
 import random
@@ -57,6 +58,15 @@ import library
 import licensing
 import player
 import playlists
+
+
+def _esc(s):
+    """HTML-escape a dynamic value before embedding it in an unsafe_allow_html
+    markdown string. Media titles/labels come from remote metadata (yt-dlp / the
+    YouTube API), so a crafted title like '<img onerror=…>' must never render as
+    live HTML in the app's WebView. Ordinary titles are unaffected (only & < > "
+    are rewritten, which the browser renders back as the original characters)."""
+    return html.escape(str(s if s is not None else ""))
 
 
 def fmt_size(n):
@@ -669,10 +679,11 @@ def _mp_current():
     return p if os.path.isfile(p) else None
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
+@st.cache_data(show_spinner=False, max_entries=3)
 def _media_data_uri(path, _sig):
-    """Whole media file as a base64 data: URI (IDM-proof). Cached small so only a
-    few recent tracks live in memory."""
+    """Whole media file as a base64 data: URI (IDM-proof). Cached small (only the
+    last 3 tracks) so memory stays bounded even when inlining ~75 MB videos —
+    audio is tiny, and the player only ever embeds the CURRENT track."""
     return player.media_data_uri(path)
 
 
@@ -1101,8 +1112,8 @@ def downloads_panel():
                     lane = "📦" if j.lane == downloads.LANE_BATCH else "⚡"
                     r1, r2 = st.columns([7, 1])
                     r1.markdown(
-                        f"{lane} **{j.label}**  \n"
-                        f"<span style='color:#888;font-size:.8em'>{j.detail}</span>",
+                        f"{lane} **{_esc(j.label)}**  \n"
+                        f"<span style='color:#888;font-size:.8em'>{_esc(j.detail)}</span>",
                         unsafe_allow_html=True)
                     if r2.button("✕", key=f"dlc_{j.id}", help="Cancel this download"):
                         mgr.cancel(j.id)
@@ -1121,8 +1132,8 @@ def downloads_panel():
                     else:
                         r1, r2 = st.columns([7, 1])
                     r1.markdown(
-                        f"{icon} **{j.label}**  \n"
-                        f"<span style='color:#888;font-size:.8em'>{sub}</span>",
+                        f"{icon} **{_esc(j.label)}**  \n"
+                        f"<span style='color:#888;font-size:.8em'>{_esc(sub)}</span>",
                         unsafe_allow_html=True)
                     if j.status == "done" and j.result:
                         if r2.button("📂", key=f"dlo_{j.id}",
@@ -1154,7 +1165,6 @@ ai_cache = ai.cached_analysis() if ai_on else {}
 # =========================================================================== #
 #  DISCOVER  (YouTube Data API v3 — mirrors the mobile app's Discover)
 # =========================================================================== #
-@st.cache_data(ttl=discover.TRENDING_TTL, show_spinner="Loading trending…")
 @st.cache_data(ttl=discover.TRENDING_TTL, show_spinner=False)
 def _disc_trending(region, cat):
     try:
@@ -2096,6 +2106,7 @@ with _t_dl:
                 dur = dl.human_duration(e["duration"]) if e.get("duration") else ""
                 pc1.write(f"**{e['title']}**" + (f"  ·  {dur}" if dur else ""))
                 pc2.selectbox("format", FMT_OPTIONS, key=f"ch_fmt_{gi}",
+                              index=len(FMT_OPTIONS) - 1,   # default ⛔ Skip — pick per video
                               label_visibility="collapsed")
 
             bc1, bc2 = st.columns(2)
@@ -2103,7 +2114,10 @@ with _t_dl:
                           width="stretch"):
                 jobs = []
                 for gi, e in enumerate(entries):
-                    choice = st.session_state.get(f"ch_fmt_{gi}", "🎵 MP3")
+                    # Default ⛔ Skip: videos on pages you never opened (no widget
+                    # was created) are NOT grabbed — only the ones you actually
+                    # picked. Use "Grab everything" above for a whole-channel pull.
+                    choice = st.session_state.get(f"ch_fmt_{gi}", "⛔ Skip")
                     if choice.startswith("⛔"):
                         continue
                     job = {"url": e["url"], "title": e["title"]}
@@ -2323,7 +2337,7 @@ with _t_hist:
                         e1, e2, e3 = st.columns([7, 1, 1])
                         e1.markdown(
                             f"{'🎬' if it.get('fmt') == 'video' else '🎵'} "
-                            f"**{it.get('title') or it.get('filename')}**  \n"
+                            f"**{_esc(it.get('title') or it.get('filename'))}**  \n"
                             f"<span style='color:#888;font-size:.8em'>"
                             f"{it.get('site', '')} · {fmt_size(it.get('size', 0))}"
                             f"{'' if on_disk else ' · ⚠️ file missing'}</span>",
@@ -2367,7 +2381,7 @@ with _t_hist:
                                 likely = szc[round((it.get("size", 0) or 0) / 1024)] > 1
                                 d1, d2 = st.columns([8, 1])
                                 d1.markdown(
-                                    f"• {it.get('filename')} "
+                                    f"• {_esc(it.get('filename'))} "
                                     f"<span style='color:#888;font-size:.8em'>"
                                     f"({fmt_size(it.get('size', 0))}"
                                     f"{' · 🟠 likely identical' if likely else ' · unique size'})"
@@ -2537,12 +2551,12 @@ with _t_hist:
                 _m = ai_cache.get(h.get("title") or h.get("filename")) if ai_on else None
                 ai_badge = ""
                 if _m:
-                    ai_badge = (f" · 🏷️ {_m.get('category', '')}"
-                                + (f" · {_m['artist']}" if _m.get("artist") else ""))
+                    ai_badge = (f" · 🏷️ {_esc(_m.get('category', ''))}"
+                                + (f" · {_esc(_m['artist'])}" if _m.get("artist") else ""))
                 on_disk = bool(h.get("path") and os.path.isfile(h["path"]))
                 miss = "" if on_disk else " · ⚠️ file missing"
                 hc1.markdown(
-                    f"{icon} **{h.get('title') or h.get('filename')}**  \n"
+                    f"{icon} **{_esc(h.get('title') or h.get('filename'))}**  \n"
                     f"<span style='color:#888;font-size:0.82em'>"
                     f"{h.get('site', '')} · {when_label(h.get('ts'))} · "
                     f"{fmt_size(h.get('size', 0))}{ai_badge}{miss}</span>",
@@ -2614,7 +2628,7 @@ with _t_arch:
                 icon = "🎬" if r.get("fmt") == "video" else "🎵"
                 ac1, ac2, ac3 = st.columns([7, 1, 1])
                 ac1.markdown(
-                    f"{icon} **{r.get('title') or r.get('url')}**  \n"
+                    f"{icon} **{_esc(r.get('title') or r.get('url'))}**  \n"
                     f"<span style='color:#888;font-size:0.82em'>"
                     f"{r.get('site', '')} · {when_label(r.get('ts'))} · "
                     f"{r.get('ext', '')} · {fmt_size(r.get('size', 0))}</span>",
@@ -2934,7 +2948,7 @@ with _t_insights:
                     r1, r2, r3 = st.columns([7, 1, 1])
                     r1.markdown(
                         f"{'🎬' if it.get('fmt') == 'video' else '🎵'} "
-                        f"**{it.get('title') or it.get('filename')}**  \n"
+                        f"**{_esc(it.get('title') or it.get('filename'))}**  \n"
                         f"<span style='color:#888;font-size:.8em'>"
                         f"{it.get('site', '')} · {fmt_size(it.get('size', 0))}"
                         f"{'' if on_disk else ' · ⚠️ file missing'}</span>",

@@ -69,9 +69,14 @@ object MediaMeta {
         return cleaned
     }
 
-    /** Normalized identity key — collapses case / spacing / punctuation so the same
-     *  artist written differently maps to one key ("BAD BUNNY" == "Bad Bunny"). */
-    fun artistKey(name: String): String = name.lowercase().replace(Regex("[^a-z0-9]"), "")
+    /** Normalized identity key — collapses case / spacing / punctuation AND accents,
+     *  so the same artist written differently maps to one key ("BAD BUNNY" == "Bad
+     *  Bunny", and "Beyoncé" == "Beyonce"). NFKD splits an accented letter into base +
+     *  combining mark, which we then strip (é → e, ñ → n) before dropping non-alphanumerics. */
+    fun artistKey(name: String): String =
+        java.text.Normalizer.normalize(name.lowercase(), java.text.Normalizer.Form.NFKD)
+            .replace(Regex("\\p{Mn}+"), "")          // fold accents (strip combining marks)
+            .replace(Regex("[^a-z0-9]"), "")
 
     /**
      * Collapse a per-name artist count map so case / spacing / punctuation variants of

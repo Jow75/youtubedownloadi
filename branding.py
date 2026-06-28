@@ -7,7 +7,7 @@ contact for a license). Pure data — safe to import anywhere.
 """
 
 APP_NAME = "Universal Media Downloader"
-VERSION = "1.2"
+VERSION = "4.1"
 
 PUBLISHER = "George (Jowgei)"
 COUNTRY = "Kenya"

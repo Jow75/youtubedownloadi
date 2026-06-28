@@ -16,6 +16,11 @@ val umdSecret: String = (secretProps.getProperty("UMD_SECRET") ?: "").trim()
 // Optional: a YouTube Data API v3 key for the Discover tab. Bundled at build time
 // from secret.properties (gitignored). Can also be set in-app (Discover settings).
 val youtubeApiKey: String = (secretProps.getProperty("YOUTUBE_API_KEY") ?: "").trim()
+// A POOL of YouTube keys (comma/space separated) for quota failover. Quota is
+// per Google Cloud PROJECT, so only one key per SEPARATE project adds real
+// capacity. Discover round-robins across them and falls over to the next on a
+// 403 (daily-limit) error. Falls back to the single YOUTUBE_API_KEY when unset.
+val youtubeApiKeys: String = (secretProps.getProperty("YOUTUBE_API_KEYS") ?: "").trim()
 // Release signing — keystore + passwords live in gitignored secret.properties.
 val ksFile = rootProject.file(secretProps.getProperty("KEYSTORE_FILE") ?: "release.keystore")
 val ksPassword: String = (secretProps.getProperty("KEYSTORE_PASSWORD") ?: "")
@@ -41,8 +46,8 @@ android {
         applicationId = "ke.co.baziqhue.umd"
         minSdk = 26          // 26 lets us ship a vector adaptive icon (no PNGs)
         targetSdk = 34
-        versionCode = 39
-        versionName = "1.38"
+        versionCode = 41
+        versionName = "4.1"
 
         // Ship native libs only for real Android phones (ARM). Dropping x86/x86_64
         // (emulator-only) roughly halves the bundled engine size — smaller APK +
@@ -52,6 +57,7 @@ android {
         // Baked into BuildConfig at build time (not in the repo).
         buildConfigField("String", "UMD_SECRET", "\"$umdSecret\"")
         buildConfigField("String", "YOUTUBE_API_KEY", "\"$youtubeApiKey\"")
+        buildConfigField("String", "YOUTUBE_API_KEYS", "\"$youtubeApiKeys\"")
     }
 
     buildTypes {

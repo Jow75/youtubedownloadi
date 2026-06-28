@@ -58,9 +58,27 @@ object Discover {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    /** The embedded key. Not stored in prefs, not shown, not editable. */
-    fun apiKey(): String = BuildConfig.YOUTUBE_API_KEY.trim()
-    fun hasKey(): Boolean = apiKey().isNotBlank()
+    /**
+     * ALL embedded keys, in priority order, for quota failover. A POOL
+     * (YOUTUBE_API_KEYS, comma/space separated) is preferred — one key per SEPARATE
+     * Google Cloud project adds real capacity (quota is per-project) — and falls back
+     * to the single YOUTUBE_API_KEY. De-duped. Not stored in prefs, not shown, not editable.
+     */
+    @Volatile private var keysCache: List<String>? = null
+    fun apiKeys(): List<String> {
+        keysCache?.let { return it }
+        val pool = BuildConfig.YOUTUBE_API_KEYS.split(Regex("[,\\s]+"))
+            .map { it.trim() }.filter { it.isNotBlank() }
+        val single = BuildConfig.YOUTUBE_API_KEY.trim()
+        val all = (if (pool.isNotEmpty()) pool
+                   else if (single.isNotBlank()) listOf(single) else emptyList()).distinct()
+        keysCache = all
+        return all
+    }
+
+    /** The first key (kept for any caller that just needs "a" key). */
+    fun apiKey(): String = apiKeys().firstOrNull().orEmpty()
+    fun hasKey(): Boolean = apiKeys().isNotEmpty()
 
     // --- cache ---------------------------------------------------------------- #
     private fun cacheDir(): File = File(Storage.aiDir(), "discover_cache").apply { if (!exists()) mkdirs() }
@@ -83,18 +101,44 @@ object Discover {
         } catch (_: Exception) {}
     }
 
-    /** A 4xx the caller shouldn't retry (bad request / quota / forbidden). */
-    private class PermanentHttp(message: String) : IOException(message)
+    /** A 4xx the caller shouldn't retry (bad request / forbidden). */
+    private open class PermanentHttp(message: String) : IOException(message)
+    /** 403 daily-limit on THIS key — the caller rotates to the next key in the pool. */
+    private class QuotaExceeded(message: String) : PermanentHttp(message)
+
+    @Volatile private var rr = 0   // round-robin cursor — spreads load across projects
 
     /**
-     * GET with automatic retry for *transient* failures (no network yet, DNS not
-     * resolved, timeouts, 5xx, rate-limit). This kills the old "search shows an error,
-     * toggle a filter and suddenly it works" flakiness — the first attempt was just
-     * hitting a momentary network blip, and changing the sort forced a fresh request
-     * that happened to succeed. Now we retry transparently. Permanent 4xx errors
-     * (e.g. daily quota used up) still fail fast.
+     * GET with key rotation + transient retry. Each call starts at a different key
+     * (round-robin) so multiple projects share the traffic; on a 403 (daily quota)
+     * it falls over to the next key, so one exhausted project never breaks Discover.
+     * [url] must NOT already contain a key= param — this appends it per attempt, so
+     * the on-disk cache key (which never includes the key) stays stable across keys.
+     * With a single key this behaves exactly as before.
      */
     private fun httpGet(url: String): String {
+        val keys = apiKeys().ifEmpty { listOf("") }
+        val n = keys.size
+        rr = (rr + 1) % n
+        var last: Exception? = null
+        for (i in 0 until n) {
+            val key = keys[(rr + i) % n]
+            try {
+                return httpGetOnce(if (key.isBlank()) url else "$url&key=$key")
+            } catch (e: QuotaExceeded) {
+                last = e                                      // this key is spent → try next
+            }
+        }
+        throw last ?: QuotaExceeded("YouTube daily limit reached on all keys.")
+    }
+
+    /**
+     * One key's request, with automatic retry for *transient* failures (no network
+     * yet, DNS not resolved, timeouts, 5xx, rate-limit). This kills the old "search
+     * shows an error, toggle a filter and suddenly it works" flakiness. A 403 becomes
+     * [QuotaExceeded] so the caller rotates keys; other permanent 4xx fail fast.
+     */
+    private fun httpGetOnce(url: String): String {
         var last: Exception? = null
         for (attempt in 0 until 3) {
             try {
@@ -103,6 +147,7 @@ object Discover {
                     val body = resp.body?.string().orEmpty()
                     if (resp.isSuccessful) return body
                     val msg = parseErr(body, resp.code)
+                    if (resp.code == 403) throw QuotaExceeded(msg)       // spent key → rotate
                     if (resp.code in 400..499 && resp.code != 408 && resp.code != 429)
                         throw PermanentHttp(msg)              // permanent → don't retry
                     last = IOException(msg)                   // 5xx / 408 / 429 → retry
@@ -136,12 +181,11 @@ object Discover {
     /** Most-popular videos for a region (1 quota unit). [categoryId] "10" = Music. */
     suspend fun trending(regionCode: String, categoryId: String? = null): Result<List<DiscoverItem>> =
         withContext(Dispatchers.IO) {
-            val key = apiKey()
-            if (key.isBlank()) return@withContext Result.failure(IOException("Discover is unavailable."))
+            if (!hasKey()) return@withContext Result.failure(IOException("Discover is unavailable."))
             try {
                 val cat = if (categoryId != null) "&videoCategoryId=$categoryId" else ""
                 val url = "$BASE/videos?part=snippet,contentDetails&chart=mostPopular&maxResults=20" +
-                    "&regionCode=$regionCode$cat&key=$key"
+                    "&regionCode=$regionCode$cat"
                 Result.success(parseVideos(cachedFetch("trending_${regionCode}_${categoryId ?: "all"}", url, TRENDING_TTL)))
             } catch (e: Exception) {
                 Result.failure(e)
@@ -151,12 +195,11 @@ object Discover {
     /** Search videos by name (100 quota units — cached 24h). [order] = date | relevance. */
     suspend fun search(query: String, order: String = "date"): Result<List<DiscoverItem>> =
         withContext(Dispatchers.IO) {
-            val key = apiKey()
-            if (key.isBlank()) return@withContext Result.failure(IOException("Discover is unavailable."))
+            if (!hasKey()) return@withContext Result.failure(IOException("Discover is unavailable."))
             if (query.isBlank()) return@withContext Result.success(emptyList())
             try {
                 val q = URLEncoder.encode(query, "UTF-8")
-                val url = "$BASE/search?part=snippet&type=video&order=$order&maxResults=20&q=$q&key=$key"
+                val url = "$BASE/search?part=snippet&type=video&order=$order&maxResults=20&q=$q"
                 Result.success(parseSearch(cachedFetch("search_${order}_$query", url, SEARCH_TTL)))
             } catch (e: Exception) {
                 Result.failure(e)
@@ -170,13 +213,12 @@ object Discover {
      */
     suspend fun searchMixed(query: String, order: String = "relevance"): Result<SearchResults> =
         withContext(Dispatchers.IO) {
-            val key = apiKey()
-            if (key.isBlank()) return@withContext Result.failure(IOException("Discover is unavailable."))
+            if (!hasKey()) return@withContext Result.failure(IOException("Discover is unavailable."))
             if (query.isBlank()) return@withContext Result.success(SearchResults(emptyList(), emptyList(), emptyList()))
             try {
                 val q = URLEncoder.encode(query, "UTF-8")
                 // No `type` → YouTube returns a mix of videos / channels / playlists.
-                val url = "$BASE/search?part=snippet&maxResults=25&order=$order&q=$q&key=$key"
+                val url = "$BASE/search?part=snippet&maxResults=25&order=$order&q=$q"
                 Result.success(parseMixed(cachedFetch("searchmix_${order}_$query", url, SEARCH_TTL)))
             } catch (e: Exception) {
                 Result.failure(e)
@@ -186,16 +228,15 @@ object Discover {
     /** Latest uploads from a channel (2 quota units, cached 6h) — for "New from <artist>". */
     suspend fun latestUploads(channelId: String): Result<List<DiscoverItem>> =
         withContext(Dispatchers.IO) {
-            val key = apiKey()
-            if (key.isBlank()) return@withContext Result.failure(IOException("Discover is unavailable."))
+            if (!hasKey()) return@withContext Result.failure(IOException("Discover is unavailable."))
             try {
-                val chUrl = "$BASE/channels?part=contentDetails&id=$channelId&key=$key"
+                val chUrl = "$BASE/channels?part=contentDetails&id=$channelId"
                 val uploads = JSONObject(cachedFetch("chmeta_$channelId", chUrl, TRENDING_TTL))
                     .optJSONArray("items")?.optJSONObject(0)
                     ?.optJSONObject("contentDetails")?.optJSONObject("relatedPlaylists")
                     ?.optString("uploads").orEmpty()
                 if (uploads.isBlank()) return@withContext Result.success(emptyList())
-                val plUrl = "$BASE/playlistItems?part=snippet&maxResults=12&playlistId=$uploads&key=$key"
+                val plUrl = "$BASE/playlistItems?part=snippet&maxResults=12&playlistId=$uploads"
                 Result.success(parsePlaylistItems(cachedFetch("uploads_$channelId", plUrl, TRENDING_TTL)))
             } catch (e: Exception) {
                 Result.failure(e)

@@ -348,7 +348,9 @@ object Ai {
                 "Classical, Other;\n" +
                 "  language: the main language/region — one of Swahili, English, Nigerian, " +
                 "French, Spanish, Hindi, Bengali, Marathi, Arabic, Kikuyu, Mixed, Unknown.\n" +
-                "Pick the single best fit; do NOT invent new labels. Return ONLY a JSON array.\n\nTitles:\n" +
+                "Pick the single best fit; do NOT invent new labels. If you are not " +
+                "confident, use genre 'Other' and language 'Unknown' — never guess. " +
+                "Return ONLY a JSON array.\n\nTitles:\n" +
                 chunk.mapIndexed { j, t -> "${j + 1}. $t" }.joinToString("\n")
             try {
                 val arr = extractJsonArray(chat(key, prompt, maxTokens = 700, model = FAST_MODEL))
