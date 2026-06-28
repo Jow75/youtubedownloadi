@@ -1223,19 +1223,41 @@ def _disc_lib_index(_sig):
     return vids, norms
 
 
-def _disc_active():
-    """URLs / video_ids currently downloading or queued (for the 🔄 state)."""
-    urls, vids = set(), set()
+def _safe_mtime(p):
+    try:
+        return os.path.getmtime(p)
+    except OSError:
+        return 0
+
+
+@st.cache_data(show_spinner=False, max_entries=4)
+def _media_files_cached(folders, _sig):
+    """The Library disk scan, CACHED. `_sig` (history size + folder mtimes) changes
+    whenever a download lands or a file is added/removed, so the list stays current
+    — but a plain rerun (e.g. pressing ▶ Play) is a cache HIT and doesn't re-walk
+    the disk, so playback starts instantly instead of 'thinking / preparing'."""
+    return library.media_files(list(folders))
+
+
+def _disc_live():
+    """Live download state from the manager: (busy_urls, busy_vids, done_vids).
+    done_vids = freshly-FINISHED downloads (status 'done' + a real file) so the ✅
+    tick flips the instant a download completes — independent of when the history
+    file is written (which lags the job status and was causing the stale tick)."""
+    busy_urls, busy_vids, done_vids = set(), set(), set()
     try:
         for j in downloads.get_manager().snapshot():
+            v = _yt_id(j.url)
             if j.status in ("queued", "downloading"):
-                urls.add(j.url)
-                v = _yt_id(j.url)
+                busy_urls.add(j.url)
                 if v:
-                    vids.add(v)
+                    busy_vids.add(v)
+            elif j.status == "done" and j.result and os.path.isfile(j.result):
+                if v:
+                    done_vids.add(v)
     except Exception:  # noqa: BLE001
         pass
-    return urls, vids
+    return busy_urls, busy_vids, done_vids
 
 
 def _disc_thumb(thumb, state):
@@ -1257,7 +1279,7 @@ def _disc_video_grid(items, key_prefix, cols=4):
     state — ✅ already downloaded · 🔄 downloading · ⬇️ MP3/MP4. Works on every
     Discover surface (search, trending, channel, playlist, artist/follow shelves)."""
     have_vids, have_norms = _disc_lib_index(len(all_hist))
-    busy_urls, busy_vids = _disc_active()
+    busy_urls, busy_vids, done_vids = _disc_live()
     for start in range(0, len(items), cols):
         row = items[start:start + cols]
         columns = st.columns(cols)
@@ -1265,7 +1287,8 @@ def _disc_video_grid(items, key_prefix, cols=4):
             gi = start + idx
             with col:
                 vid = it.get("video_id", "")
-                downloaded = vid in have_vids or _disc_norm(it.get("title", "")) in have_norms
+                downloaded = (vid in have_vids or vid in done_vids
+                              or _disc_norm(it.get("title", "")) in have_norms)
                 downloading = (not downloaded) and (it.get("url") in busy_urls or vid in busy_vids)
                 _disc_thumb(it.get("thumb"),
                             "have" if downloaded else "busy" if downloading else "none")
@@ -1382,8 +1405,8 @@ def discover_panel():
     if sc[2].button("🔄", key="disc_refresh", help="Refresh Discover (re-query YouTube)",
                     width="stretch"):
         for _fn in (_disc_search, _disc_trending, _disc_uploads, _disc_playlist,
-                    _disc_chinfo, _disc_chpls, _disc_artist):
-            _fn.clear()
+                    _disc_chinfo, _disc_chpls, _disc_artist, _disc_lib_index):
+            _fn.clear()                       # also rebuild the ✅ downloaded index
         st.session_state.pop("disc_results", None)
         st.rerun(scope="fragment")
     # STICKY: the view is driven by this session value, set only when you edit the
@@ -2624,7 +2647,10 @@ with _t_clean:
     scan_folders = library.collapse_folders(_scan_roots)
 
     # ---- Visual media browser (cover-art cards, Spotify-style) ----------- #
-    _media = library.media_files(scan_folders)
+    # Cached scan: re-walks only when history grew or a folder changed, so pressing
+    # ▶ Play (a plain rerun) doesn't re-scan the disk and playback feels instant.
+    _msig = (len(all_hist), tuple(_safe_mtime(f) for f in scan_folders))
+    _media = _media_files_cached(tuple(scan_folders), _msig)
     st.markdown("#### 🎵 Your library")
     _lc = st.columns([3, 2.4, 1.4])
     _lib_q = _lc[0].text_input("Filter", key="lib_filter", label_visibility="collapsed",
