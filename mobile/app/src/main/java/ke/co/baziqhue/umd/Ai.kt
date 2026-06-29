@@ -105,7 +105,7 @@ object Ai {
                 else Result.failure(IOException("Key rejected (HTTP ${resp.code})."))
             }
         } catch (e: Exception) {
-            Result.failure(IOException("Couldn't reach NVIDIA: ${e.message}"))
+            Result.failure(IOException("Couldn't reach the AI service: ${e.message}"))
         }
     }
 
@@ -431,7 +431,7 @@ object Ai {
         "and a Library tab with semantic Smart Search (find by meaning), byte-identical " +
         "Duplicate cleanup (safe — it keeps one copy), and AI Title clean-up/rename. " +
         "It's unlocked by an offline, per-device license key that expires; AI features " +
-        "use the user's own NVIDIA API key. A built-in media player is on the roadmap. " +
+        "use the user's own AI Assistant key. A built-in media player is on the roadmap. " +
         "When asked who built it, credit George Muraguri Muthoni / BAZIQ HUE."
 
     /** Turn a plain-language request into an action plan — ports desktop agent_plan. */

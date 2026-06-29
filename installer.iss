@@ -10,7 +10,7 @@
 
 [Setup]
 AppName=Universal Media Downloader
-AppVersion=4.1
+AppVersion=4.2
 AppPublisher=George (Jowgei)
 AppPublisherURL=https://baziqhue.co.ke/
 AppSupportURL=https://baziqhue.co.ke/

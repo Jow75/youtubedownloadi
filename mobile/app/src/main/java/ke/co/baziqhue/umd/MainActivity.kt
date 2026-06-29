@@ -2380,7 +2380,7 @@ private fun assistantSend(ctx: Context, scope: CoroutineScope, ui: AssistantUi, 
     scope.launch {
         if (!Ai.isConfigured(ctx)) {
             session.messages.add(ChatMsg(false,
-                "I need an AI key first — go to Download → \"AI assistant settings\" and paste your NVIDIA key."))
+                "I need an AI key first — open \"AI assistant settings\" and paste your AI Assistant key."))
         } else {
             Ai.agentPlan(ctx, text).fold(
                 onSuccess = { plan -> runPlan(ctx, session, text, plan) },
@@ -3038,17 +3038,17 @@ fun AiKeyDialog(ctx: android.content.Context, onDismiss: () -> Unit) {
         title = { Text("AI assistant") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Paste your NVIDIA API key (starts with nvapi-). It's stored " +
-                    "encrypted on this device and only used to explain download " +
-                    "errors — never your files. Get a free key at build.nvidia.com.",
+                Text("This application uses your personal AI Assistant key. Paste the " +
+                    "AI key you were provided. It's stored securely on this device and " +
+                    "only used to power the assistant — never your files.",
                     style = MaterialTheme.typography.bodySmall)
                 if (existing.isNotBlank()) {
-                    Text("Current key: $existing", fontFamily = FontFamily.Monospace,
+                    Text("Your current key: $existing", fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall)
                 }
                 OutlinedTextField(
                     value = key, onValueChange = { key = it },
-                    label = { Text("nvapi-…") }, singleLine = true,
+                    label = { Text("Paste your AI key…") }, singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 msg?.let {

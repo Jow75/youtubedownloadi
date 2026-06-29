@@ -1,8 +1,8 @@
 # PyInstaller version resource for LicenseConsole.exe (Properties -> Details).
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(4, 1, 0, 0),
-    prodvers=(4, 1, 0, 0),
+    filevers=(4, 2, 0, 0),
+    prodvers=(4, 2, 0, 0),
     mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)
   ),
   kids=[
@@ -10,12 +10,12 @@ VSVersionInfo(
       StringTable('040904B0', [
         StringStruct('CompanyName', 'George (Jowgei)'),
         StringStruct('FileDescription', 'License Console - Universal Media Downloader'),
-        StringStruct('FileVersion', '4.1.0.0'),
+        StringStruct('FileVersion', '4.2.0.0'),
         StringStruct('InternalName', 'LicenseConsole'),
         StringStruct('LegalCopyright', 'Copyright (c) 2026 George (Jowgei)'),
         StringStruct('OriginalFilename', 'LicenseConsole.exe'),
         StringStruct('ProductName', 'Universal Media Downloader - License Console'),
-        StringStruct('ProductVersion', '4.1.0.0'),
+        StringStruct('ProductVersion', '4.2.0.0'),
         StringStruct('Comments', 'Seller-only tool. Keep private - contains the signing key.')
       ])
     ]),
