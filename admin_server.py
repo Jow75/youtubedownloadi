@@ -141,6 +141,7 @@ def build_payload():
         "monthly_revenue": round(month_rev, 2), "total_revenue": round(total_rev, 2),
         "total_customers": len(customers),
         "renewals": sum(c["is_renewal"] for c in customers),
+        "new_customers": len(customers) - sum(c["is_renewal"] for c in customers),
     }
 
     months = _last_months(now, 6)
@@ -284,6 +285,41 @@ def do_export(fmt):
     return 200, {"ok": True, "path": str(path), "count": len(rows)}
 
 
+def do_backup():
+    """One-click FULL backup of the customer database to a timestamped file in a
+    'backups' folder next to the ledger. Writes a lossless CSV copy (re-importable
+    AS the database) AND a polished XLSX with every field, then opens the folder.
+    Multiple backups coexist (each is timestamped)."""
+    import shutil
+    src = records.RECORDS
+    backup_dir = records.RECORDS.parent / "backups"
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return 500, {"ok": False, "error": f"Couldn't create the backups folder: {e}"}
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    made = []
+    try:
+        # Lossless CSV copy — this file IS a full database that can be restored.
+        if src.is_file():
+            csv_dst = backup_dir / f"Customer_Backup_{stamp}.csv"
+            shutil.copy2(src, csv_dst)
+            made.append(str(csv_dst))
+        # Polished XLSX — every field, for reading / sharing / accounting.
+        headers, rows = _export_rows()
+        xlsx_dst = backup_dir / f"Customer_Backup_{stamp}.xlsx"
+        exports.write_xlsx(xlsx_dst, headers, rows)
+        made.append(str(xlsx_dst))
+    except Exception as e:  # noqa: BLE001
+        return 500, {"ok": False, "error": f"Backup failed: {e}"}
+    try:
+        os.startfile(str(backup_dir))  # noqa: S606 — show the backups folder
+    except Exception:  # noqa: BLE001
+        pass
+    return 200, {"ok": True, "files": made, "dir": str(backup_dir),
+                 "count": len(records.load_records())}
+
+
 def do_clear(data):
     """Danger Zone: wipe ALL records, gated by the PIN. Always backs up first."""
     pin = str((data or {}).get("pin") or "").strip()
@@ -319,6 +355,10 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             fmt = (q.get("fmt", ["csv"])[0] or "csv").lower()
             status, body = do_export(fmt)
+            self._send(status, body)
+            return
+        if path == "/api/backup":
+            status, body = do_backup()
             self._send(status, body)
             return
         if path == "/api/open":

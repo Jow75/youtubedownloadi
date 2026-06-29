@@ -532,6 +532,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
             <span class="ic-search"></span>
             <input id="search" type="text" placeholder="Search by name, machine ID, phone, email…" oninput="renderTable()" />
           </div>
+          <button class="btn" onclick="backupDatabase()" title="Save a complete, timestamped backup of the whole customer database (CSV + Excel)"><span class="ic-download"></span> Backup DB</button>
           <button class="btn" onclick="exportData('xlsx')" title="Export to Excel"><span class="ic-download"></span> Excel</button>
           <button class="btn" onclick="exportData('pdf')" title="Export to PDF">PDF</button>
           <button class="btn" onclick="exportData('csv')" title="Export to CSV">CSV</button>
@@ -861,6 +862,7 @@ const KPI_DEFS=[
   {key:'monthly_revenue',label:'Monthly Revenue',cls:'c-cyan',icon:I.trend,money:true,meta:()=>'this month'},
   {key:'total_revenue',label:'Total Revenue',cls:'c-gold',icon:I.dollar,money:true,meta:()=>'all time'},
   {key:'total_customers',label:'Total Customers',cls:'c-violet',icon:I.customers,meta:k=>k.total_customers+' tracked'},
+  {key:'new_customers',label:'New Customers',cls:'c-cyan',icon:I.customers,meta:()=>'first-time buyers'},
   {key:'renewals',label:'Renewals',cls:'c-green',icon:I.renew,meta:()=>'repeat customers'},
 ];
 function renderKPIs(){
@@ -1212,6 +1214,17 @@ async function exportData(fmt){
     if(j.ok) toast(j.count+' record(s) exported — opening '+fmt.toUpperCase()+'…');
     else toast(j.error||'Export failed','err');
   }catch(e){ toast('Export failed — is the app still running?','err'); }
+}
+
+/* ===== one-click full database backup (timestamped, safe location) ===== */
+async function backupDatabase(){
+  toast('Backing up the customer database…');
+  try{
+    const res=await fetch('/api/backup');
+    const j=await res.json();
+    if(j.ok) toast('Backup saved ('+j.count+' record(s)) — opening the backups folder…');
+    else toast(j.error||'Backup failed','err');
+  }catch(e){ toast('Backup failed — is the app still running?','err'); }
 }
 
 /* ===== request template (copy & send to the customer) ===== */
