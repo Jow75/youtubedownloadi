@@ -69,6 +69,14 @@ class DownloadManager:
         self._started = False
         self._now_workers = now_workers
         self._batch_workers = batch_workers
+        # Pause gate for the BATCH lane ONLY (bulk / playlist / channel "all").
+        # Set = running, cleared = paused. The NOW lane (Single / Discover /
+        # Assistant / Home) is never gated, so those keep downloading while a big
+        # batch is frozen. A paused worker holds its just-pulled job at the gate;
+        # the file already downloading is NEVER interrupted (it finishes), so a
+        # pause can't corrupt anything.
+        self._batch_gate = threading.Event()
+        self._batch_gate.set()
 
     # -- lifecycle -------------------------------------------------------- #
     def start(self):
@@ -146,12 +154,34 @@ class DownloadManager:
             self._order = keep
             self._jobs = {i: self._jobs[i] for i in keep}
 
+    # -- pause / resume (BATCH lane only) --------------------------------- #
+    def pause_batch(self):
+        """Freeze the batch queue: no NEW bulk/playlist/channel item starts. The
+        item currently downloading finishes normally (so it can't be corrupted),
+        the queue keeps its order, and Single/Discover/Assistant downloads (the
+        NOW lane) keep working."""
+        self._batch_gate.clear()
+
+    def resume_batch(self):
+        """Unfreeze the batch queue — it continues exactly where it stopped, in
+        order, with no restart and no duplicates."""
+        self._batch_gate.set()
+
+    def is_batch_paused(self):
+        return not self._batch_gate.is_set()
+
     # -- worker ----------------------------------------------------------- #
     def _work(self, lane):
         q = self._q[lane]
         while True:
             jid = q.get()
             try:
+                # The BATCH lane honors the pause gate: hold this just-pulled job
+                # until Resume. (The NOW lane is never gated, so Assistant / Single
+                # / Discover keep downloading while the batch queue is paused. The
+                # file already in flight is past this point, so it finishes.)
+                if lane == LANE_BATCH:
+                    self._batch_gate.wait()
                 j = self.get(jid)
                 if not j or j.cancel or j.status == "canceled":
                     if j and j.status != "canceled":

@@ -1059,8 +1059,13 @@ def downloads_panel():
         st.rerun()                       # queue just drained — one full-app refresh
 
     with st.container(border=True):
-        h1, h2, h3 = st.columns([5, 1.1, 1.1])
+        _has_batch = any(j.lane == downloads.LANE_BATCH and j.status in ("queued", "downloading")
+                         for j in jobs)
+        _paused = mgr.is_batch_paused()
+        h1, hp, h2, h3 = st.columns([4, 1.4, 1.1, 1.1])
         bits = []
+        if _paused and (_has_batch or c["queued"]):
+            bits.append("⏸️ batch paused")
         if c["active"]:
             bits.append(f"⬇️ {c['active']} downloading")
         if c["queued"]:
@@ -1071,6 +1076,19 @@ def downloads_panel():
             bits.append(f"❌ {c['error']} failed")
         h1.markdown("**Downloads** — " + (" · ".join(bits) if bits
                     else "idle — queue anything; it keeps going while you browse"))
+        # ⏸ Pause / ▶ Resume the BATCH queue (bulk / playlist / channel). Single,
+        # Discover and Assistant downloads (the NOW lane) are never affected; the
+        # file currently downloading always finishes, so a pause can't corrupt it.
+        if _has_batch or _paused:
+            if _paused:
+                if hp.button("▶ Resume", key="dl_resume", width="stretch",
+                             help="Resume the bulk/playlist/channel queue where it stopped."):
+                    mgr.resume_batch(); st.rerun(scope="fragment")
+            elif hp.button("⏸ Pause", key="dl_pause", width="stretch",
+                           help="Pause bulk/playlist/channel downloads. The current file "
+                                "finishes; nothing new starts until Resume. Single, "
+                                "Discover and Assistant downloads keep going."):
+                mgr.pause_batch(); st.rerun(scope="fragment")
         if active and h2.button("Cancel all", key="dl_cancel_all",
                                 width="stretch"):
             mgr.cancel_all()
@@ -2189,9 +2207,11 @@ with _t_dl:
                 if not jobs:
                     st.warning("Paste at least one link into a column first.")
                 else:
-                    n = enqueue(jobs, downloads.LANE_NOW)
+                    # Bulk = a multi-item batch → the pausable BATCH lane.
+                    n = enqueue(jobs, downloads.LANE_BATCH)
                     st.success(f"⚡ Queued **{n}** item(s) — they're downloading in "
-                               "**Downloads** above while you keep working.")
+                               "**Downloads** above while you keep working. "
+                               "(Use ⏸ Pause queue to hold a big batch.)")
 
         # ----- Option 2: scan & choose per link (secondary) -------------------- #
         else:
@@ -2251,7 +2271,8 @@ with _t_dl:
                             job["audio_codec"] = "m4a" if "M4A" in choice else "mp3"
                         jobs.append(job)
                     if jobs:
-                        n = enqueue(jobs, downloads.LANE_NOW)
+                        # Bulk = a multi-item batch → the pausable BATCH lane.
+                        n = enqueue(jobs, downloads.LANE_BATCH)
                         st.success(f"⚡ Queued **{n}** item(s) — see **Downloads** "
                                    "above.")
 
