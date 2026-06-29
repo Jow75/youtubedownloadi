@@ -11,24 +11,44 @@ from pathlib import Path
 
 
 def _data_dir():
-    """Where the ledger lives. As a normal script: next to this file (the repo,
-    so the dev's existing CSV keeps working). Frozen into the License Console
-    exe: next to the exe (portable, opens straight in Excel), falling back to
-    %APPDATA% if the exe folder isn't writable."""
-    if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).resolve().parent
-        try:
-            probe = exe_dir / ".umd_write_test"
-            probe.write_text("x", encoding="utf-8")
-            probe.unlink()
-            return exe_dir
-        except OSError:
-            import licensing
-            return licensing.config_dir()
-    return Path(__file__).resolve().parent
+    """STABLE, upgrade-proof home for the ledger: the per-user app-data folder
+    (%APPDATA%\\UniversalMediaDownloader) — the SAME place the app keeps history,
+    archive and license.dat. It survives rebuilds, installs AND uninstalls.
+
+    It used to live next to the script/exe. That was the bug behind lost customer
+    data: the frozen exe sat in dist\\, and the desktop build wipes dist\\ on every
+    rebuild (Remove-Item dist) — silently destroying the seller's ledger. Persistent
+    data must NEVER live in a build-output folder, so both modes now use config_dir().
+    The 'Open in Excel'/'Open folder' buttons still work — they open this path."""
+    import licensing
+    return licensing.config_dir()
 
 
 RECORDS = _data_dir() / "license_records.csv"
+
+
+def _migrate_legacy_ledger():
+    """One-time carry-over: if the stable ledger doesn't exist yet but an OLD
+    next-to-script / next-to-exe ledger does, copy it into the stable location so
+    previously-issued customers aren't lost on the move."""
+    try:
+        if RECORDS.exists():
+            return
+        candidates = [Path(__file__).resolve().parent / "license_records.csv"]
+        if getattr(sys, "frozen", False):
+            candidates.insert(0, Path(sys.executable).resolve().parent / "license_records.csv")
+        for c in candidates:
+            try:
+                if c.is_file() and c.resolve() != RECORDS.resolve():
+                    RECORDS.write_bytes(c.read_bytes())
+                    return
+            except OSError:
+                pass
+    except Exception:  # never let migration break startup
+        pass
+
+
+_migrate_legacy_ledger()
 # "reference" = the payment's transaction code (M-Pesa code / bank ref / PayPal id).
 FIELDNAMES = ["timestamp", "customer", "phone", "email", "machine_id",
               "plan", "issued", "expires", "amount", "payment", "reference",
